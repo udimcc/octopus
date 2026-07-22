@@ -1,0 +1,4 @@
+# Ports layer (DESIGN §2, §6) — interfaces the application depends on; adapters implement them.
+# V1 adds: WorktreeProvider, ScriptRunner, SessionManager/SessionRuntime,
+#          WorkspacePersistence, IdGenerator, Clock, EventBus, CredentialsProvider (shape only).
+# Empty in V0; kept in git so the folder (and its ESLint boundary) exists.

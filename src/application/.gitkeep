@@ -1,0 +1,4 @@
+# Application layer (DESIGN §6.6, §10 V1) — use cases + single-writer command loop.
+# Depends inward on ports + domain only (never on concrete adapters).
+# V1 adds: CreateTask, DeleteTask, SwitchTask, OpenSession, CloseSession, EventBus, ...
+# Empty in V0; kept in git so the folder (and its ESLint boundary) exists.

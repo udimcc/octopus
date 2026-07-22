@@ -1,0 +1,27 @@
+appId: final.octopus
+productName: Octopus
+copyright: Copyright © Final
+
+directories:
+  buildResources: build
+  output: release/${version}
+
+files:
+  - out/**
+  - package.json
+
+# V0 has no native modules. Flip to true in V1 once node-pty / better-sqlite3 are
+# added (they must be rebuilt against Electron's ABI via @electron/rebuild).
+npmRebuild: false
+
+# Air-gapped: Electron's own binary comes from the internal Artifactory mirror,
+# not GitHub. @electron/get appends "v<ver>/electron-v<ver>-<platform>-<arch>.zip".
+electronDownload:
+  mirror: https://rt-isp.israel.final/artifactory/github-remote/electron/electron/releases/download/
+
+# V0 ships only the unpacked "dir" target: it needs no extra helper binaries
+# (AppImage/deb builders fetch those from GitHub, which is unreachable). Packaged
+# installers are a V1+ concern gated on a verified ELECTRON_BUILDER_BINARIES_MIRROR.
+linux:
+  target:
+    - dir

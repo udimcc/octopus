@@ -1,0 +1,2 @@
+# electron-builder buildResources directory (icons, entitlements, etc.).
+# Empty in V0; kept in git so the build config's `buildResources: build` resolves.
