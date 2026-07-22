@@ -20,21 +20,29 @@
 Prerequisite scaffolding before any V1 feature. Not a released version.
 
 ### Tooling & build
-- [ ] Initialize Electron + React 18 + TypeScript project via **electron-vite** (DESIGN §4).
-- [ ] Configure **electron-builder** for offline/air-gapped production builds (no runtime network) (DESIGN §4, §11).
-- [ ] Vendor all npm dependencies for air-gapped install; verify no build-time or runtime network access.
-- [ ] Set up the three-process split scaffold: **main**, **preload**, **renderer** (DESIGN §5.5).
-- [ ] Configure linting/formatting (ESLint + Prettier), `tsconfig` with `strict: true`.
-- [ ] Set up test runner (unit + integration) and CI-runnable test scripts (DESIGN §11 testing strategy).
+- [x] Initialize Electron + React 18 + TypeScript project via **electron-vite** (DESIGN §4).
+  - electron-vite pinned to **3.1.0** (v4/5 need Node ≥20.19; host is 20.17); Electron 33, vite 5.4.
+- [x] Configure **electron-builder** for offline/air-gapped production builds (no runtime network) (DESIGN §4, §11).
+  - `electron-builder.yml`: `electronDownload.mirror` → internal Artifactory; Linux `dir` target
+    (AppImage/deb helper binaries deferred to V1 behind `ELECTRON_BUILDER_BINARIES_MIRROR`).
+- [~] Vendor all npm dependencies for air-gapped install; verify no build-time or runtime network access.
+  - Install works fully offline-of-GitHub via the internal Artifactory mirror (`.npmrc` `electron_mirror`);
+    `package-lock.json` committed. **Not** true tarball vendoring — still depends on the internal registry
+    being reachable. Revisit if a fully self-contained offline cache is required.
+- [x] Set up the three-process split scaffold: **main**, **preload**, **renderer** (DESIGN §5.5).
+- [x] Configure linting/formatting (ESLint 9 flat + Prettier), `tsconfig` with `strict: true`.
+- [x] Set up test runner (Vitest: node + jsdom projects) and CI-runnable test scripts (DESIGN §11 testing strategy).
 
 ### Composition root & dependency rule
-- [ ] Establish the **composition root** (app bootstrap) as the only place that knows concrete adapters (DESIGN §2).
-- [ ] Enforce dependency rule `UI → Application → Domain`; domain depends on nothing (lint boundary or folder structure).
-- [ ] Create the port/adapter folder layout (`domain/`, `application/`, `ports/`, `adapters/`, `ui/`).
+- [x] Establish the **composition root** (`src/main/composition-root.ts`) as the only place that knows concrete adapters (DESIGN §2).
+- [x] Enforce dependency rule `UI → Application → Domain`; domain depends on nothing (`eslint-plugin-boundaries`; verified a violating import fails lint).
+- [x] Create the port/adapter folder layout (`domain/`, `application/`, `ports/`, `adapters/`; UI lives in `renderer/`).
 
 ### Runtime environment
-- [ ] Raise `RLIMIT_NOFILE` to 65536 at startup (default 1024 exhausted by dozens of PTYs) (DESIGN §6.1).
-- [ ] Set XDG/AppData data paths for DB + logs (`$XDG_DATA_HOME/octopus/`, `%APPDATA%\octopus\`) (DESIGN §6.3).
+- [x] Raise `RLIMIT_NOFILE` to 65536 at startup (default 1024 exhausted by dozens of PTYs) (DESIGN §6.1).
+  - `src/adapters/env/raise-file-limit.ts` via `prlimit(1)`, Linux-only, best-effort, runs before any spawn.
+- [x] Set XDG/AppData data paths for DB + logs (`$XDG_DATA_HOME/octopus/`, `%APPDATA%\octopus\`) (DESIGN §6.3).
+  - `src/adapters/env/paths.ts`; dirs created at startup (no consumers until V1/V2).
 
 ---
 

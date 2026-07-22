@@ -1,0 +1,3 @@
+# Domain layer (DESIGN §3) — pure, depends on NOTHING.
+# V1 adds: Workspace, Task, Session, WorktreeRef, state enums/machines, aggregator.
+# Empty in V0; kept in git so the folder (and its ESLint boundary) exists.
