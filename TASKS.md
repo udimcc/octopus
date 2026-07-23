@@ -50,168 +50,211 @@ Prerequisite scaffolding before any V1 feature. Not a released version.
 
 Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session type, **no state indicators**.
 
+> **Status (M0–M5 done):** the full backend — domain, ports, application (single-writer loop, all use cases,
+> reconcile, quit), adapters (PTY runtime, SqliteStore, worktree provider, script runner, settings, socket
+> provisioner), IPC, and composition root — is complete and green, and the **M5 renderer vertical slice**
+> (Zustand store, `pty-router` bypass, `TerminalPane` + xterm addons, keep-alive, minimal `App`) runs
+> end-to-end. Every V1 **dormant seam** (§10) is present and verified unused. Remaining (**M6/M7**): full
+> `ProgressPanel`/`NewTaskModal`/`DeleteTaskConfirm`/`SessionTabBar` UX with `@dnd-kit` reorder + overflow,
+> keyboard shortcuts, toast UI, ring-buffer replay for inactive tabs, WebGL→Canvas demotion, and the
+> restart-reconciliation integration + E2E smoke tests. `[~]` marks partially-built items (backend/seed done,
+> full UX pending). Live `npm run dev` verification of the M5 slice is the gate before M6.
+
 ### Domain (pure, no dependencies) — DESIGN §3
 
-- [ ] `Workspace` aggregate — `tasks: OrderedMap<TaskId,Task>`, `activeTaskId?`, `config: WorkspaceConfig`; owns
+- [x] `Workspace` aggregate — `tasks: OrderedMap<TaskId,Task>`, `activeTaskId?`, `config: WorkspaceConfig`; owns
   "at most one active task" rule (DESIGN §3.2, I9).
-- [ ] `Task` aggregate root — `id`, `name`, `worktree: WorktreeRef`, `sessions: OrderedList<Session>`,
+- [x] `Task` aggregate root — `id`, `name`, `worktree: WorktreeRef`, `sessions: OrderedList<Session>`,
   `activeSessionId?`, `lifecycle`, `state` (derived), timestamps (DESIGN §3.2).
-- [ ] `Session` entity — `id` (globally unique), `taskId`, `typeId`, `title`, `config`, `lifecycle`,
+- [x] `Session` entity — `id` (globally unique), `taskId`, `typeId`, `title`, `config`, `lifecycle`,
   `state` (default `Unknown`), `runtimeRef?`, `order` (DESIGN §3.2).
-- [ ] `WorktreeRef` value object — `path`, `branch?`, `baseRef?`, `provisionedBy`; **immutable once set** (I2).
-- [ ] `SessionType` registry descriptor — `typeId`, `displayName`, `icon`, `availableFromVersion`,
+- [x] `WorktreeRef` value object — `path`, `branch?`, `baseRef?`, `provisionedBy`; **immutable once set** (I2).
+- [x] `SessionType` registry descriptor — `typeId`, `displayName`, `icon`, `availableFromVersion`,
   `configSchema`, `capabilities: Set<Capability>`, runtime factory ref (DESIGN §3.2, §8).
-- [ ] `SessionConfig` value objects — fully serializable; Terminal: `{ shell?, initialCommand?, cwdOverride? }`
+- [x] `SessionConfig` value objects — fully serializable; Terminal: `{ shell?, initialCommand?, cwdOverride? }`
   defaulting to worktree path (DESIGN §3.2).
-- [ ] **State enums** `SessionState`/`TaskState` `{ Unknown, Waiting, Working, Blocked }` + internal sub-states
+- [x] **State enums** `SessionState`/`TaskState` `{ Unknown, Waiting, Working, Blocked }` + internal sub-states
   (defined now, all `Unknown` in V1) (DESIGN §3.3, §10 V1).
-- [ ] `TaskLifecycle` state machine: `None → Provisioning → Ready → Deleting → Deleted`, plus
+- [x] `TaskLifecycle` state machine: `None → Provisioning → Ready → Deleting → Deleted`, plus
   `ProvisionFailed` / `DeleteFailed` branches (DESIGN §3.5).
-- [ ] `SessionLifecycle` state machine: `None → Created → Starting → Running → Stopping → Closed`, plus
+- [x] `SessionLifecycle` state machine: `None → Created → Starting → Running → Stopping → Closed`, plus
   `CreateFailed` / `StartFailed` (DESIGN §3.6). Orthogonal to `SessionState`.
-- [ ] `TaskStateAggregator` strategy — pure worst-status-wins `max` over `Blocked>Working>Waiting>Unknown`;
+- [x] `TaskStateAggregator` strategy — pure worst-status-wins `max` over `Blocked>Working>Waiting>Unknown`;
   empty/all-unknown → `Unknown` (DESIGN §3.4). **In V1 always yields `Unknown`.**
-- [ ] Enforce invariants I1–I12 in domain logic (DESIGN §7); unit-test each.
+- [x] Enforce invariants I1–I12 in domain logic (DESIGN §7); unit-test each.
 
 ### Application layer — DESIGN §6.6, §10 V1
 
-- [ ] **Single-writer command loop** — all domain mutations are commands on one logical writer; adapters do I/O
+- [x] **Single-writer command loop** — all domain mutations are commands on one logical writer; adapters do I/O
   off-thread and feed results back as events; no locks around aggregates (DESIGN §6.6).
-- [ ] `EventBus` port — already carries `sessionStateChanged` / `taskStateChanged` events (**emitted by nobody
+- [x] `EventBus` port — already carries `sessionStateChanged` / `taskStateChanged` events (**emitted by nobody
   in V1** — dormant seam) (DESIGN §10 V1 seams).
-- [ ] Use case: **`CreateTask(name, branch)`** — run `WorktreeProvider.create`, validate path, persist, add task
-  (DESIGN §3.5, §6.4, §12.3).
-- [ ] Use case: **`DeleteTask{force?}`** — strict order: stop/dispose all sessions → run delete script → remove
-  task, in `Deleting` state (I3, DESIGN §6.6 task-delete ordering).
-- [ ] Use case: **`SwitchTask`** — changes only `activeTaskId`/visibility, never session lifecycle (I9).
-- [ ] Use case: **`OpenSession(type, cfg)`** — validate cfg against `configSchema` → `Starting` →
+- [x] Use case: **`CreateTask(name, repoDir, sourceBranch, newBranch)`** — run `WorktreeProvider.create`,
+  validate path, persist, add task; populate `WorktreeRef.branch = newBranch`, `baseRef = sourceBranch`,
+  `provisionedBy.repoRoot = repoDir` (DESIGN §3.5, §6.4, §12.3). *(Signature/fields reworked from the
+  old `(name, branch)` — see the worktree-provisioning redesign below.)*
+- [x] Use case: **`DeleteTask{force?}`** — strict order: stop/dispose all sessions → run delete (repo-local
+  script or native git) → remove task, in `Deleting` state (I3, DESIGN §6.6 task-delete ordering). *(Reworked:
+  passes the task's stored per-task `repoDir` (`worktree.provisionedBy.repoRoot`), not the global `deps.repoRoot`,
+  so delete-after-restart targets the right repo.)*
+- [x] Use case: **`SwitchTask`** — changes only `activeTaskId`/visibility, never session lifecycle (I9).
+- [x] Use case: **`OpenSession(type, cfg)`** — validate cfg against `configSchema` → `Starting` →
   `runtime.start()` (DESIGN §3.6, §8).
-- [ ] Use case: **`CloseSession`** — SIGHUP, 2 s, SIGKILL; retain scrollback; dispose (DESIGN §6.1).
-- [ ] Use cases: **`RenameTask`**, **`ReorderTask`**, **`RenameSession`**, **`ReorderSession`** (DESIGN §6.5).
-- [ ] Use case / query: **`GetState`** (`app:getInitialState`) for renderer hydration (DESIGN §5.2).
-- [ ] Use case: **`UpdateSettings`**.
-- [ ] Startup **reconciliation**: verify each task's worktree path exists → else mark `Stale`/degraded, don't
+- [x] Use case: **`CloseSession`** — SIGHUP, 2 s, SIGKILL; retain scrollback; dispose (DESIGN §6.1).
+- [x] Use cases: **`RenameTask`**, **`ReorderTask`**, **`RenameSession`**, **`ReorderSession`** (DESIGN §6.5).
+- [x] Use case / query: **`GetState`** (`app:getState`) for renderer hydration (DESIGN §5.2).
+- [x] Use case: **`UpdateSettings`**.
+- [x] Startup **reconciliation**: verify each task's worktree path exists → else mark `Stale`/degraded, don't
   start sessions (I14, DESIGN §6.3).
-- [ ] App quit sequence: SIGHUP all PTYs, `PRAGMA wal_checkpoint(TRUNCATE)`, quit; warn if any session
+- [x] App quit sequence: SIGHUP all PTYs, `PRAGMA wal_checkpoint(TRUNCATE)`, quit; warn if any session
   Working/Blocked (I13, DESIGN §6.6). *(Working/Blocked warning is degenerate in V1 — all Unknown.)*
 
 ### Ports & Adapters — DESIGN §6, §10 V1
 
-- [ ] `WorktreeProvider` port + **`ShellScriptWorktreeProvider`** adapter (DESIGN §6.4).
-- [ ] `ScriptRunner` port + adapter — explicit cwd, **no shell-string interpolation of untrusted names** (pass
-  args safely), timeouts, captured exit/stderr (I17, R3).
-- [ ] **Worktree create contract** — `createWorktree <task-name> <branch-name>`; cwd `$OCTOPUS_REPO_ROOT`; env
-  `OCTOPUS_REPO_ROOT`/`OCTOPUS_TASK_ID`/`OCTOPUS_VERSION`; first stdout line = abs path; exit 0 = success;
-  30 s timeout → SIGTERM/2 s/SIGKILL (DESIGN §6.4).
-- [ ] **Path validation** — absolute, exists, is directory; store verbatim; optional (non-rejecting) git-worktree
-  warning; best-effort rollback via delete script on failure (DESIGN §6.4, §12.4).
-- [ ] **Worktree delete contract** + safety checks — path sanity (exactly the returned path; not `/`, not
-  `OCTOPUS_REPO_ROOT` nor ancestor), uncommitted-changes check (`git status --porcelain`), all sessions killed
-  first; stderr (≤64 KB) surfaced (DESIGN §6.4, I4).
-- [ ] `SessionManager` / `SessionRuntime` ports + **`PtyTerminalRuntime`** (node-pty) — `start()/stop()/dispose()`,
+- [x] `WorktreeProvider` port + **`SelectingWorktreeProvider`** adapter composing **`ScriptWorktreeProvider`**
+  (repo-local `create_worktree.sh`/`delete_worktree.sh`) and **`NativeGitWorktreeProvider`** (Octopus runs
+  git). Port *interface* shape unchanged (§10); request payloads gain `repoDir`/`sourceBranch`/`newBranch`.
+  Selector probes `<repoDir>/*.sh` **per call** and delegates (DESIGN §6.4). *(Refactor of the old
+  `ShellScriptWorktreeProvider`, which read script paths from global settings.)*
+  - [x] Pure **`worktree-path.ts`** — `sanitizeBranchForDir(branch)` + `computeWorktreePath({base,newBranch,taskId})`
+    → flat `<base>/<sanitized-new-branch>-<short-task-id>` (mirrors the pure `paths.ts` resolver).
+  - [x] Existence probe for `<repoDir>/create_worktree.sh` / `delete_worktree.sh` (model on
+    `fs/dir-exists.ts` / `fs-path-probe.ts`).
+- [x] `ScriptRunner` port + adapter — explicit cwd, **no shell-string interpolation of untrusted names** (pass
+  args safely), timeouts, captured exit/stderr (I17, R3). *(Reused unchanged for native `git` too.)*
+- [x] **Worktree create contract** (dual) — repo-local `create_worktree.sh <source-branch> <new-branch>`
+  (first stdout line = abs path) **or** native `git -C <repoDir> worktree add -b <new-branch> <computed-path>
+  <source-branch>` under `worktree.location`; cwd `repoDir`; env `OCTOPUS_REPO_ROOT`(=`repoDir`)/`OCTOPUS_TASK_ID`/
+  `OCTOPUS_VERSION`; exit 0 = success; 30 s timeout → SIGTERM/2 s/SIGKILL (DESIGN §6.4).
+- [x] **Path validation** — absolute, exists, is directory; store verbatim; optional (non-rejecting) git-worktree
+  warning (DESIGN §6.4, §12.4). *(`path-safety.ts` reused for both providers.)*
+- [x] **Worktree delete contract** (dual) + safety checks — repo-local `delete_worktree.sh <task-name>
+  <worktree-path>` **or** native `git -C <repoDir> worktree remove <path>` (`--force` when the user confirmed a
+  dirty delete); path sanity (exactly the stored path; not `/`, not `repoDir` nor ancestor), uncommitted-changes
+  check (`git status --porcelain`), all sessions killed first; stderr (≤64 KB) surfaced (DESIGN §6.4, I4).
+- [x] `SessionManager` / `SessionRuntime` ports + **`PtyTerminalRuntime`** (node-pty) — `start()/stop()/dispose()`,
   type-neutral output/interaction handle, `stateEvaluator()` **returns null in V1** (DESIGN §6.2, §8, §10 V1).
-- [ ] PTY spawn config — login shell (`-l`), `cwd` = worktree path, `TERM=xterm-256color`,
+- [x] PTY spawn config — login shell (`-l`), `cwd` = worktree path, `TERM=xterm-256color`,
   `COLORTERM=truecolor`, `OCTOPUS_*` env, strip `TMUX/STY/WINDOWID` (DESIGN §6.1).
-- [ ] PTY resize — `ResizeObserver` (debounced ~50 ms) → `fit()` → `pty:resize` → `pty.resize` → `TIOCSWINSZ`
+- [x] PTY resize — `ResizeObserver` (debounced ~50 ms) → `fit()` → `pty:resize` → `pty.resize` → `TIOCSWINSZ`
   (DESIGN §6.1).
-- [ ] PTY exit handling — node-pty `onExit` reaps child → mark `Exited`, emit `sessionExited`, retain scrollback
+- [x] PTY exit handling — node-pty `onExit` reaps child → mark `Exited`, emit `sessionExited`, retain scrollback
   (DESIGN §6.1).
-- [ ] `WorkspacePersistence` port + **`SqliteStore`** (better-sqlite3) (DESIGN §6.3).
-- [ ] SQLite schema — `tasks`, `sessions` (with `state` default `'unknown'`), `app_state`; `branch`/`repo_root`
-  nullable; `sessions.task_id ... ON DELETE CASCADE` (DESIGN §6.3).
-- [ ] Persist/restore logic — persist task+session definitions, active task; restore = fresh PTY per terminal
+- [x] `WorkspacePersistence` port + **`SqliteStore`** (better-sqlite3) (DESIGN §6.3).
+- [x] SQLite schema — `tasks`, `sessions` (with `state` default `'unknown'`), `app_state`;
+  `branch`/`base_ref`/`repo_root` nullable; `sessions.task_id ... ON DELETE CASCADE` (DESIGN §6.3). *(Added
+  `base_ref TEXT` to persist the source branch; bumped `SCHEMA_VERSION` 1→2 with a guarded, idempotent
+  `ALTER TABLE tasks ADD COLUMN base_ref TEXT` when `user_version < 2` — first use of the migration seam.)*
+- [x] Persist/restore logic — persist task+session definitions, active task; restore = fresh PTY per terminal
   session at worktree cwd (I15, DESIGN §6.3).
-- [ ] `settings.json` sibling file for global settings (`scripts.createWorktree`, `scripts.deleteWorktree`,
-  `terminal.shell`, default session type) (DESIGN §6.3, §6.4).
-- [ ] Supporting ports: `IdGenerator`, `Clock`, `EventBus` (DESIGN §10 V1).
-- [ ] **`CredentialsProvider` port shape defined** (no implementation) so V3 doesn't retrofit secret handling
+- [x] `settings.json` sibling file for global settings (`worktree.location` base dir — default
+  `~/octopus_repos/`, resolved from home via a pure resolver + effectful ensure-dir like `paths.ts`;
+  `terminal.shell`; default session type; `worktreeCreateTimeoutMs`) (DESIGN §6.3, §6.4). *(Replaces the old
+  `scripts.createWorktree`/`scripts.deleteWorktree` global keys — worktree scripts are now repo-local. Stale
+  `scripts` blocks are silently dropped by `mergeSettings`; no settings migration needed.)*
+- [x] Supporting ports: `IdGenerator`, `Clock`, `EventBus` (DESIGN §10 V1).
+- [x] **`CredentialsProvider` port shape defined** (no implementation) so V3 doesn't retrofit secret handling
   (I16, §10 V1 seams).
 
 ### Session-type registry — DESIGN §8
 
-- [ ] `SessionTypeProvider` (application edge) — populates the New-Session dropdown purely from the registry
+- [x] `SessionTypeProvider` (application edge) — populates the New-Session dropdown purely from the registry
   (filtered by `availableFromVersion ≤ currentVersion`).
-- [ ] `SessionViewFactory` (UI, keyed by same `typeId`) — `mount(runtimeHandle, container)` / `unmount()`.
-- [ ] Register **Terminal** type statically (`EvaluatesState` **off** in V1) at the composition root (§10 V1).
+- [x] `SessionViewFactory` (UI, keyed by same `typeId`) — `mount(runtimeHandle, container)` / `unmount()`.
+- [x] Register **Terminal** type statically (`EvaluatesState` **off** in V1) at the composition root (§10 V1).
 
 ### IPC — DESIGN §6.5
 
-- [ ] Preload exposes only a typed **`window.octopusAPI`** via `contextBridge`; renderer never touches
+- [x] Preload exposes only a typed **`window.octopusAPI`** via `contextBridge`; renderer never touches
   `ipcRenderer`/Node (DESIGN §5.5).
-- [ ] Request/reply commands via `ipcMain.handle` with renderer-generated `requestId`: `createTask`,
-  `deleteTask{force?}`, `renameTask`, `reorderTask`, `createSession`, `closeSession`, `renameSession`,
-  `reorderSession`, `writeToPty`, `resizePty`, `getState`, `updateSettings` (DESIGN §6.5).
-- [ ] Streaming `ptyData` via `webContents.send` (avoid head-of-line blocking) (DESIGN §6.5).
-- [ ] Backend→UI events: `ptyData`, `sessionCreated`, `sessionExited`, `sessionClosed`, `taskCreated`,
+- [x] Request/reply commands via `ipcMain.handle` with renderer-generated `requestId`:
+  `createTask{name,repoDir,sourceBranch,newBranch}`, `deleteTask{force?}`, `renameTask`, `reorderTask`,
+  `createSession`, `closeSession`, `renameSession`, `reorderSession`, `writeToPty`, `resizePty`, `getState`,
+  `updateSettings` (DESIGN §6.5). *(`createTask` input reworked to four fields.)*
+- [x] **Directory-picker query** `dialog:pickDirectory` — stateless main-side `ipcMain.handle` returning an
+  absolute path or `undefined` (native `dialog.showOpenDialog`, `['openDirectory','createDirectory']`); does
+  **not** go through the command loop (like `getState`). Exposed as `octopusAPI.dialog.pickDirectory()` (DESIGN
+  §5.4, §6.5). *(The one place Electron `dialog`/`BrowserWindow` is introduced.)*
+- [x] Streaming `ptyData` via `webContents.send` (avoid head-of-line blocking) (DESIGN §6.5).
+- [x] Backend→UI events: `ptyData`, `sessionCreated`, `sessionExited`, `sessionClosed`, `taskCreated`,
   `taskDeleted`, `taskRenamed`, `taskStale`, `scriptProgress`, `scriptError`, `error`; plus
   `sessionStateChanged`/`taskStateChanged` **defined but dormant** (DESIGN §6.5, §10 V1).
-- [ ] Keep message set transport-agnostic (V2 daemon can carry it over a Unix socket unchanged) (DESIGN §6.5).
+- [x] Keep message set transport-agnostic (V2 daemon can carry it over a Unix socket unchanged) (DESIGN §6.5).
 
 ### Concurrency & resilience — DESIGN §6.6
 
-- [ ] **Output batching / back-pressure** — per-session accumulator flushed on 16 ms (60 Hz) timer or at 256 KB
+- [x] **Output batching / back-pressure** — per-session accumulator flushed on 16 ms (60 Hz) timer or at 256 KB
   cap (DESIGN §6.6).
-- [ ] **Inactive tabs** — don't send `ptyData`; append to per-session ring buffer (~500 KB) and replay on tab
+- [~] **Inactive tabs** — don't send `ptyData`; append to per-session ring buffer (~500 KB) and replay on tab
   activation (DESIGN §6.6, §5.3).
 - [ ] V2+ note: spawn each shell via `setsid` (group-kill descendants) — *defer to V2* (DESIGN §6.1). *(V1 uses
   SIGHUP/SIGKILL to the single PTY.)*
 
 ### UI (Renderer) — DESIGN §5
 
-- [ ] **Zustand store** — `tasks`, `sessions`, `activeTaskId`, `activeSessionId` (per task). **`ptyData` bypasses
+- [x] **Zustand store** — `tasks`, `sessions`, `activeTaskId`, `activeSessionId` (per task). **`ptyData` bypasses
   the store**, delivered by IPC directly to the target `TerminalPane` (DESIGN §5.2).
-- [ ] Startup hydration via `app:getInitialState`; thereafter lifecycle events patch the store (DESIGN §5.2).
-- [ ] Component tree scaffold: `App → ProgressPanel + TaskWorkspace` (DESIGN §5.1).
-- [ ] **`ProgressPanel`** — `PanelHeader (NewTaskButton, DeleteTaskButton)` + `TaskList → TaskListItem*`
+- [x] Startup hydration via `app:getState`; thereafter lifecycle events patch the store (DESIGN §5.2).
+- [~] Component tree scaffold: `App → ProgressPanel + TaskWorkspace` (DESIGN §5.1).
+- [~] **`ProgressPanel`** — `PanelHeader (NewTaskButton, DeleteTaskButton)` + `TaskList → TaskListItem*`
   (label only in V1; `TaskStatusIcon` is V2) (DESIGN §5.1, PRD §Progress Window).
-- [ ] **`TaskWorkspace → TaskView*`** — one per task; **all mounted, only active visible** (DESIGN §5.1, §5.3).
-- [ ] **`SessionTabBar`** — `NewSessionDropdown` (registry-driven) + `SessionTab*` (no status icon in V1) (DESIGN §5.1).
-- [ ] **`SessionPaneArea → SessionPane*`** — `TerminalPane` (JenkinsPane is V3) (DESIGN §5.1).
-- [ ] **`TerminalPane`** — xterm.js instance created once in `useRef`/`useEffect([])`, never destroyed until
+- [x] **`TaskWorkspace → TaskView*`** — one per task; **all mounted, only active visible** (DESIGN §5.1, §5.3).
+- [~] **`SessionTabBar`** — `NewSessionDropdown` (registry-driven) + `SessionTab*` (no status icon in V1) (DESIGN §5.1).
+- [x] **`SessionPaneArea → SessionPane*`** — `TerminalPane` (JenkinsPane is V3) (DESIGN §5.1).
+- [x] **`TerminalPane`** — xterm.js instance created once in `useRef`/`useEffect([])`, never destroyed until
   session close (DESIGN §5.3).
-- [ ] xterm.js addons: `fit`, `webgl` (canvas fallback), `search`, `web-links`, `unicode11`, `serialize`;
+- [x] xterm.js addons: `fit`, `webgl` (canvas fallback), `search`, `web-links`, `unicode11`, `serialize`;
   scrollback bounded ~10 000 lines (DESIGN §4, §5.3).
-- [ ] **Keep-alive on task switch (critical)** — hidden sessions use `visibility:hidden; position:absolute;
+- [x] **Keep-alive on task switch (critical)** — hidden sessions use `visibility:hidden; position:absolute;
   width/height:0` (NOT `display:none`); `terminal.write` keeps running for hidden sessions (DESIGN §5.3).
-- [ ] On show: `fitAddon.fit()` → `pty:resize` → `terminal.refresh(0, rows-1)`; on hide: nothing (DESIGN §5.3).
+- [x] On show: `fitAddon.fit()` → `pty:resize` → `terminal.refresh(0, rows-1)`; on hide: nothing (DESIGN §5.3).
 - [ ] **WebGL context scale mitigation** — above ~15 concurrent sessions, demote hidden terminals to Canvas
   renderer (DESIGN §5.3).
-- [ ] Data flow wiring: keystroke `xterm onData → octopusAPI.pty.input → ipcMain → pty.write`; output
+- [x] Data flow wiring: keystroke `xterm onData → octopusAPI.pty.input → ipcMain → pty.write`; output
   `pty onData → batched → send('pty:data') → terminal.write` (DESIGN §5.2).
-- [ ] **New Task modal** — name + branch (branch prefilled with slug from name, e.g. `feature/add-feature-1`);
-  spinner during create script; on success task becomes active/empty; on failure red stderr block + Retry +
-  toast (DESIGN §5.4, §12.3).
-- [ ] **New Session dropdown** — populated from registry; Terminal creates immediately (DESIGN §5.4).
+- [x] **New Task modal** — four fields: **name**, **repo directory** (read-only + "Browse…" calling
+  `octopusAPI.dialog.pickDirectory()`), **source branch** (editable, `main` placeholder), **new branch**
+  (prefilled with `taskNameToBranchSlug(name)` until the user edits it, e.g. `feature/add-feature-1`).
+  Client-side validation gates "Create Task"; spinner while provisioning; on success task becomes
+  active/empty; on failure inline red stderr block + Retry + toast (DESIGN §5.4, §12.3). Replaces the inline
+  name input in `App.tsx`.
+- [~] **New Session dropdown** — populated from registry; Terminal creates immediately (DESIGN §5.4).
 - [ ] **Delete Task** — confirm dialog ("closes all sessions and removes the worktree"); extra "uncommitted
   changes — delete anyway?" confirmation on dirty worktree (DESIGN §5.4).
-- [ ] **Tabs UX** — horizontal scroll + chevrons on overflow; "…" overflow menu beyond ~8 tabs; drag-reorder via
+- [~] **Tabs UX** — horizontal scroll + chevrons on overflow; "…" overflow menu beyond ~8 tabs; drag-reorder via
   `@dnd-kit/core`; per-tab `×` close (fires `pty:destroy`) (DESIGN §5.4).
 - [ ] **Keyboard shortcuts** — `Ctrl+Shift+]`/`[` cycle tasks; `Ctrl+Tab`/`Ctrl+Shift+Tab` cycle sessions;
   `Ctrl+Shift+T` new terminal; `Ctrl+Shift+N` new task; `Ctrl+Shift+W` close session; `Ctrl+Shift+F` search;
   `Ctrl+Shift+C/V` copy/paste; `Esc` close modal. **Only Shift-modified shortcuts intercepted globally** so
   terminal `Ctrl+C` is never stolen (DESIGN §5.4).
-- [ ] **Empty states & toasts** — "No tasks yet", "No sessions", inline "Connecting…"; bottom-right toasts for
+- [~] **Empty states & toasts** — "No tasks yet", "No sessions", inline "Connecting…"; bottom-right toasts for
   script failures / unexpected PTY exit (DESIGN §5.4).
 
 ### V1 dormant seams (explicit — must exist, unused) — DESIGN §10 V1
 
-- [ ] `capabilities.EvaluatesState` present (Terminal **off**).
-- [ ] `SessionRuntime.stateEvaluator()` returns `null`.
-- [ ] `EventBus` carries state events (dormant).
-- [ ] Aggregator called but yields `Unknown`; UI renders **no icons**.
-- [ ] View resolution keyed by `typeId`.
-- [ ] `SessionConfig` validated against `configSchema`.
-- [ ] `OCTOPUS_STATE_SOCKET` env + per-session socket dir `/tmp/octopus-<uid>/` (`chmod 700`) **provisioned but
+- [x] `capabilities.EvaluatesState` present (Terminal **off**).
+- [x] `SessionRuntime.stateEvaluator()` returns `null`.
+- [x] `EventBus` carries state events (dormant).
+- [x] Aggregator called but yields `Unknown`; UI renders **no icons**.
+- [x] View resolution keyed by `typeId`.
+- [x] `SessionConfig` validated against `configSchema`.
+- [x] `OCTOPUS_STATE_SOCKET` env + per-session socket dir `/tmp/octopus-<uid>/` (`chmod 700`) **provisioned but
   unused** (DESIGN §9.2, §10 V1).
-- [ ] `CredentialsProvider` port shape defined.
+- [x] `CredentialsProvider` port shape defined.
 
 ### V1 Testing — DESIGN §11
 
-- [ ] Unit: aggregation combinations (all yield `Unknown` in V1), lifecycle state machines, invariants I1–I12.
-- [ ] Unit: path validation & delete safety-check logic (containment, sanity).
-- [ ] Integration: create/delete against a throwaway repo with fake create/delete scripts.
-- [ ] Integration: PTY spawn at correct cwd, resize, exit/scrollback retention.
-- [ ] Integration: restart reconciliation (worktree missing → `Stale`; present → fresh shell).
+- [x] Unit: aggregation combinations (all yield `Unknown` in V1), lifecycle state machines, invariants I1–I12.
+- [x] Unit: path validation & delete safety-check logic (containment, sanity).
+- [x] Unit: pure `worktree-path.ts` (`sanitizeBranchForDir`, flat `computeWorktreePath`); default-base resolver
+  in `paths.test.ts`; `SelectingWorktreeProvider` probe dispatch (script present → script; absent → native);
+  `NativeGitWorktreeProvider` argv/cwd/env, non-zero + timeout reject, safe-delete guard, `--force` on
+  confirmed-dirty (fake `ScriptRunner`); `ScriptWorktreeProvider` repo-local contract; SQLite v2 migration.
+- [x] Integration: create/delete against a throwaway repo — both provisioning paths: a repo **with**
+  `create_worktree.sh`/`delete_worktree.sh` (script contract) and a repo **without** (native `git worktree
+  add`/`remove` under `worktree.location`); gated on `git` availability.
+- [x] Integration: PTY spawn at correct cwd, resize, exit/scrollback retention.
+- [~] Integration: restart reconciliation (worktree missing → `Stale`; present → fresh shell).
 - [ ] E2E smoke: create task → open terminal → run command → switch task (buffer preserved) → delete task.
 
 ---

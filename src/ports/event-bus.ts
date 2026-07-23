@@ -1,0 +1,148 @@
+/**
+ * The domain event bus (DESIGN §6.6, §8). Adapters do I/O off the single-writer
+ * command loop and feed results back as events; the application publishes
+ * lifecycle events that the main process forwards to the renderer (§6.5).
+ *
+ * The union already carries `sessionStateChanged`/`taskStateChanged` — the §10
+ * V1 seam. Nobody emits them in V1 (Terminal lacks `EvaluatesState`), but the
+ * bus, the IPC event DTO and the store all understand them, so V2 only has to
+ * start *emitting* them. Signatures do not change across versions.
+ *
+ * `ptyData` also flows over this bus. It is high-frequency; the main-process
+ * forwarder sends it via `webContents.send` so it never blocks command replies
+ * (§6.5), and the renderer routes it straight to the terminal, bypassing the
+ * store (§5.2).
+ */
+
+import type { TaskId, SessionId } from '../domain/ids'
+import type { SessionState, TaskState } from '../domain/state'
+import type { TaskSnapshot, SessionSnapshot } from '../domain/snapshots'
+
+/** High-frequency terminal output for one session (§6.5, §5.2). */
+export interface PtyDataEvent {
+  readonly type: 'ptyData'
+  readonly sessionId: SessionId
+  readonly data: string
+}
+
+// ── Session lifecycle events (§6.5) ────────────────────────────────────────────
+
+export interface SessionCreatedEvent {
+  readonly type: 'sessionCreated'
+  readonly taskId: TaskId
+  readonly session: SessionSnapshot
+}
+export interface SessionExitedEvent {
+  readonly type: 'sessionExited'
+  readonly taskId: TaskId
+  readonly sessionId: SessionId
+  readonly exitCode?: number
+}
+export interface SessionClosedEvent {
+  readonly type: 'sessionClosed'
+  readonly taskId: TaskId
+  readonly sessionId: SessionId
+}
+export interface SessionRenamedEvent {
+  readonly type: 'sessionRenamed'
+  readonly taskId: TaskId
+  readonly sessionId: SessionId
+  readonly title: string
+}
+export interface SessionReorderedEvent {
+  readonly type: 'sessionReordered'
+  readonly taskId: TaskId
+  readonly orderedSessionIds: readonly SessionId[]
+}
+
+// ── Task lifecycle events (§6.5) ────────────────────────────────────────────────
+
+export interface TaskCreatedEvent {
+  readonly type: 'taskCreated'
+  readonly task: TaskSnapshot
+}
+export interface TaskDeletedEvent {
+  readonly type: 'taskDeleted'
+  readonly taskId: TaskId
+}
+export interface TaskRenamedEvent {
+  readonly type: 'taskRenamed'
+  readonly taskId: TaskId
+  readonly name: string
+}
+export interface TaskReorderedEvent {
+  readonly type: 'taskReordered'
+  readonly orderedTaskIds: readonly TaskId[]
+}
+export interface TaskStaleEvent {
+  readonly type: 'taskStale'
+  readonly taskId: TaskId
+}
+export interface ActiveTaskChangedEvent {
+  readonly type: 'activeTaskChanged'
+  readonly taskId?: TaskId
+}
+
+// ── Script progress/error (worktree create/delete) (§6.4) ────────────────────────
+
+export interface ScriptProgressEvent {
+  readonly type: 'scriptProgress'
+  readonly taskId: TaskId
+  readonly line: string
+}
+export interface ScriptErrorEvent {
+  readonly type: 'scriptError'
+  readonly taskId: TaskId
+  readonly script: string
+  readonly exitCode: number | null
+  readonly stderr: string
+}
+
+/** Generic non-fatal error surfaced to the UI as a toast (§5.4). */
+export interface ErrorEvent {
+  readonly type: 'error'
+  readonly message: string
+  readonly taskId?: TaskId
+  readonly sessionId?: SessionId
+}
+
+// ── Dormant V2 state seams (§10 V1) — emitted by nobody in V1 ─────────────────────
+
+export interface SessionStateChangedEvent {
+  readonly type: 'sessionStateChanged'
+  readonly sessionId: SessionId
+  readonly state: SessionState
+}
+export interface TaskStateChangedEvent {
+  readonly type: 'taskStateChanged'
+  readonly taskId: TaskId
+  readonly state: TaskState
+}
+
+/** Every event that can flow over the bus. Discriminated on `type`. */
+export type DomainEvent =
+  | PtyDataEvent
+  | SessionCreatedEvent
+  | SessionExitedEvent
+  | SessionClosedEvent
+  | SessionRenamedEvent
+  | SessionReorderedEvent
+  | TaskCreatedEvent
+  | TaskDeletedEvent
+  | TaskRenamedEvent
+  | TaskReorderedEvent
+  | TaskStaleEvent
+  | ActiveTaskChangedEvent
+  | ScriptProgressEvent
+  | ScriptErrorEvent
+  | ErrorEvent
+  | SessionStateChangedEvent
+  | TaskStateChangedEvent
+
+export type EventHandler = (event: DomainEvent) => void
+export type Unsubscribe = () => void
+
+export interface EventBus {
+  publish(event: DomainEvent): void
+  subscribe(handler: EventHandler): Unsubscribe
+}
