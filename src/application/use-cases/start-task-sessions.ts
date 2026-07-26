@@ -21,6 +21,7 @@ import type { AppDependencies } from '../dependencies'
 import type { TaskId } from '../../domain/ids'
 import { TaskLifecycle, SessionLifecycle } from '../../domain/lifecycle'
 import { startSessionRuntime } from './start-session-runtime'
+import { sanitizeRestoredHistory } from './sanitize-restored-history'
 
 export async function startTaskSessions(deps: AppDependencies, taskId: TaskId): Promise<void> {
   const task = deps.workspace.task(taskId)
@@ -46,13 +47,19 @@ export async function startTaskSessions(deps: AppDependencies, taskId: TaskId): 
     // keeps the buffer accumulating across restarts. We emit history even if the
     // spawn below fails: a restored-but-failed tab showing prior output beats a
     // blank one, and matches "history is independent of the live PTY".
+    // `sanitizeRestoredHistory` makes the stale display copy (I13) safe to replay: it
+    // strips one-shot query *requests* (whose replies would echo as garbage like
+    // `0;276;0c` / `11;rgb:…`) and appends a reset of input-reporting DEC modes (focus
+    // `?1004`, mouse, bracketed paste) so a mode left enabled by the old bytes can't
+    // emit input into the fresh PTY (the `^[[I` focus-report symptom). The raw bytes
+    // still go to the live buffer.
     const history = deps.persistence.loadScrollback(session.id)
     if (history) {
       deps.scrollbacks.append(session.id, history)
       deps.bus.publish({
         type: 'ptyData',
         sessionId: session.id,
-        data: `\x1b[m${history}\r\n\x1b[2m──── session restored ────\x1b[0m\r\n`
+        data: `\x1b[m${sanitizeRestoredHistory(history)}\r\n\x1b[2m──── session restored ────\x1b[0m\r\n`
       })
     }
     try {

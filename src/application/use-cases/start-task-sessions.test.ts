@@ -100,6 +100,28 @@ describe('startTaskSessions restore ordering (§6.3)', () => {
     )
   })
 
+  it('strips query-request sequences from the restored history (no replayed-query garbage)', async () => {
+    const taskId = asTaskId('task-1')
+    const sessionId = asSessionId('session-1')
+    const f = makeDeps({ snapshot: restoredSnapshot('task-1', 'session-1') })
+    // Raw history with a DA1 request and an OSC 11 bg-color query embedded — the two
+    // whose replies produced the `0;276;0c` / `11;rgb:…` echo garbage on restore.
+    f.persistence.saveScrollback(sessionId, 'PRIOR_OUTPUT\x1b[c\x1b]11;?\x07')
+
+    await startTaskSessions(f.deps, taskId)
+
+    const historyIdx = f.bus.events.findIndex(
+      (e) => e.type === 'ptyData' && e.data.includes('PRIOR_OUTPUT')
+    )
+    const history = f.bus.events[historyIdx]
+    expect(history.type === 'ptyData' && history.data).toContain('session restored')
+    // Query requests were stripped from the display copy so xterm answers none of them.
+    expect(history.type === 'ptyData' && history.data).not.toContain('\x1b[c')
+    expect(history.type === 'ptyData' && history.data).not.toContain('\x1b]11;?')
+    // But the raw bytes are still kept in the live buffer for the next restart.
+    expect(f.scrollbacks.snapshot(sessionId)).toContain('\x1b[c')
+  })
+
   it('emits no history event when there is no persisted scrollback', async () => {
     const taskId = asTaskId('task-1')
     const f = makeDeps({ snapshot: restoredSnapshot('task-1', 'session-1') })
