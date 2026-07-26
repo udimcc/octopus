@@ -8,6 +8,16 @@ import { app, BrowserWindow } from 'electron'
 import { bootstrap, type AppContext } from './composition-root'
 import { createWindow, registerQuitHandler } from './window'
 
+// On a GPU-less display (e.g. a VMware Horizon VDI) Chromium's WebGL falls back to
+// SwiftShader (software). We deliberately probe WebGL once at startup to detect
+// this and demote terminals to xterm's DOM renderer (DESIGN §5.3), but creating
+// that probe context otherwise makes the GPU process log a scary ERROR (a
+// "deprecated software-WebGL fallback" warning, or `kFatalFailure` under
+// fail-on-caveat). This switch — the one Chromium itself names in that message —
+// opts into software WebGL explicitly so the probe (and any future WebGL surface)
+// runs quietly. It's a no-op on a real GPU. Must be set before `app` is ready.
+app.commandLine.appendSwitch('enable-unsafe-swiftshader')
+
 // Prepare the runtime environment and wire adapters before any window opens.
 const ctx: AppContext = bootstrap()
 registerQuitHandler(ctx)

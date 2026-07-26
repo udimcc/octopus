@@ -23,6 +23,12 @@
  * instead — still accelerated, and it holds no WebGL context. If even Canvas can't
  * be constructed we dispose nothing extra and xterm's built-in DOM renderer stays
  * as the last-resort fallback.
+ *
+ * BUT the accelerated tiers are skipped entirely on a software-GL display
+ * (SwiftShader/llvmpipe, e.g. a VMware VDI with no GPU): there WebGL/Canvas
+ * "succeed" but stall on a per-frame `ReadPixels` pixel readback, so the DOM
+ * renderer (no canvas, no readback) is actually the fastest path. `probeGpuTier`
+ * detects this once and `applyRendererTier` then leaves xterm on its DOM renderer.
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -38,6 +44,7 @@ import '@xterm/xterm/css/xterm.css'
 import { registerTerminalSink, unregisterTerminalSink } from '../pty/pty-router'
 import { registerSearchOpener, unregisterSearchOpener } from './terminal-search'
 import { webglBudget } from './webgl-budget'
+import { probeGpuTier } from './gpu-capability'
 import { color, radius, shadow, terminalTheme } from '../style/tokens'
 
 export interface TerminalPaneProps {
@@ -85,6 +92,9 @@ function loadCanvas(term: Terminal, ref: React.MutableRefObject<LoadedRenderer |
  * Bring the pane's renderer to the tier `active` warrants: WebGL for the visible
  * pane (if a lease is free), Canvas otherwise. Swaps only when the tier actually
  * changes, so a re-render with no visibility change is a no-op.
+ *
+ * On a software-GL display both accelerated tiers are skipped (they'd stall on
+ * per-frame `ReadPixels`); we hold no lease and leave xterm on its DOM renderer.
  */
 function applyRendererTier(
   sessionId: string,
@@ -92,6 +102,15 @@ function applyRendererTier(
   ref: React.MutableRefObject<LoadedRenderer | null>,
   active: boolean
 ): void {
+  // No real GPU (SwiftShader/llvmpipe/no-WebGL): the DOM renderer is fastest here.
+  // Drop any accelerated addon we somehow hold, release the lease, and stop.
+  if (probeGpuTier() !== 'hardware') {
+    ref.current?.addon.dispose()
+    ref.current = null
+    webglBudget.release(sessionId)
+    return
+  }
+
   const wantWebgl = active && webglBudget.acquire(sessionId)
   const current = ref.current
 

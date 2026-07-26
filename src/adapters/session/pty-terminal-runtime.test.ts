@@ -126,17 +126,17 @@ describe('PtyTerminalRuntime.start (§6.1)', () => {
     await expect(rt.start()).rejects.toThrow(/spawn boom/)
   })
 
-  it('batches PTY output through to ctx.onData', async () => {
+  it('batches PTY output through to ctx.onData (leading edge + trailing coalesce)', async () => {
     const timers = manualTimers()
     const h = harness()
     const rt = new PtyTerminalRuntime(h.ctx, { spawn: h.spawn, shell: '/bin/bash', timers })
     await rt.start()
 
-    h.fakePty.emitData('foo')
-    h.fakePty.emitData('bar')
-    expect(h.onData).toEqual([]) // batched, not yet flushed
+    h.fakePty.emitData('foo') // idle buffer → flushed immediately (§11 <5 ms)
+    h.fakePty.emitData('bar') // within the trailing window → queued
+    expect(h.onData).toEqual(['foo'])
     timers.run()
-    expect(h.onData).toEqual(['foobar'])
+    expect(h.onData).toEqual(['foo', 'bar'])
   })
 })
 
@@ -175,11 +175,13 @@ describe('PtyTerminalRuntime spontaneous exit vs user stop (§3.6/§6.1)', () =>
     const rt = new PtyTerminalRuntime(h.ctx, { spawn: h.spawn, shell: '/bin/bash', timers })
     await rt.start()
 
-    h.fakePty.emitData('final output')
+    h.fakePty.emitData('final ') // leads (idle) → emitted immediately
+    h.fakePty.emitData('output') // within the trailing window → queued, not yet flushed
+    expect(h.onData).toEqual(['final '])
     h.fakePty.emitExit(0)
 
-    // Exit flushes the batcher immediately (no timer wait), then signals onExit.
-    expect(h.onData).toEqual(['final output'])
+    // Exit flushes the queued window immediately (no timer wait), then signals onExit.
+    expect(h.onData).toEqual(['final ', 'output'])
     expect(h.exits).toEqual([{ code: 0, signal: undefined }])
   })
 

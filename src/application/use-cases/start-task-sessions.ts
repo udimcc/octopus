@@ -36,30 +36,34 @@ export async function startTaskSessions(deps: AppDependencies, taskId: TaskId): 
     if (session.lifecycle !== SessionLifecycle.Created) {
       continue // already Running/Exited/etc — nothing to start
     }
+    // Replay any persisted scrollback (§6.6) BEFORE the PTY spawn, so history
+    // paints without waiting on the shell fork (which is the slow step on restore).
+    // History is metadata (I13), independent of a live PTY: published as an ordinary
+    // `ptyData` event, it lands in the renderer's pre-mount buffer and drains into
+    // the terminal the instant its sink registers — history first, then a dim
+    // separator, then (after the spawn below wires `pty.onData`) the live prompt.
+    // `\x1b[m` clears any SGR state left dangling in the raw bytes; re-appending
+    // keeps the buffer accumulating across restarts. We emit history even if the
+    // spawn below fails: a restored-but-failed tab showing prior output beats a
+    // blank one, and matches "history is independent of the live PTY".
+    const history = deps.persistence.loadScrollback(session.id)
+    if (history) {
+      deps.scrollbacks.append(session.id, history)
+      deps.bus.publish({
+        type: 'ptyData',
+        sessionId: session.id,
+        data: `\x1b[m${history}\r\n\x1b[2m──── session restored ────\x1b[0m\r\n`
+      })
+    }
     try {
       await startSessionRuntime(deps, task, session, worktree)
-      // Replay any persisted scrollback (§6.6) BEFORE `sessionCreated` and before
-      // the fresh shell's first output: published as an ordinary `ptyData` event,
-      // it lands in the renderer's pre-mount buffer and drains into the terminal
-      // the instant its sink registers — history first, then a dim separator, then
-      // the live prompt. `\x1b[m` clears any SGR state left dangling in the raw
-      // bytes; re-appending keeps the buffer accumulating across restarts.
-      const history = deps.persistence.loadScrollback(session.id)
-      if (history) {
-        deps.scrollbacks.append(session.id, history)
-        deps.bus.publish({
-          type: 'ptyData',
-          sessionId: session.id,
-          data: `\x1b[m${history}\r\n\x1b[2m──── session restored ────\x1b[0m\r\n`
-        })
-      }
       // Persist the (now Running) definition and re-announce as an upsert so the
       // store reflects the running lifecycle and wires output.
       deps.persistence.upsertSession(session.toSnapshot())
       deps.bus.publish({ type: 'sessionCreated', taskId, session: session.toSnapshot() })
     } catch {
       // startSessionRuntime already marked StartFailed, disposed, and emitted an
-      // error event. Keep the restored tab; move on to the next session.
+      // error event. History was already published above. Move on to the next session.
     }
   }
 }

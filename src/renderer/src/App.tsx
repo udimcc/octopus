@@ -29,7 +29,17 @@ export function App(): React.JSX.Element {
 
   useEffect(() => {
     const unsubscribe = initEventRouting(applyEvent)
-    void window.octopusAPI.app.getState().then(hydrate)
+    void window.octopusAPI.app.getState().then((state) => {
+      hydrate(state)
+      // Kick off restore of the initially-active task's sessions NOW (§6.3): the
+      // backend only spawns a restored task's PTYs (and replays their scrollback)
+      // inside `switchTask → startTaskSessions`, and nothing else fires a switch at
+      // launch. Without this, history for the active task wouldn't appear until the
+      // user clicked around. The backend pointer is already this id (set by
+      // `Workspace.hydrate`), so this switch skips the pointer move + event and only
+      // runs the idempotent session start.
+      if (state.activeTaskId) void window.octopusAPI.tasks.switch({ taskId: state.activeTaskId })
+    })
     return unsubscribe
   }, [hydrate, applyEvent])
 

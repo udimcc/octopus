@@ -14,6 +14,9 @@ import { render, cleanup } from '@testing-library/react'
 
 const h = vi.hoisted(() => {
   const onDataDispose = vi.fn()
+  // Default to a real GPU so the WebGL/Canvas tier assertions below hold; the
+  // software-GL cases override this per-test.
+  const gpuTier = vi.fn(() => 'hardware' as 'hardware' | 'software' | 'none')
   interface FakeTerm {
     cols: number
     rows: number
@@ -28,7 +31,7 @@ const h = vi.hoisted(() => {
     onData(cb: (d: string) => void): { dispose: () => void }
   }
   const instances: FakeTerm[] = []
-  return { onDataDispose, instances }
+  return { onDataDispose, instances, gpuTier }
 })
 
 vi.mock('@xterm/xterm', () => ({
@@ -64,15 +67,24 @@ vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: class {} }))
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }))
 vi.mock('@xterm/addon-webgl', () => ({
   WebglAddon: class {
+    static constructed = 0
     onContextLoss = vi.fn()
     dispose = vi.fn()
+    constructor() {
+      ;(this.constructor as unknown as { constructed: number }).constructed++
+    }
   }
 }))
 vi.mock('@xterm/addon-canvas', () => ({
   CanvasAddon: class {
+    static constructed = 0
     dispose = vi.fn()
+    constructor() {
+      ;(this.constructor as unknown as { constructed: number }).constructed++
+    }
   }
 }))
+vi.mock('./gpu-capability', () => ({ probeGpuTier: h.gpuTier }))
 vi.mock('../pty/pty-router', () => ({
   registerTerminalSink: vi.fn(),
   unregisterTerminalSink: vi.fn()
@@ -87,11 +99,18 @@ import { TerminalPane } from './TerminalPane'
 import { registerTerminalSink, unregisterTerminalSink } from '../pty/pty-router'
 import { registerSearchOpener, unregisterSearchOpener } from './terminal-search'
 import { webglBudget } from './webgl-budget'
+import { WebglAddon } from '@xterm/addon-webgl'
+import { CanvasAddon } from '@xterm/addon-canvas'
 
 describe('<TerminalPane> wiring (§5.3/§6.1)', () => {
   beforeEach(() => {
     h.instances.length = 0
     vi.clearAllMocks()
+    // Default every test to a real GPU (WebGL/Canvas tiers active); reset the
+    // addon-construction counters the software-GL test inspects.
+    h.gpuTier.mockReturnValue('hardware')
+    ;(WebglAddon as unknown as { constructed: number }).constructed = 0
+    ;(CanvasAddon as unknown as { constructed: number }).constructed = 0
     // The WebGL budget is a module-level singleton — release any leases held from a
     // prior test so lease-exhaustion tests start from a known-empty pool.
     for (let i = 0; i < 64; i++) webglBudget.release(`s${i}`)
@@ -169,6 +188,24 @@ describe('<TerminalPane> wiring (§5.3/§6.1)', () => {
     expect(webglBudget.has('s1')).toBe(true)
     rerender(<TerminalPane sessionId="s1" active={false} />)
     expect(webglBudget.has('s1')).toBe(false)
+  })
+
+  it('on a software-GL display loads NEITHER WebGL nor Canvas (DOM renderer), taking no lease', () => {
+    cleanup()
+    h.gpuTier.mockReturnValue('software')
+    render(<TerminalPane sessionId="s1" active={true} />)
+    // Both accelerated tiers stall on ReadPixels under software GL — skip them.
+    expect((WebglAddon as unknown as { constructed: number }).constructed).toBe(0)
+    expect((CanvasAddon as unknown as { constructed: number }).constructed).toBe(0)
+    // No WebGL lease taken, so the pool stays free for a real-GPU pane.
+    expect(webglBudget.has('s1')).toBe(false)
+  })
+
+  it('with a real GPU an active pane still loads the WebGL addon', () => {
+    cleanup()
+    h.gpuTier.mockReturnValue('hardware')
+    render(<TerminalPane sessionId="s1" active={true} />)
+    expect((WebglAddon as unknown as { constructed: number }).constructed).toBe(1)
   })
 
   it('refits, refreshes and focuses when it becomes the active pane', () => {

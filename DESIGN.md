@@ -256,6 +256,14 @@ context). `terminal.write(data)` keeps running for hidden sessions so their buff
 - **Scale mitigation:** browsers cap simultaneous WebGL contexts (~16). Above ~15 concurrent sessions, demote
   hidden terminals from the WebGL renderer to the Canvas renderer (still hardware-accelerated, fine for
   background buffering). Bound `scrollback` to ~10 000 lines/terminal.
+- **Software-GL displays (VDI/no-GPU):** the tier is also gated on GPU capability (`gpu-capability.ts`
+  probes `WEBGL_debug_renderer_info` once at startup). On a software rasterizer — SwiftShader, llvmpipe,
+  e.g. a VMware Horizon virtual desktop with no GPU — WebGL/Canvas do **not** throw; they "succeed" on the
+  CPU and then stall every frame on a synchronous `ReadPixels` readback (observed as multi-second lag typing
+  in a full-frame TUI like emacs/Spacemacs, plus `GPU stall due to ReadPixels` in the GPU log). There we skip
+  **both** accelerated tiers and leave xterm on its built-in **DOM renderer** (spans + CSS, no canvas, no
+  readback), which the X server / remoting layer blits cheaply — the fastest path when there is no real GPU.
+  This auto-reverts to WebGL on a real-GPU host.
 
 Rejected: unmount + backend-buffered replay (perceptible 50–300 ms "pop" on switch, cursor/selection
 restore complexity). The serialize-and-replay path is kept available for a future durable-backend re-attach
@@ -355,8 +363,10 @@ CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);  -- e.g. act
 (id, type, label, shell, order); active task; global settings. **Cannot persist:** live PTY/TTY state and the
 foreground process. **Restore:** verify each worktree path exists (else mark task `Stale` with a warning,
 don't start sessions); for each terminal session, open a fresh PTY in the worktree (V1) or re-attach (durable
-backend). The `repo_root` column round-trips the per-task repo directory so delete-after-restart re-invokes
-the correct repo-local script / git repo (§6.4).
+backend). Persisted scrollback is metadata, independent of the live PTY (I13): it is loaded and published
+(as a `ptyData` event) **ahead of** the fresh PTY spawn, so restored history paints immediately without
+waiting on the shell fork. The `repo_root` column round-trips the per-task repo directory so
+delete-after-restart re-invokes the correct repo-local script / git repo (§6.4).
 
 **Schema version:** `PRAGMA user_version` is stamped with the current version. Adding `base_ref` bumped it
 to **2**; `SqliteStore` runs a guarded, idempotent `ALTER TABLE tasks ADD COLUMN base_ref TEXT` when it
@@ -428,10 +438,18 @@ Events (backend→UI):  ptyData, sessionCreated, sessionExited, sessionClosed,
 
 ### 6.6 Concurrency & resilience
 
-- **Output batching / back-pressure:** per-session accumulator flushed on a 16 ms (60 Hz) timer, or
-  immediately at a 256 KB cap. node-pty has no flow control by design (blocking a PTY would stall an
-  interactive agent) — manage on the output side. **Inactive tabs:** don't send `ptyData`; append to the
-  per-session ring buffer (~500 KB) and replay on tab activation.
+- **Output batching / back-pressure:** per-session accumulator, **leading-edge**: the first chunk arriving
+  on an idle buffer flushes immediately (so an interactive keystroke echo — e.g. typing in `vi` — meets the
+  §11 `<5 ms` target instead of waiting a whole interval), then a **short 3 ms** trailing timer coalesces any
+  follow-up chunks in the window into one flush; a 256 KB cap forces an immediate flush regardless. The window
+  is short by design: a `vi` redraw arrives as several back-to-back chunks (cursor hide → glyph → cursor show),
+  so leading-edge alone would flush the invisible cursor-hide instantly but leave the visible glyph waiting out
+  the window — felt as input lag. xterm already paces painting to ~60 Hz via `requestAnimationFrame`, so this
+  timer does not gate the render rate; it only bounds IPC message *count*, and under a genuine flood the 256 KB
+  byte-cap dominates (flushes become byte-driven, not timer-driven) — so 3 ms carries no IPC-storm risk.
+  node-pty has no flow control by design (blocking a PTY would stall an interactive agent) — manage on the
+  output side. **Inactive tabs:** don't send `ptyData`; append to the per-session ring buffer (~500 KB) and
+  replay on tab activation.
 - **Single-writer domain:** all domain mutations (including ingested `sessionStateChanged`) are commands on
   one logical writer; adapters do I/O off-thread and feed results back as events. No locks around aggregates;
   deterministic tests. better-sqlite3 is synchronous but sub-ms; move to a worker thread only if profiling
@@ -619,7 +637,7 @@ versions.
 | # | Risk | Sev | Mitigation |
 |---|---|---|---|
 | R1 | Terminal state-detection reliability (heuristics misfire) | High | OSC 133 injected by default; Claude Code hooks for authoritative Blocked; manual "refresh state" affordance; log every transition w/ layer+confidence to tune thresholds. |
-| R2 | PTY performance with many sessions | Med | Single epoll loop; 16 ms output batching; 200 ms tcgetpgrp off the hot path; O(1)/byte OSC parse; 20 sessions ≈ 100 syscalls/s — negligible. |
+| R2 | PTY performance with many sessions | Med | Single epoll loop; output batching (leading-edge + 3 ms trailing coalesce, §6.6); 200 ms tcgetpgrp off the hot path; O(1)/byte OSC parse; 20 sessions ≈ 100 syscalls/s — negligible. |
 | R3 | Worktree provisioning safety (repo-local script **or** native git) | High | Validate the resulting path (absolute, exists, is a directory; warn if not a git worktree); containment check before delete (exactly the stored path, not `/`/`repoDir`/an ancestor); 30 s timeout; show command output; **all inputs passed as argv — no shell interpolation** for both scripts and native git (I17). |
 | R4 | Keeping many sessions alive / crash loses agent work | Med | V1 accepts loss + fresh-shell restore; durable backend (tmux/daemon) is the V2+ mitigation behind `SessionManager`; warn on quit if Working/Blocked. |
 | R5 | Security (air-gapped on-prem): socket spoofing, secrets | Med | Per-user `chmod 700` socket dir; validate/size-cap socket messages; secrets only via keychain (`credentialsRef`), never in the store/JSON. |
