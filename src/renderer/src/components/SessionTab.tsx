@@ -40,13 +40,14 @@ export function SessionTab({
     display: 'inline-flex',
     alignItems: 'center',
     gap: 6,
-    padding: '4px 8px',
+    padding: '6px 10px',
     borderStyle: 'solid',
-    borderWidth: '1px 1px 0 1px',
-    borderColor: active ? color.border : 'transparent',
+    borderWidth: '2px 0 0 0',
+    borderColor: active ? color.accent : 'transparent',
     borderRadius: '4px 4px 0 0',
-    background: active ? color.modalBg : 'transparent',
-    fontWeight: active ? 'bold' : 'normal',
+    background: active ? color.bgApp : 'transparent',
+    color: active ? color.text : color.textSecondary,
+    fontWeight: active ? 500 : 400,
     cursor: 'pointer',
     whiteSpace: 'nowrap'
   }
@@ -58,6 +59,7 @@ export function SessionTab({
       ref={setNodeRef}
       {...attributes}
       {...listeners}
+      className="session-tab"
       role="tab"
       aria-selected={active}
       aria-label={session.title}
@@ -65,18 +67,29 @@ export function SessionTab({
       style={style}
     >
       <EditableLabel value={session.title} onCommit={onRename} editAriaLabel="rename session" />
-      {exited ? <span style={{ color: color.muted, fontWeight: 'normal' }}>(exited)</span> : null}
+      {exited ? <span style={{ color: color.muted, fontWeight: 400 }}>(exited)</span> : null}
       <span
         role="button"
+        className="tab-close"
         aria-label="close session"
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => {
           e.stopPropagation()
           onClose()
         }}
-        style={{ marginLeft: 2, cursor: 'pointer', color: color.muted }}
+        style={{
+          marginLeft: 2,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 18,
+          height: 18,
+          borderRadius: 'var(--radius-sm)',
+          cursor: 'pointer',
+          color: color.muted
+        }}
       >
-        ×
+        ✕
       </span>
     </div>
   )

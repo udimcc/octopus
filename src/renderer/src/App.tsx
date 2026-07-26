@@ -43,7 +43,16 @@ export function App(): React.JSX.Element {
   useKeyboardShortcuts({ onNewTask: openNewTask, onSearch: openSearchForActive })
 
   return (
-    <main style={{ display: 'flex', height: '100vh', margin: 0 }}>
+    <main
+      style={{
+        display: 'flex',
+        height: '100vh',
+        margin: 0,
+        background: 'var(--bg-app)',
+        color: 'var(--text-primary)',
+        fontFamily: 'var(--font-sans)'
+      }}
+    >
       <ProgressPanel onNewTask={openNewTask} />
       <TaskWorkspace />
       <Toaster />

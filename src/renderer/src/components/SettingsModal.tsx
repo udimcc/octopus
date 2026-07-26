@@ -12,7 +12,7 @@
 
 import { useState } from 'react'
 import { useStore } from '../store/store'
-import { overlayStyle, modalCardStyle, color } from '../style/tokens'
+import { overlayStyle, modalCardStyle, color, fontSize } from '../style/tokens'
 import type { SettingsPatchDTO } from '../../../shared/dto'
 
 export interface SettingsModalProps {
@@ -48,7 +48,13 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
     })
   }
 
-  const field: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 4 }
+  const field: React.CSSProperties = {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+    color: color.textSecondary,
+    fontSize: fontSize.sm
+  }
 
   return (
     <div role="presentation" onClick={onClose} style={overlayStyle}>
@@ -63,7 +69,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
         }}
         style={{ ...modalCardStyle, width: 460 }}
       >
-        <h2 style={{ margin: 0, fontSize: 18 }}>Settings</h2>
+        <h2 style={{ margin: 0, fontSize: fontSize.title }}>Settings</h2>
 
         <label style={field}>
           <span>Worktree base directory</span>
@@ -97,7 +103,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
           <button type="button" onClick={onClose} disabled={busy}>
             Cancel
           </button>
-          <button type="button" onClick={save} disabled={busy}>
+          <button type="button" className="btn-primary" onClick={save} disabled={busy}>
             Save
           </button>
         </div>

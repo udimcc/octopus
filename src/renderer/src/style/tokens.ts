@@ -1,28 +1,96 @@
 /**
- * Shared inline-style constants (DESIGN §5 — the renderer styles with `style={}`
- * objects, CSP-safe, no CSS pipeline). Centralizing the handful of colors and
- * repeated layout snippets here keeps the extracted M6 components consistent
- * without duplicating literals across a dozen files. Values mirror the ones the
- * M5 slice used inline (`#1e1e1e` terminal bg, `#e0e0ff` active row, …).
+ * Typed mirror of the design tokens defined in `globals.css` (`:root`). Every
+ * value here is a `var(--...)` string — the literal hex/px live ONLY in
+ * `globals.css`, so there is one source of truth. Inline `style={}` objects across
+ * the renderer reference these (e.g. `background: color.bgSidebar`), the global
+ * sheet references the same vars, and a future light theme is just a second `:root`
+ * block with no code changes here.
+ *
+ * The legacy `color` keys (terminalBg, border, activeRow, …) are kept as aliases so
+ * existing imports keep working; new code should prefer the semantic names.
  */
 
 export const color = {
-  terminalBg: '#1e1e1e',
-  border: '#ccc',
-  borderLight: '#e5e5e5',
-  activeRow: '#e0e0ff',
-  hoverRow: '#f0f0f5',
-  muted: '#888',
-  text: '#222',
-  panelBg: '#fafafa',
-  modalBg: '#fff',
-  overlay: 'rgba(0,0,0,0.35)',
-  errorBg: '#fdecea',
-  errorText: '#a12622',
-  errorBorder: '#f5c6c3',
-  infoBg: '#eef4fd',
-  infoText: '#1c3f66',
-  infoBorder: '#c3d8f5'
+  /* Surfaces */
+  bgApp: 'var(--bg-app)',
+  bgSidebar: 'var(--bg-sidebar)',
+  bgSurface: 'var(--bg-surface)',
+  bgSurfaceRaised: 'var(--bg-surface-raised)',
+  bgSelected: 'var(--bg-selected)',
+  bgHover: 'var(--bg-hover)',
+  bgInput: 'var(--bg-input)',
+
+  /* Borders */
+  border: 'var(--border)',
+  borderStrong: 'var(--border-strong)',
+  borderSubtle: 'var(--border-subtle)',
+
+  /* Text */
+  text: 'var(--text-primary)',
+  textSecondary: 'var(--text-secondary)',
+  muted: 'var(--text-muted)',
+  textInverse: 'var(--text-inverse)',
+
+  /* Accent */
+  accent: 'var(--accent)',
+  accentHover: 'var(--accent-hover)',
+  accentActive: 'var(--accent-active)',
+  accentSubtle: 'var(--accent-subtle)',
+  onAccent: 'var(--on-accent)',
+
+  /* Semantic */
+  errorBg: 'var(--error-bg)',
+  errorText: 'var(--error-fg)',
+  errorBorder: 'var(--error-border)',
+  infoBg: 'var(--info-bg)',
+  infoText: 'var(--info-fg)',
+  infoBorder: 'var(--info-border)',
+  successText: 'var(--success-fg)',
+
+  overlay: 'var(--overlay)',
+
+  /* Legacy aliases (kept so older imports don't break) */
+  terminalBg: 'var(--bg-terminal)',
+  borderLight: 'var(--border-subtle)',
+  activeRow: 'var(--bg-selected)',
+  hoverRow: 'var(--bg-hover)',
+  panelBg: 'var(--bg-sidebar)',
+  modalBg: 'var(--bg-surface)'
+} as const
+
+export const space = {
+  x1: 'var(--space-1)',
+  x2: 'var(--space-2)',
+  x3: 'var(--space-3)',
+  x4: 'var(--space-4)',
+  x5: 'var(--space-5)',
+  x6: 'var(--space-6)',
+  x8: 'var(--space-8)'
+} as const
+
+export const radius = {
+  sm: 'var(--radius-sm)',
+  md: 'var(--radius-md)',
+  lg: 'var(--radius-lg)',
+  pill: 'var(--radius-pill)'
+} as const
+
+export const shadow = {
+  sm: 'var(--shadow-sm)',
+  md: 'var(--shadow-md)',
+  lg: 'var(--shadow-lg)'
+} as const
+
+export const font = {
+  sans: 'var(--font-sans)',
+  mono: 'var(--font-mono)'
+} as const
+
+export const fontSize = {
+  sm: 'var(--font-size-sm)',
+  base: 'var(--font-size-base)',
+  lg: 'var(--font-size-lg)',
+  title: 'var(--font-size-title)'
 } as const
 
 /** A full-viewport centered modal backdrop (shared by the modals/dialogs). */
@@ -30,20 +98,52 @@ export const overlayStyle: React.CSSProperties = {
   position: 'fixed',
   inset: 0,
   background: color.overlay,
+  backdropFilter: 'blur(2px)',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
   zIndex: 100
 }
 
-/** The white modal card. Callers spread this and add width/gap. */
+/** The elevated modal card. Callers spread this and add width/gap. */
 export const modalCardStyle: React.CSSProperties = {
-  background: color.modalBg,
-  borderRadius: 6,
+  background: color.bgSurface,
+  color: color.text,
+  border: `1px solid ${color.border}`,
+  borderRadius: 'var(--radius-lg)',
   padding: 20,
   maxWidth: '90vw',
-  boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
+  boxShadow: shadow.lg,
   display: 'flex',
   flexDirection: 'column',
   gap: 12
 }
+
+/**
+ * The xterm.js terminal palette. xterm does NOT resolve CSS custom properties for
+ * its WebGL/Canvas GPU palette, so — unlike everything else — these are concrete
+ * hex values. Keep them in sync with the accent/surface vars in `globals.css`.
+ */
+export const terminalTheme = {
+  background: '#0e1116',
+  foreground: '#e6e9ef',
+  cursor: '#2dd4bf',
+  cursorAccent: '#0e1116',
+  selectionBackground: 'rgba(45,212,191,0.30)',
+  black: '#161b22',
+  brightBlack: '#4b5563',
+  red: '#ff6b66',
+  brightRed: '#ff9a92',
+  green: '#5ad48a',
+  brightGreen: '#7ee0a0',
+  yellow: '#e3c766',
+  brightYellow: '#f2d98a',
+  blue: '#4f8cff',
+  brightBlue: '#6da0ff',
+  magenta: '#c88bff',
+  brightMagenta: '#d8a8ff',
+  cyan: '#2dd4bf',
+  brightCyan: '#5eead4',
+  white: '#c8ced8',
+  brightWhite: '#f5f7fa'
+} as const

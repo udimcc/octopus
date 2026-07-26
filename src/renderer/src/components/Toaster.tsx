@@ -11,7 +11,7 @@
 
 import { useEffect } from 'react'
 import { useStore, type Toast } from '../store/store'
-import { color } from '../style/tokens'
+import { color, radius, shadow } from '../style/tokens'
 
 /** How long a toast stays before it auto-dismisses. */
 const AUTO_DISMISS_MS = 6000
@@ -36,13 +36,14 @@ function ToastItem({
         display: 'flex',
         alignItems: 'flex-start',
         gap: 8,
-        padding: '8px 10px',
-        borderRadius: 4,
+        padding: '10px 12px',
+        borderRadius: radius.md,
         maxWidth: 360,
         background: isError ? color.errorBg : color.infoBg,
         color: isError ? color.errorText : color.infoText,
         border: `1px solid ${isError ? color.errorBorder : color.infoBorder}`,
-        boxShadow: '0 2px 8px rgba(0,0,0,0.15)'
+        borderLeft: `3px solid ${isError ? color.errorText : color.infoText}`,
+        boxShadow: shadow.lg
       }}
     >
       <span style={{ flex: 1, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>

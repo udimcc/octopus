@@ -9,7 +9,7 @@
 
 import { TaskView } from './TaskView'
 import { useStore } from '../store/store'
-import { color } from '../style/tokens'
+import { color, fontSize } from '../style/tokens'
 
 export function TaskWorkspace(): React.JSX.Element {
   const taskOrder = useStore((s) => s.taskOrder)
@@ -22,14 +22,28 @@ export function TaskWorkspace(): React.JSX.Element {
         position: 'relative',
         display: 'flex',
         flexDirection: 'column',
-        minWidth: 0
+        minWidth: 0,
+        background: color.bgApp
       }}
     >
       {taskOrder.map((id) => (
         <TaskView key={id} taskId={id} active={id === activeTaskId} />
       ))}
       {taskOrder.length === 0 ? (
-        <p style={{ padding: 16, color: color.muted }}>No tasks yet — create one to begin.</p>
+        <div
+          style={{
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 8,
+            color: color.muted
+          }}
+        >
+          <span style={{ fontSize: 40, opacity: 0.5 }}>🐙</span>
+          <p style={{ margin: 0, fontSize: fontSize.lg }}>No tasks yet — create one to begin.</p>
+        </div>
       ) : null}
     </section>
   )

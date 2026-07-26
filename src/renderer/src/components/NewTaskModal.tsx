@@ -19,6 +19,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { taskNameToBranchSlug } from '../util/slug'
+import { overlayStyle, modalCardStyle, color, font, fontSize, radius } from '../style/tokens'
 
 export interface NewTaskModalProps {
   /** Close the modal (success or user cancel). */
@@ -114,15 +115,7 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
       onClick={() => {
         if (!busy) onClose()
       }}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(0,0,0,0.35)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 100
-      }}
+      style={overlayStyle}
     >
       <div
         role="dialog"
@@ -130,21 +123,19 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
         aria-modal="true"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={onKeyDown}
-        style={{
-          background: '#fff',
-          borderRadius: 6,
-          padding: 20,
-          width: 420,
-          maxWidth: '90vw',
-          boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 12
-        }}
+        style={{ ...modalCardStyle, width: 420 }}
       >
-        <h2 style={{ margin: 0, fontSize: 18 }}>New Task</h2>
+        <h2 style={{ margin: 0, fontSize: fontSize.title }}>New Task</h2>
 
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <label
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 4,
+            color: color.textSecondary,
+            fontSize: fontSize.sm
+          }}
+        >
           <span>Task name</span>
           <input
             aria-label="task name"
@@ -156,7 +147,15 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
           />
         </label>
 
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <label
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 4,
+            color: color.textSecondary,
+            fontSize: fontSize.sm
+          }}
+        >
           <span>Repository directory</span>
           <div style={{ display: 'flex', gap: 6 }}>
             <input
@@ -174,7 +173,15 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
           </div>
         </label>
 
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <label
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 4,
+            color: color.textSecondary,
+            fontSize: fontSize.sm
+          }}
+        >
           <span>Source branch</span>
           <input
             aria-label="source branch"
@@ -185,7 +192,15 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
           />
         </label>
 
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <label
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 4,
+            color: color.textSecondary,
+            fontSize: fontSize.sm
+          }}
+        >
           <span>New branch</span>
           <input
             aria-label="new branch"
@@ -197,9 +212,11 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
         </label>
 
         {busy ? (
-          <p aria-live="polite" style={{ margin: 0, color: '#555' }}>
+          <p aria-live="polite" style={{ margin: 0, color: color.muted }}>
             Provisioning worktree…
-            {progress ? <span style={{ display: 'block', fontFamily: 'monospace' }}>{progress}</span> : null}
+            {progress ? (
+              <span style={{ display: 'block', fontFamily: font.mono }}>{progress}</span>
+            ) : null}
           </p>
         ) : null}
 
@@ -209,10 +226,10 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
             style={{
               margin: 0,
               padding: 8,
-              background: '#fdecea',
-              color: '#a12622',
-              border: '1px solid #f5c6c3',
-              borderRadius: 4,
+              background: color.errorBg,
+              color: color.errorText,
+              border: `1px solid ${color.errorBorder}`,
+              borderRadius: radius.sm,
               whiteSpace: 'pre-wrap',
               overflowX: 'auto',
               maxHeight: 160
@@ -226,7 +243,7 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
           <button type="button" onClick={onClose} disabled={busy}>
             Cancel
           </button>
-          <button type="button" onClick={submit} disabled={!canSubmit}>
+          <button type="button" className="btn-primary" onClick={submit} disabled={!canSubmit}>
             {error ? 'Retry' : 'Create Task'}
           </button>
         </div>

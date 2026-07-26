@@ -12,7 +12,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store/store'
-import { color } from '../style/tokens'
+import { color, radius, shadow } from '../style/tokens'
 
 export interface NewSessionDropdownProps {
   readonly taskId: string
@@ -65,12 +65,13 @@ export function NewSessionDropdown({
     <div ref={rootRef} style={{ position: 'relative', display: 'inline-block' }}>
       <button
         type="button"
+        className="btn-primary"
         aria-label="new session"
         aria-haspopup={types.length > 1}
         aria-expanded={types.length > 1 ? open : undefined}
         disabled={disabled}
         onClick={onClick}
-        style={{ padding: '4px 8px', whiteSpace: 'nowrap' }}
+        style={{ padding: '4px 10px', whiteSpace: 'nowrap' }}
       >
         + Session
       </button>
@@ -85,10 +86,10 @@ export function NewSessionDropdown({
             margin: 0,
             padding: 4,
             listStyle: 'none',
-            background: color.modalBg,
+            background: color.bgSurfaceRaised,
             border: `1px solid ${color.border}`,
-            borderRadius: 4,
-            boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+            borderRadius: radius.md,
+            boxShadow: shadow.md,
             minWidth: 160
           }}
         >
@@ -97,12 +98,12 @@ export function NewSessionDropdown({
               <button
                 type="button"
                 role="menuitem"
+                className="menu-item"
                 onClick={() => create(t.typeId)}
                 style={{
                   width: '100%',
                   textAlign: 'left',
                   padding: '6px 8px',
-                  border: 'none',
                   background: 'transparent',
                   cursor: 'pointer'
                 }}

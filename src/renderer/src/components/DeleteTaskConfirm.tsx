@@ -18,7 +18,7 @@
 
 import { useState } from 'react'
 import { useStore } from '../store/store'
-import { overlayStyle, modalCardStyle, color } from '../style/tokens'
+import { overlayStyle, modalCardStyle, color, fontSize } from '../style/tokens'
 
 export interface DeleteTaskConfirmProps {
   readonly taskId: string
@@ -71,7 +71,7 @@ export function DeleteTaskConfirm({ taskId, onClose }: DeleteTaskConfirmProps): 
         }}
         style={{ ...modalCardStyle, width: 420 }}
       >
-        <h2 style={{ margin: 0, fontSize: 18 }}>{title}</h2>
+        <h2 style={{ margin: 0, fontSize: fontSize.title }}>{title}</h2>
         <p style={{ margin: 0 }}>{body}</p>
 
         {error ? (
@@ -91,9 +91,9 @@ export function DeleteTaskConfirm({ taskId, onClose }: DeleteTaskConfirmProps): 
           ) : null}
           <button
             type="button"
+            className="btn-danger"
             onClick={() => dispatchDelete(dirtyStep ? { confirmedDirty: true } : {})}
             disabled={busy}
-            style={{ color: color.errorText }}
           >
             {dirtyStep ? 'Delete anyway' : 'Delete'}
           </button>

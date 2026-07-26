@@ -25,7 +25,14 @@ export function TaskView({ taskId, active }: TaskViewProps): React.JSX.Element {
 
   // Hidden tasks stay mounted but out of layout so their terminals keep running.
   const style: React.CSSProperties = active
-    ? { position: 'relative', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }
+    ? {
+        position: 'relative',
+        flex: 1,
+        minHeight: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        background: 'var(--bg-app)'
+      }
     : { position: 'absolute', width: 0, height: 0, overflow: 'hidden', visibility: 'hidden' }
 
   if (!task) return <div style={style} />

@@ -12,7 +12,7 @@
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { EditableLabel } from './EditableLabel'
-import { color } from '../style/tokens'
+import { color, fontSize } from '../style/tokens'
 import type { TaskEntry } from '../store/store'
 
 export interface TaskListItemProps {
@@ -40,8 +40,10 @@ export function TaskListItem({
     alignItems: 'center',
     width: '100%',
     textAlign: 'left',
-    padding: '6px 8px',
-    background: active ? color.activeRow : 'transparent',
+    padding: '7px 12px',
+    background: active ? color.bgSelected : 'transparent',
+    color: active ? color.text : color.textSecondary,
+    boxShadow: active ? `inset 2px 0 0 ${color.accent}` : 'none',
     cursor: 'pointer',
     boxSizing: 'border-box'
   }
@@ -51,6 +53,7 @@ export function TaskListItem({
       <div
         {...attributes}
         {...listeners}
+        className="task-row"
         role="button"
         aria-pressed={active}
         aria-label={task.name}
@@ -64,7 +67,7 @@ export function TaskListItem({
           style={{ flex: 1, minWidth: 0 }}
         />
         {task.lifecycle !== 'ready' ? (
-          <span style={{ marginLeft: 6, color: color.muted, fontSize: 12 }}>
+          <span style={{ marginLeft: 6, color: color.muted, fontSize: fontSize.sm }}>
             ({task.lifecycle})
           </span>
         ) : null}

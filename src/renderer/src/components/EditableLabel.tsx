@@ -64,7 +64,15 @@ export function EditableLabel({
         }}
         onClick={(e) => e.stopPropagation()}
         onDoubleClick={(e) => e.stopPropagation()}
-        style={{ font: 'inherit', ...style }}
+        style={{
+          font: 'inherit',
+          color: 'inherit',
+          padding: '0 2px',
+          background: 'var(--bg-input)',
+          border: '1px solid var(--accent)',
+          borderRadius: 'var(--radius-sm)',
+          ...style
+        }}
       />
     )
   }

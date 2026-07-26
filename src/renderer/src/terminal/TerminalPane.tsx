@@ -38,7 +38,7 @@ import '@xterm/xterm/css/xterm.css'
 import { registerTerminalSink, unregisterTerminalSink } from '../pty/pty-router'
 import { registerSearchOpener, unregisterSearchOpener } from './terminal-search'
 import { webglBudget } from './webgl-budget'
-import { color } from '../style/tokens'
+import { color, radius, shadow, terminalTheme } from '../style/tokens'
 
 export interface TerminalPaneProps {
   readonly sessionId: string
@@ -145,7 +145,7 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
       scrollback: SCROLLBACK,
       fontFamily: 'monospace',
       allowProposedApi: true, // required by the Unicode11 addon
-      theme: { background: color.terminalBg }
+      theme: terminalTheme
     })
     const fit = new FitAddon()
     const search = new SearchAddon()
@@ -237,16 +237,16 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
         <div
           style={{
             position: 'absolute',
-            top: 4,
-            right: 4,
+            top: 8,
+            right: 8,
             zIndex: 10,
             display: 'flex',
             gap: 4,
-            padding: 4,
-            background: color.modalBg,
+            padding: 6,
+            background: color.bgSurfaceRaised,
             border: `1px solid ${color.border}`,
-            borderRadius: 4,
-            boxShadow: '0 2px 8px rgba(0,0,0,0.2)'
+            borderRadius: radius.md,
+            boxShadow: shadow.md
           }}
         >
           <input
@@ -261,14 +261,29 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
               else if (e.key === 'Escape') setSearchOpen(false)
             }}
           />
-          <button type="button" aria-label="find previous" onClick={() => runSearch(true)}>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="find previous"
+            onClick={() => runSearch(true)}
+          >
             ↑
           </button>
-          <button type="button" aria-label="find next" onClick={() => runSearch(false)}>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="find next"
+            onClick={() => runSearch(false)}
+          >
             ↓
           </button>
-          <button type="button" aria-label="close search" onClick={() => setSearchOpen(false)}>
-            ×
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="close search"
+            onClick={() => setSearchOpen(false)}
+          >
+            ✕
           </button>
         </div>
       ) : null}

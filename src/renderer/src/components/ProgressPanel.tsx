@@ -25,7 +25,7 @@ import { TaskListItem } from './TaskListItem'
 import { DeleteTaskConfirm } from './DeleteTaskConfirm'
 import { SettingsModal } from './SettingsModal'
 import { useStore } from '../store/store'
-import { color } from '../style/tokens'
+import { color, fontSize } from '../style/tokens'
 
 export interface ProgressPanelProps {
   /** Open the New-Task modal (owned by `App` so the Ctrl+Shift+N shortcut shares it). */
@@ -68,18 +68,33 @@ export function ProgressPanel({ onNewTask }: ProgressPanelProps): React.JSX.Elem
         borderRight: `1px solid ${color.border}`,
         display: 'flex',
         flexDirection: 'column',
-        background: color.panelBg
+        background: color.bgSidebar
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', padding: 8, gap: 8 }}>
-        <h1 style={{ fontSize: 18, margin: 0, flex: 1 }}>Octopus</h1>
-        <button type="button" aria-label="settings" onClick={() => setShowSettings(true)}>
+      <div style={{ display: 'flex', alignItems: 'center', padding: '12px 12px 8px', gap: 8 }}>
+        <h1
+          style={{
+            fontSize: fontSize.title,
+            margin: 0,
+            flex: 1,
+            letterSpacing: '0.02em',
+            color: color.text
+          }}
+        >
+          Octopus
+        </h1>
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="settings"
+          onClick={() => setShowSettings(true)}
+        >
           ⚙
         </button>
       </div>
 
-      <div style={{ display: 'flex', gap: 6, padding: '0 8px 8px' }}>
-        <button type="button" onClick={onNewTask} style={headerButton}>
+      <div style={{ display: 'flex', gap: 6, padding: '0 12px 12px' }}>
+        <button type="button" className="btn-primary" onClick={onNewTask} style={headerButton}>
           + New Task
         </button>
         <button

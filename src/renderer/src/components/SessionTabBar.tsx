@@ -26,7 +26,7 @@ import { SortableContext, horizontalListSortingStrategy, arrayMove } from '@dnd-
 import { SessionTab } from './SessionTab'
 import { NewSessionDropdown } from './NewSessionDropdown'
 import { useStore } from '../store/store'
-import { color } from '../style/tokens'
+import { color, radius, shadow } from '../style/tokens'
 
 export interface SessionTabBarProps {
   readonly taskId: string
@@ -92,12 +92,18 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
         display: 'flex',
         alignItems: 'flex-end',
         gap: 4,
-        padding: '4px 4px 0',
+        padding: '6px 6px 0',
+        background: color.bgSurface,
         borderBottom: `1px solid ${color.border}`
       }}
     >
       {overflowing ? (
-        <button type="button" aria-label="scroll tabs left" onClick={() => scrollBy(-160)}>
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="scroll tabs left"
+          onClick={() => scrollBy(-160)}
+        >
           ‹
         </button>
       ) : null}
@@ -135,7 +141,12 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
       </div>
 
       {overflowing ? (
-        <button type="button" aria-label="scroll tabs right" onClick={() => scrollBy(160)}>
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="scroll tabs right"
+          onClick={() => scrollBy(160)}
+        >
           ›
         </button>
       ) : null}
@@ -144,6 +155,7 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
         <div style={{ position: 'relative' }}>
           <button
             type="button"
+            className="icon-button"
             aria-label="all sessions"
             aria-haspopup="true"
             aria-expanded={menuOpen}
@@ -162,10 +174,10 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
                 margin: 0,
                 padding: 4,
                 listStyle: 'none',
-                background: color.modalBg,
+                background: color.bgSurfaceRaised,
                 border: `1px solid ${color.border}`,
-                borderRadius: 4,
-                boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+                borderRadius: radius.md,
+                boxShadow: shadow.md,
                 maxHeight: 320,
                 overflowY: 'auto',
                 minWidth: 180
@@ -179,13 +191,13 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
                     <button
                       type="button"
                       role="menuitem"
+                      className="menu-item"
                       onClick={() => jumpTo(sid)}
                       style={{
                         width: '100%',
                         textAlign: 'left',
                         padding: '6px 8px',
-                        border: 'none',
-                        background: sid === activeSessionId ? color.activeRow : 'transparent',
+                        background: sid === activeSessionId ? color.bgSelected : 'transparent',
                         cursor: 'pointer'
                       }}
                     >
