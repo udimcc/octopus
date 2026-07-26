@@ -56,6 +56,8 @@ describe('openSession happy path (§3.6, §6.1)', () => {
     expect(fd.bus.ofType('ptyData')).toEqual([
       { type: 'ptyData', sessionId: session.id, data: 'hello' }
     ])
+    // The same chunk is captured for scrollback persistence (§6.6).
+    expect(fd.scrollbacks.snapshot(session.id)).toBe('hello')
 
     runtime.ctx.onExit(0, undefined)
     expect(exitCalls).toEqual([{ id: session.id, code: 0 }])

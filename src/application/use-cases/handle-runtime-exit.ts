@@ -50,6 +50,20 @@ export function handleRuntimeExit(deps: AppDependencies, input: HandleRuntimeExi
 
   session.markExited(deps.clock.now())
 
+  // A spontaneously-exited session KEEPS its row (its final output stays readable
+  // and reloads on restart), so persist the captured scrollback now (§6.6) — the
+  // quit flush won't cover it because we're about to drop the runtime and no
+  // further `onData` will arrive. The in-memory buffer is NOT deleted (the session
+  // persists); it is freed only on user close. Best-effort — never block the exit.
+  const scrollback = deps.scrollbacks.snapshot(input.sessionId)
+  if (scrollback) {
+    try {
+      deps.persistence.saveScrollback(input.sessionId, scrollback)
+    } catch {
+      // Ignore — scrollback persistence is best-effort.
+    }
+  }
+
   const runtime = deps.runtimes.get(input.sessionId)
   if (runtime) {
     runtime.dispose()

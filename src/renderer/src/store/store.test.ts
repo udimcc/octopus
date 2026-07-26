@@ -81,6 +81,36 @@ describe('reduceEvent (§5.2)', () => {
     expect(d.sessions.s1.lifecycle).toBe('exited')
   })
 
+  it('sessionExited with a non-zero code enqueues an error toast (§5.4)', () => {
+    let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
+    d = reduceEvent(d, {
+      type: 'sessionCreated',
+      taskId: 't1',
+      session: session('s1', 't1', { title: 'build' })
+    })
+    d = reduceEvent(d, { type: 'sessionExited', taskId: 't1', sessionId: 's1', exitCode: 137 })
+    expect(d.toasts).toHaveLength(1)
+    expect(d.toasts[0]).toMatchObject({ kind: 'error' })
+    expect(d.toasts[0].message).toContain('build')
+    expect(d.toasts[0].message).toContain('137')
+  })
+
+  it('sessionExited with a missing code toasts an "unexpectedly" error', () => {
+    let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s1', 't1') })
+    d = reduceEvent(d, { type: 'sessionExited', taskId: 't1', sessionId: 's1' })
+    expect(d.toasts).toHaveLength(1)
+    expect(d.toasts[0].message).toContain('unexpectedly')
+  })
+
+  it('sessionExited with a clean exit code (0) is silent — no toast', () => {
+    let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s1', 't1') })
+    d = reduceEvent(d, { type: 'sessionExited', taskId: 't1', sessionId: 's1', exitCode: 0 })
+    expect(d.toasts).toEqual([])
+    expect(d.sessions.s1.lifecycle).toBe('exited')
+  })
+
   it('sessionClosed removes the session and re-points the active tab to the survivor', () => {
     let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
     d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s1', 't1') })
@@ -202,7 +232,13 @@ describe('useStore hydrate + actions', () => {
     ],
     activeTaskId: 't1',
     sessionTypes: [
-      { typeId: 'terminal', displayName: 'Terminal', icon: '', availableFromVersion: 1, configSchema: {} }
+      {
+        typeId: 'terminal',
+        displayName: 'Terminal',
+        icon: '',
+        availableFromVersion: 1,
+        configSchema: {}
+      }
     ],
     settings: {
       worktree: { location: '/home/u/octopus_repos' },

@@ -24,6 +24,16 @@ export interface WorkspacePersistence {
   upsertSession(session: SessionSnapshot): void
   deleteSession(sessionId: SessionId): void
 
+  /**
+   * Persist a session's captured terminal output (the §6.6 backend ring buffer),
+   * replacing any prior snapshot. Replayed into a fresh PTY on restart. A raw
+   * string, not a domain snapshot — captured output is metadata, not live state
+   * (I13). The row cascades away when the session is deleted (close/task-delete).
+   */
+  saveScrollback(sessionId: SessionId, data: string): void
+  /** Load a session's persisted scrollback, or undefined if none was stored. */
+  loadScrollback(sessionId: SessionId): string | undefined
+
   /** Persist the single active-task pointer into app_state (§6.3). */
   setActiveTask(taskId: TaskId | undefined): void
 

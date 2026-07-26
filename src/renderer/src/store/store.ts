@@ -255,7 +255,22 @@ export function reduceEvent(data: StoreData, event: EventDTO): StoreData {
       const s = data.sessions[event.sessionId]
       if (!s) return data
       const updated: SessionDTO = { ...s, lifecycle: 'exited' }
-      return { ...data, sessions: { ...data.sessions, [event.sessionId]: updated } }
+      const next: StoreData = {
+        ...data,
+        sessions: { ...data.sessions, [event.sessionId]: updated }
+      }
+      // Surface an unexpected exit as a toast (§5.4): a non-zero (or missing) exit
+      // code is a failure worth flagging; a clean `exit 0` is silent.
+      const clean = event.exitCode === 0
+      return clean
+        ? next
+        : pushToastData(
+            next,
+            'error',
+            event.exitCode == null
+              ? `${s.title} exited unexpectedly`
+              : `${s.title} exited (code ${event.exitCode})`
+          )
     }
 
     case 'sessionClosed':
@@ -264,7 +279,10 @@ export function reduceEvent(data: StoreData, event: EventDTO): StoreData {
     case 'sessionRenamed': {
       const s = data.sessions[event.sessionId]
       if (!s) return data
-      return { ...data, sessions: { ...data.sessions, [event.sessionId]: { ...s, title: event.title } } }
+      return {
+        ...data,
+        sessions: { ...data.sessions, [event.sessionId]: { ...s, title: event.title } }
+      }
     }
 
     case 'sessionReordered': {
@@ -289,7 +307,10 @@ export function reduceEvent(data: StoreData, event: EventDTO): StoreData {
       // Dormant seam (§10): patch the session's state field. Nobody emits this in V1.
       const s = data.sessions[event.sessionId]
       if (!s) return data
-      return { ...data, sessions: { ...data.sessions, [event.sessionId]: { ...s, state: event.state } } }
+      return {
+        ...data,
+        sessions: { ...data.sessions, [event.sessionId]: { ...s, state: event.state } }
+      }
     }
 
     case 'taskStateChanged':

@@ -53,9 +53,11 @@ vi.mock('@xterm/xterm', () => ({
   }
 }))
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}))
-vi.mock('@xterm/addon-fit', () => ({ FitAddon: class {
-  fit = vi.fn()
-} }))
+vi.mock('@xterm/addon-fit', () => ({
+  FitAddon: class {
+    fit = vi.fn()
+  }
+}))
 vi.mock('@xterm/addon-search', () => ({ SearchAddon: class {} }))
 vi.mock('@xterm/addon-serialize', () => ({ SerializeAddon: class {} }))
 vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: class {} }))
@@ -66,19 +68,35 @@ vi.mock('@xterm/addon-webgl', () => ({
     dispose = vi.fn()
   }
 }))
+vi.mock('@xterm/addon-canvas', () => ({
+  CanvasAddon: class {
+    dispose = vi.fn()
+  }
+}))
 vi.mock('../pty/pty-router', () => ({
   registerTerminalSink: vi.fn(),
   unregisterTerminalSink: vi.fn()
+}))
+vi.mock('./terminal-search', () => ({
+  registerSearchOpener: vi.fn(),
+  unregisterSearchOpener: vi.fn()
 }))
 
 // Imported AFTER the mocks are registered.
 import { TerminalPane } from './TerminalPane'
 import { registerTerminalSink, unregisterTerminalSink } from '../pty/pty-router'
+import { registerSearchOpener, unregisterSearchOpener } from './terminal-search'
+import { webglBudget } from './webgl-budget'
 
 describe('<TerminalPane> wiring (§5.3/§6.1)', () => {
   beforeEach(() => {
     h.instances.length = 0
     vi.clearAllMocks()
+    // The WebGL budget is a module-level singleton — release any leases held from a
+    // prior test so lease-exhaustion tests start from a known-empty pool.
+    for (let i = 0; i < 64; i++) webglBudget.release(`s${i}`)
+    webglBudget.release('s1')
+    webglBudget.release('s2')
     window.octopusAPI = {
       pty: { write: vi.fn(), resize: vi.fn() }
     } as unknown as typeof window.octopusAPI
@@ -117,12 +135,40 @@ describe('<TerminalPane> wiring (§5.3/§6.1)', () => {
     expect(h.instances[0].unicode.activeVersion).toBe('11')
   })
 
-  it('disposes the terminal, its onData sub, and unregisters the sink on unmount', () => {
+  it('disposes the terminal, its onData sub, and unregisters the sink + search on unmount', () => {
     const { unmount } = render(<TerminalPane sessionId="s1" active={true} />)
     unmount()
     expect(h.instances[0].dispose).toHaveBeenCalledOnce()
     expect(h.onDataDispose).toHaveBeenCalledOnce()
     expect(unregisterTerminalSink).toHaveBeenCalledWith('s1')
+    expect(unregisterSearchOpener).toHaveBeenCalledWith('s1')
+  })
+
+  it('registers a search opener for the session', () => {
+    render(<TerminalPane sessionId="s1" active={true} />)
+    expect(registerSearchOpener).toHaveBeenCalledWith('s1', expect.any(Function))
+  })
+
+  it('an active pane leases a WebGL slot; a hidden one holds none (Canvas tier)', () => {
+    cleanup()
+    // Active pane takes a lease.
+    const active = render(<TerminalPane sessionId="s1" active={true} />)
+    expect(webglBudget.has('s1')).toBe(true)
+    active.unmount()
+    // Its lease is returned on unmount.
+    expect(webglBudget.has('s1')).toBe(false)
+
+    // A pane mounted hidden takes no WebGL lease (renders via Canvas).
+    render(<TerminalPane sessionId="s2" active={false} />)
+    expect(webglBudget.has('s2')).toBe(false)
+  })
+
+  it('releases its WebGL lease when it becomes hidden, so another pane can claim it', () => {
+    cleanup()
+    const { rerender } = render(<TerminalPane sessionId="s1" active={true} />)
+    expect(webglBudget.has('s1')).toBe(true)
+    rerender(<TerminalPane sessionId="s1" active={false} />)
+    expect(webglBudget.has('s1')).toBe(false)
   })
 
   it('refits, refreshes and focuses when it becomes the active pane', () => {

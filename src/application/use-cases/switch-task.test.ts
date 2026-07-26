@@ -97,3 +97,40 @@ describe('switchTask (§3.3, §5.3, §6.3, I9)', () => {
     )
   })
 })
+
+describe('switchTask scrollback restore (§6.6)', () => {
+  it('replays persisted scrollback as a ptyData event BEFORE sessionCreated, with a separator', async () => {
+    const fd = makeDeps({ snapshot: restoredSnapshot() })
+    // Seed persisted output for t2's restored session (as a prior quit would have).
+    fd.persistence.saveScrollback(asSessionId('t2-s1'), 'PRIOR OUTPUT')
+
+    await switchTask(fd.deps, { taskId: asTaskId('t2') })
+
+    // The replay is a normal ptyData event carrying history + the dim separator.
+    const replay = fd.bus.ofType('ptyData').find((e) => e.sessionId === asSessionId('t2-s1'))
+    expect(replay).toBeDefined()
+    expect(replay!.data).toContain('PRIOR OUTPUT')
+    expect(replay!.data).toContain('session restored')
+
+    // Ordering is load-bearing: the replay must precede sessionCreated so it lands
+    // in the renderer's pre-mount buffer ahead of the running-lifecycle upsert.
+    const replayIdx = fd.bus.events.indexOf(replay!)
+    const createdIdx = fd.bus.events.findIndex(
+      (e) => e.type === 'sessionCreated' && e.session.id === asSessionId('t2-s1')
+    )
+    expect(replayIdx).toBeGreaterThanOrEqual(0)
+    expect(createdIdx).toBeGreaterThan(replayIdx)
+
+    // History is re-appended to the in-memory buffer so it accumulates across restarts.
+    expect(fd.scrollbacks.snapshot(asSessionId('t2-s1'))).toContain('PRIOR OUTPUT')
+  })
+
+  it('publishes no extra ptyData when the restored session has no persisted scrollback', async () => {
+    const fd = makeDeps({ snapshot: restoredSnapshot() })
+
+    await switchTask(fd.deps, { taskId: asTaskId('t2') })
+
+    // No history was stored → no replay event (the fresh PTY output flows normally).
+    expect(fd.bus.ofType('ptyData')).toEqual([])
+  })
+})

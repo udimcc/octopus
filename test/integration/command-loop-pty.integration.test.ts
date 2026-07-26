@@ -27,6 +27,7 @@ import { worstStatusWins } from '../../src/domain/task-state-aggregator'
 import { asTaskId, asSessionId } from '../../src/domain/ids'
 import { SessionLifecycle } from '../../src/domain/lifecycle'
 import { PtySessionManager } from '../../src/adapters/session/pty-session-manager'
+import { RingBufferScrollbackStore } from '../../src/adapters/session/scrollback-store'
 import { InMemorySessionTypeRegistry } from '../../src/adapters/session-types/session-type-registry'
 import { TerminalSessionTypeProvider } from '../../src/adapters/session-types/terminal-session-type-provider'
 import {
@@ -106,6 +107,7 @@ d('CommandLoop over the real PTY stack (integration, §6.6/§6.1)', () => {
       aggregator: worstStatusWins,
       configValidator: createAjvConfigValidator(),
       socketProvisioner: new FakeSocketProvisioner(),
+      scrollbacks: new RingBufferScrollbackStore(),
       currentVersion: 1
     }
     const loop = new CommandLoop(deps)

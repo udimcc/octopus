@@ -141,6 +141,22 @@ export class SqliteStore implements WorkspacePersistence {
     this.db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId)
   }
 
+  saveScrollback(sessionId: SessionId, data: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO session_scrollback (session_id, data) VALUES (?, ?)
+         ON CONFLICT(session_id) DO UPDATE SET data = excluded.data`
+      )
+      .run(sessionId, data)
+  }
+
+  loadScrollback(sessionId: SessionId): string | undefined {
+    const row = this.db
+      .prepare('SELECT data FROM session_scrollback WHERE session_id = ?')
+      .get(sessionId) as { data: string } | undefined
+    return row ? row.data : undefined
+  }
+
   setActiveTask(taskId: TaskId | undefined): void {
     if (taskId === undefined) {
       this.db.prepare('DELETE FROM app_state WHERE key = ?').run(ACTIVE_TASK_KEY)

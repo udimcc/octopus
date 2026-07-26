@@ -58,7 +58,13 @@ export async function startSessionRuntime(
     shell: configShell(session.config),
     // Dormant §9.2 seam: exported to the child, never bound in V1.
     stateSocketPath: deps.socketProvisioner.socketPathFor(id),
-    onData: (data) => deps.bus.publish({ type: 'ptyData', sessionId: id, data }),
+    onData: (data) => {
+      // Capture output for scrollback persistence (§6.6) before publishing, so a
+      // crash between the two still keeps the byte in the buffer for the next quit
+      // flush. Captured text is metadata, not live state (I13).
+      deps.scrollbacks.append(id, data)
+      deps.bus.publish({ type: 'ptyData', sessionId: id, data })
+    },
     // Spontaneous exit → routed back through the loop (single-writer, §6.6).
     onExit: (exitCode, signal) => deps.onRuntimeExit?.(id, exitCode, signal)
   }

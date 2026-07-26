@@ -30,6 +30,18 @@ export function shutdown(deps: AppDependencies): void {
   }
   deps.runtimes.clear()
 
+  // Flush every session's captured output to the store so it can be replayed on
+  // the next launch (§6.6). Ordering is load-bearing: AFTER `runtimes.clear()` (no
+  // more `onData` can race the buffer) and BEFORE `checkpointAndClose()` (the store
+  // is still open). Best-effort per session — one bad write must not skip the rest.
+  for (const [sessionId, data] of deps.scrollbacks.entries()) {
+    try {
+      deps.persistence.saveScrollback(sessionId, data)
+    } catch {
+      // Ignore — scrollback is a convenience, not correctness; keep flushing.
+    }
+  }
+
   try {
     deps.persistence.checkpointAndClose()
   } catch {

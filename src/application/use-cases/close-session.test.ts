@@ -38,6 +38,21 @@ describe('closeSession — user-driven close (§3.6, §6.1)', () => {
     expect(fd.bus.ofType('sessionExited')).toEqual([])
   })
 
+  it('frees the in-memory scrollback buffer on close; the persisted row cascades away (§6.6)', async () => {
+    const fd = await seedWithSession()
+    // Simulate captured output, and a persisted row from a prior flush.
+    fd.deps.scrollbacks.append(fd.sessionId, 'some output')
+    fd.persistence.saveScrollback(fd.sessionId, 'some output')
+
+    await closeSession(fd.deps, { sessionId: fd.sessionId })
+
+    // In-memory buffer freed immediately.
+    expect(fd.scrollbacks.snapshot(fd.sessionId)).toBeUndefined()
+    // The DB row is purged by ON DELETE CASCADE when the session row is deleted
+    // (the fake persistence models the cascade); no explicit scrollback delete.
+    expect(fd.persistence.savedScrollback.has(fd.sessionId)).toBe(false)
+  })
+
   it('is idempotent for an already-gone session', async () => {
     const { deps } = makeDeps()
     await expect(closeSession(deps, { sessionId: asSessionId('ghost') })).resolves.toBeUndefined()
@@ -63,6 +78,18 @@ describe('handleRuntimeExit — spontaneous death (§6.1, §6.6, I13)', () => {
 
     // I13: no row write on exit — the persisted definition columns are unchanged.
     expect(fd.persistence.upsertedSessions.some((s) => s.id === fd.sessionId && s.lifecycle === SessionLifecycle.Exited)).toBe(false)
+  })
+
+  it('persists the captured scrollback before dispose and KEEPS the in-memory buffer (§6.6)', async () => {
+    const fd = await seedWithSession()
+    fd.deps.scrollbacks.append(fd.sessionId, 'final output')
+
+    handleRuntimeExit(fd.deps, { sessionId: fd.sessionId, exitCode: 0 })
+
+    // The exited session keeps its row, so its final output is persisted for restart.
+    expect(fd.persistence.savedScrollback.get(fd.sessionId)).toBe('final output')
+    // Unlike a user close, the in-memory buffer is NOT freed (the session persists).
+    expect(fd.scrollbacks.snapshot(fd.sessionId)).toBe('final output')
   })
 
   it('ignores a late exit for a session already Closed (no resurrection, I13)', async () => {

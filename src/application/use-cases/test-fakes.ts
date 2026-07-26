@@ -40,7 +40,12 @@ import {
   type SessionTypeProvider,
   type SessionTypeRegistry
 } from '../../ports/session-type-provider'
-import { MapRuntimeRegistry, type AppDependencies, type SocketProvisioner } from '../dependencies'
+import {
+  MapRuntimeRegistry,
+  type AppDependencies,
+  type SocketProvisioner,
+  type ScrollbackBuffers
+} from '../dependencies'
 import type { CreateTaskInput } from '../commands'
 import { createAjvConfigValidator } from '../config-validator'
 
@@ -169,6 +174,8 @@ export class FakePersistence implements WorkspacePersistence {
   readonly upsertedSessions: SessionSnapshot[] = []
   readonly deletedSessions: SessionId[] = []
   readonly activeTaskSet: Array<TaskId | undefined> = []
+  /** Persisted scrollback keyed by session id (mirrors the `session_scrollback` table). */
+  readonly savedScrollback = new Map<SessionId, string>()
   transactions = 0
   checkpointed = false
   private readonly initial: WorkspaceSnapshot
@@ -190,6 +197,14 @@ export class FakePersistence implements WorkspacePersistence {
   }
   deleteSession(sessionId: SessionId): void {
     this.deletedSessions.push(sessionId)
+    // Mirror the real ON DELETE CASCADE: dropping the session drops its scrollback.
+    this.savedScrollback.delete(sessionId)
+  }
+  saveScrollback(sessionId: SessionId, data: string): void {
+    this.savedScrollback.set(sessionId, data)
+  }
+  loadScrollback(sessionId: SessionId): string | undefined {
+    return this.savedScrollback.get(sessionId)
   }
   setActiveTask(taskId: TaskId | undefined): void {
     this.activeTaskSet.push(taskId)
@@ -279,6 +294,31 @@ export class FakeSocketProvisioner implements SocketProvisioner {
   }
 }
 
+/**
+ * Fake scrollback store: a plain per-session string accumulator (no byte cap —
+ * the cap is the adapter's `RingBuffer` concern, tested there). Enough to assert
+ * capture (`append`), the quit flush (`entries`), and the user-close free
+ * (`delete`) in the use-case tests.
+ */
+export class FakeScrollbackStore implements ScrollbackBuffers {
+  readonly buffers = new Map<SessionId, string>()
+  append(id: SessionId, data: string): void {
+    this.buffers.set(id, (this.buffers.get(id) ?? '') + data)
+  }
+  snapshot(id: SessionId): string | undefined {
+    return this.buffers.get(id)
+  }
+  *entries(): Iterable<[SessionId, string]> {
+    yield* this.buffers
+  }
+  delete(id: SessionId): void {
+    this.buffers.delete(id)
+  }
+  clear(): void {
+    this.buffers.clear()
+  }
+}
+
 /** Recording event bus (synchronous fan-out), used to assert emitted events. */
 export class RecordingBus implements EventBus {
   readonly events: DomainEvent[] = []
@@ -329,6 +369,7 @@ export interface FakeDeps {
   readonly worktrees: FakeWorktreeProvider
   readonly sessions: FakeSessionManager
   readonly socketProvisioner: FakeSocketProvisioner
+  readonly scrollbacks: FakeScrollbackStore
   readonly ids: SeqIdGenerator
   readonly clock: FakeClock
   readonly workspace: Workspace
@@ -345,6 +386,7 @@ export function makeDeps(opts: { snapshot?: WorkspaceSnapshot } = {}): FakeDeps 
   const worktrees = new FakeWorktreeProvider()
   const sessions = new FakeSessionManager()
   const socketProvisioner = new FakeSocketProvisioner()
+  const scrollbacks = new FakeScrollbackStore()
   const ids = new SeqIdGenerator()
   const clock = new FakeClock()
   const registry = new FakeRegistry()
@@ -368,8 +410,21 @@ export function makeDeps(opts: { snapshot?: WorkspaceSnapshot } = {}): FakeDeps 
     aggregator: worstStatusWins,
     configValidator: createAjvConfigValidator(),
     socketProvisioner,
+    scrollbacks,
     currentVersion: 1
   }
 
-  return { deps, bus, persistence, settings, worktrees, sessions, socketProvisioner, ids, clock, workspace }
+  return {
+    deps,
+    bus,
+    persistence,
+    settings,
+    worktrees,
+    sessions,
+    socketProvisioner,
+    scrollbacks,
+    ids,
+    clock,
+    workspace
+  }
 }

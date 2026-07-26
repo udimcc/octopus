@@ -20,10 +20,12 @@
 
 /**
  * Schema version, stamped into `PRAGMA user_version` (§10). Bumped 1 → 2 to add
- * the nullable `base_ref` column (the worktree's source branch); `SqliteStore`
- * runs a guarded `ALTER TABLE` when an older DB opens (see {@link MIGRATIONS}).
+ * the nullable `base_ref` column (the worktree's source branch); 2 → 3 to add the
+ * `session_scrollback` table (persisted terminal output, replayed on restart —
+ * the realized §6.6 backend ring-buffer seam). `SqliteStore` runs the guarded
+ * migrations when an older DB opens (see {@link MIGRATIONS}).
  */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 /**
  * Connection pragmas applied on every open. `foreign_keys` is per-connection
@@ -67,6 +69,14 @@ export const SCHEMA_STATEMENTS: readonly string[] = Object.freeze([
      key TEXT PRIMARY KEY,
      value TEXT NOT NULL
    )`,
+  // Persisted terminal output per session, replayed into a fresh PTY on restart
+  // (§6.6 backend ring buffer). A separate table (not a `sessions` column) keeps
+  // the hot `load()` startup read lean; `ON DELETE CASCADE` auto-purges the row
+  // when its session is closed or its task deleted — no explicit cleanup needed.
+  `CREATE TABLE IF NOT EXISTS session_scrollback (
+     session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+     data TEXT NOT NULL
+   )`,
   // Fetching a task's sessions in tab order is the hot read on load (§6.3).
   `CREATE INDEX IF NOT EXISTS idx_sessions_task ON sessions(task_id, position)`
 ])
@@ -90,8 +100,19 @@ export interface Migration {
 /**
  * Ordered migrations, first-used with v2's `base_ref`. `SqliteStore.create`
  * applies every migration whose `toVersion` exceeds the DB's current
- * `user_version`, then stamps `user_version = SCHEMA_VERSION`.
+ * `user_version`, then stamps `user_version = SCHEMA_VERSION`. The v3 migration
+ * uses `CREATE TABLE IF NOT EXISTS` (identical DDL to {@link SCHEMA_STATEMENTS}),
+ * so it is safe to re-run and matches the fresh-DB bootstrap exactly.
  */
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
-  { toVersion: 2, statements: Object.freeze(['ALTER TABLE tasks ADD COLUMN base_ref TEXT']) }
+  { toVersion: 2, statements: Object.freeze(['ALTER TABLE tasks ADD COLUMN base_ref TEXT']) },
+  {
+    toVersion: 3,
+    statements: Object.freeze([
+      `CREATE TABLE IF NOT EXISTS session_scrollback (
+         session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+         data TEXT NOT NULL
+       )`
+    ])
+  }
 ])

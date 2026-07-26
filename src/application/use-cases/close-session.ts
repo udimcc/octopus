@@ -66,6 +66,12 @@ function finishClose(deps: AppDependencies, task: Task, sessionId: CloseSessionI
   const taskId = task.id
   task.removeSession(sessionId)
 
+  // Free the in-memory scrollback buffer immediately — a user close removes the
+  // session for good (unlike a spontaneous exit, which keeps it). The persisted
+  // `session_scrollback` row is purged automatically by `ON DELETE CASCADE` when
+  // the session row is deleted below, so no explicit scrollback DB delete is needed.
+  deps.scrollbacks.delete(sessionId)
+
   deps.persistence.transaction(() => {
     deps.persistence.deleteSession(sessionId)
     // active_session_id may have shifted to another tab; persist the task row too.

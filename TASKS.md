@@ -50,15 +50,19 @@ Prerequisite scaffolding before any V1 feature. Not a released version.
 
 Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session type, **no state indicators**.
 
-> **Status (M0–M5 done):** the full backend — domain, ports, application (single-writer loop, all use cases,
-> reconcile, quit), adapters (PTY runtime, SqliteStore, worktree provider, script runner, settings, socket
-> provisioner), IPC, and composition root — is complete and green, and the **M5 renderer vertical slice**
-> (Zustand store, `pty-router` bypass, `TerminalPane` + xterm addons, keep-alive, minimal `App`) runs
-> end-to-end. Every V1 **dormant seam** (§10) is present and verified unused. Remaining (**M6/M7**): full
-> `ProgressPanel`/`NewTaskModal`/`DeleteTaskConfirm`/`SessionTabBar` UX with `@dnd-kit` reorder + overflow,
-> keyboard shortcuts, toast UI, ring-buffer replay for inactive tabs, WebGL→Canvas demotion, and the
-> restart-reconciliation integration + E2E smoke tests. `[~]` marks partially-built items (backend/seed done,
-> full UX pending). Live `npm run dev` verification of the M5 slice is the gate before M6.
+> **Status (M0–M7 done — V1 feature-complete):** the full backend — domain, ports, application (single-writer
+> loop, all use cases, reconcile, quit), adapters (PTY runtime, SqliteStore, worktree provider, script runner,
+> settings, socket provisioner), IPC, and composition root — is complete and green. The **renderer** is now the
+> full `DESIGN §5.1` component tree: `App → ProgressPanel + TaskWorkspace`, with `ProgressPanel` (New/Delete Task,
+> settings gear), `NewTaskModal`, `DeleteTaskConfirm` (dirty gate + force-forget), `SettingsModal`, `SessionTabBar`
+> + `NewSessionDropdown` (overflow chevrons/menu), `@dnd-kit` drag-reorder for tasks and tabs, double-click inline
+> rename, `Toaster`, and Shift-gated keyboard shortcuts. Both scale-mitigations are in: renderer-side ring-buffer
+> replay (`pty/pty-router.ts`) and the WebGL→Canvas lease budget (`terminal/webgl-budget.ts`). The two remaining
+> test items — restart-reconciliation and the E2E smoke — are done as headless integration tests over the real
+> PTY stack. Every V1 **dormant seam** (§10) is present and verified unused. `npm run typecheck`, `lint`
+> (dependency-rule boundary enforced) and `test` (393 tests, 56 files) are all green. What's left before ship is
+> **live `npm run dev` verification on a display** (M7 acceptance walk-through, DESIGN §11 step 5) — not exercised
+> in this headless environment.
 
 ### Domain (pure, no dependencies) — DESIGN §3
 
@@ -144,9 +148,12 @@ Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session t
 - [x] SQLite schema — `tasks`, `sessions` (with `state` default `'unknown'`), `app_state`;
   `branch`/`base_ref`/`repo_root` nullable; `sessions.task_id ... ON DELETE CASCADE` (DESIGN §6.3). *(Added
   `base_ref TEXT` to persist the source branch; bumped `SCHEMA_VERSION` 1→2 with a guarded, idempotent
-  `ALTER TABLE tasks ADD COLUMN base_ref TEXT` when `user_version < 2` — first use of the migration seam.)*
+  `ALTER TABLE tasks ADD COLUMN base_ref TEXT` when `user_version < 2` — first use of the migration seam.
+  Bumped 2→3 to add the `session_scrollback(session_id PK ON DELETE CASCADE, data)` table for persisted
+  terminal output — a guarded, idempotent `CREATE TABLE IF NOT EXISTS` when `user_version < 3`.)*
 - [x] Persist/restore logic — persist task+session definitions, active task; restore = fresh PTY per terminal
-  session at worktree cwd (I15, DESIGN §6.3).
+  session at worktree cwd (I15, DESIGN §6.3). *(Restore also replays each session's persisted scrollback into
+  the fresh PTY — see the §6.6 backend ring-buffer entry below.)*
 - [x] `settings.json` sibling file for global settings (`worktree.location` base dir — default
   `~/octopus_repos/`, resolved from home via a pure resolver + effectful ensure-dir like `paths.ts`;
   `terminal.shell`; default session type; `worktreeCreateTimeoutMs`) (DESIGN §6.3, §6.4). *(Replaces the old
@@ -185,8 +192,19 @@ Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session t
 
 - [x] **Output batching / back-pressure** — per-session accumulator flushed on 16 ms (60 Hz) timer or at 256 KB
   cap (DESIGN §6.6).
-- [~] **Inactive tabs** — don't send `ptyData`; append to per-session ring buffer (~500 KB) and replay on tab
-  activation (DESIGN §6.6, §5.3).
+- [x] **Inactive tabs** — append to a per-session ring buffer (~500 KB) and replay on tab activation (DESIGN §6.6, §5.3).
+  *(V1 realization is renderer-side in `pty/pty-router.ts`: keep-alive keeps every mounted pane's sink live, so
+  the buffer covers the pre-mount / session-restore window where output would otherwise be lost. The backend
+  "don't-send-to-inactive-tabs" optimization — a pure perf item, not user-visible — stays deferred to V2.)*
+- [x] **Backend per-session ring buffer, persisted + replayed on restart** (DESIGN §6.6, §6.2 seam). *(Realizes
+  the deferred backend ring buffer: `start-session-runtime.ts` taps every `onData` into a `ScrollbackBuffers`
+  port — `RingBufferScrollbackStore` (adapter, reuses `session/ring-buffer.ts`, ~500 KB/session). Flushed to
+  the `session_scrollback` table on quit (`quit.ts`, after `runtimes.clear()`, before checkpoint) and on
+  spontaneous exit (`handle-runtime-exit.ts`, kept-tab), freed on user close (`close-session.ts`; DB row
+  cascades). On restore, `start-task-sessions.ts` republishes the stored bytes as an ordinary `ptyData` event
+  (history + a dim "session restored" separator) ahead of `sessionCreated`, so the existing renderer replay
+  path shows prior scrollback above the fresh prompt — backend-only, no renderer/preload/shared change.
+  Captured output is metadata, not live process state — compatible with I13.)*
 - [ ] V2+ note: spawn each shell via `setsid` (group-kill descendants) — *defer to V2* (DESIGN §6.1). *(V1 uses
   SIGHUP/SIGKILL to the single PTY.)*
 
@@ -195,11 +213,11 @@ Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session t
 - [x] **Zustand store** — `tasks`, `sessions`, `activeTaskId`, `activeSessionId` (per task). **`ptyData` bypasses
   the store**, delivered by IPC directly to the target `TerminalPane` (DESIGN §5.2).
 - [x] Startup hydration via `app:getState`; thereafter lifecycle events patch the store (DESIGN §5.2).
-- [~] Component tree scaffold: `App → ProgressPanel + TaskWorkspace` (DESIGN §5.1).
-- [~] **`ProgressPanel`** — `PanelHeader (NewTaskButton, DeleteTaskButton)` + `TaskList → TaskListItem*`
+- [x] Component tree scaffold: `App → ProgressPanel + TaskWorkspace` (DESIGN §5.1).
+- [x] **`ProgressPanel`** — `PanelHeader (NewTaskButton, DeleteTaskButton, settings gear)` + `TaskList → TaskListItem*`
   (label only in V1; `TaskStatusIcon` is V2) (DESIGN §5.1, PRD §Progress Window).
 - [x] **`TaskWorkspace → TaskView*`** — one per task; **all mounted, only active visible** (DESIGN §5.1, §5.3).
-- [~] **`SessionTabBar`** — `NewSessionDropdown` (registry-driven) + `SessionTab*` (no status icon in V1) (DESIGN §5.1).
+- [x] **`SessionTabBar`** — `NewSessionDropdown` (registry-driven) + `SessionTab*` (no status icon in V1) (DESIGN §5.1).
 - [x] **`SessionPaneArea → SessionPane*`** — `TerminalPane` (JenkinsPane is V3) (DESIGN §5.1).
 - [x] **`TerminalPane`** — xterm.js instance created once in `useRef`/`useEffect([])`, never destroyed until
   session close (DESIGN §5.3).
@@ -208,8 +226,9 @@ Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session t
 - [x] **Keep-alive on task switch (critical)** — hidden sessions use `visibility:hidden; position:absolute;
   width/height:0` (NOT `display:none`); `terminal.write` keeps running for hidden sessions (DESIGN §5.3).
 - [x] On show: `fitAddon.fit()` → `pty:resize` → `terminal.refresh(0, rows-1)`; on hide: nothing (DESIGN §5.3).
-- [ ] **WebGL context scale mitigation** — above ~15 concurrent sessions, demote hidden terminals to Canvas
-  renderer (DESIGN §5.3).
+- [x] **WebGL context scale mitigation** — a module-level lease pool (~15 contexts) in `terminal/webgl-budget.ts`;
+  an active pane takes a WebGL lease, and when none is free it loads the Canvas renderer instead — hidden panes
+  hold no lease (DESIGN §5.3).
 - [x] Data flow wiring: keystroke `xterm onData → octopusAPI.pty.input → ipcMain → pty.write`; output
   `pty onData → batched → send('pty:data') → terminal.write` (DESIGN §5.2).
 - [x] **New Task modal** — four fields: **name**, **repo directory** (read-only + "Browse…" calling
@@ -218,16 +237,20 @@ Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session t
   Client-side validation gates "Create Task"; spinner while provisioning; on success task becomes
   active/empty; on failure inline red stderr block + Retry + toast (DESIGN §5.4, §12.3). Replaces the inline
   name input in `App.tsx`.
-- [~] **New Session dropdown** — populated from registry; Terminal creates immediately (DESIGN §5.4).
-- [ ] **Delete Task** — confirm dialog ("closes all sessions and removes the worktree"); extra "uncommitted
-  changes — delete anyway?" confirmation on dirty worktree (DESIGN §5.4).
-- [~] **Tabs UX** — horizontal scroll + chevrons on overflow; "…" overflow menu beyond ~8 tabs; drag-reorder via
-  `@dnd-kit/core`; per-tab `×` close (fires `pty:destroy`) (DESIGN §5.4).
-- [ ] **Keyboard shortcuts** — `Ctrl+Shift+]`/`[` cycle tasks; `Ctrl+Tab`/`Ctrl+Shift+Tab` cycle sessions;
-  `Ctrl+Shift+T` new terminal; `Ctrl+Shift+N` new task; `Ctrl+Shift+W` close session; `Ctrl+Shift+F` search;
-  `Ctrl+Shift+C/V` copy/paste; `Esc` close modal. **Only Shift-modified shortcuts intercepted globally** so
-  terminal `Ctrl+C` is never stolen (DESIGN §5.4).
-- [~] **Empty states & toasts** — "No tasks yet", "No sessions", inline "Connecting…"; bottom-right toasts for
+- [x] **New Session dropdown** — populated from registry; Terminal creates immediately (a lone type skips the
+  menu); double-click a tab renames it (DESIGN §5.4).
+- [x] **Delete Task** — confirm dialog ("closes all sessions and removes the worktree"); extra "uncommitted
+  changes — delete anyway?" confirmation on dirty worktree; **Force-forget** for Stale/`provision_failed`/
+  `delete_failed` tasks (DESIGN §5.4).
+- [x] **Tabs UX** — horizontal scroll + chevrons on overflow; "…" overflow menu beyond ~8 tabs; drag-reorder via
+  `@dnd-kit/core` (tasks and tabs); per-tab `×` close (DESIGN §5.4).
+- [x] **Keyboard shortcuts** — `Ctrl+Shift+]`/`[` cycle tasks; `Ctrl+Shift+Tab` cycle sessions;
+  `Ctrl+Shift+T` new terminal; `Ctrl+Shift+N` new task; `Ctrl+Shift+W` close session; `Ctrl+Shift+F` search.
+  **Only Shift-modified shortcuts intercepted globally** so terminal `Ctrl+C` is never stolen (DESIGN §5.4).
+  *(Note: `Ctrl+Tab` and `Ctrl+Shift+C/V` from the doc are intentionally omitted — they conflict with the
+  Shift-only-intercept safety rule / browser reservations; documented inline in `useKeyboardShortcuts.ts`.
+  `Esc`-to-close is owned by each modal component.)*
+- [x] **Empty states & toasts** — "No tasks yet", "No sessions", inline "Connecting…"; bottom-right toasts for
   script failures / unexpected PTY exit (DESIGN §5.4).
 
 ### V1 dormant seams (explicit — must exist, unused) — DESIGN §10 V1
@@ -254,8 +277,11 @@ Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session t
   `create_worktree.sh`/`delete_worktree.sh` (script contract) and a repo **without** (native `git worktree
   add`/`remove` under `worktree.location`); gated on `git` availability.
 - [x] Integration: PTY spawn at correct cwd, resize, exit/scrollback retention.
-- [~] Integration: restart reconciliation (worktree missing → `Stale`; present → fresh shell).
-- [ ] E2E smoke: create task → open terminal → run command → switch task (buffer preserved) → delete task.
+- [x] Integration: restart reconciliation (worktree missing → `Stale`, no runtime; present → stays `Ready`,
+  `switchTask` spawns a fresh shell at the worktree cwd) — `test/integration/reconcile.integration.test.ts`,
+  real `existsDir` + real PTY stack.
+- [x] E2E smoke: create task → open terminal → run command → switch task (buffer preserved) → delete task —
+  headless over the real `CommandLoop`/PTY stack in `test/integration/smoke.integration.test.ts`.
 
 ---
 

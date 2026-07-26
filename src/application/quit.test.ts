@@ -46,4 +46,32 @@ describe('shutdown (§6.3 Quit, I13)', () => {
     shutdown(fd.deps)
     expect(fd.persistence.checkpointed).toBe(true)
   })
+
+  it('flushes every captured scrollback buffer to the store before checkpointing (§6.6)', async () => {
+    const fd = makeDeps()
+    await createTask(fd.deps, taskInput('T'))
+    await openSession(fd.deps, { taskId: asTaskId('task-1') })
+    const sessionId = fd.workspace.task(asTaskId('task-1'))!.sessions()[0].id
+    // Simulate accumulated output for the live session.
+    fd.deps.scrollbacks.append(sessionId, 'buffered output')
+
+    shutdown(fd.deps)
+
+    expect(fd.persistence.savedScrollback.get(sessionId)).toBe('buffered output')
+    expect(fd.persistence.checkpointed).toBe(true)
+  })
+
+  it('is best-effort: a saveScrollback that throws does not block the checkpoint', async () => {
+    const fd = makeDeps()
+    await createTask(fd.deps, taskInput('T'))
+    await openSession(fd.deps, { taskId: asTaskId('task-1') })
+    const sessionId = fd.workspace.task(asTaskId('task-1'))!.sessions()[0].id
+    fd.deps.scrollbacks.append(sessionId, 'x')
+    fd.persistence.saveScrollback = () => {
+      throw new Error('save boom')
+    }
+
+    expect(() => shutdown(fd.deps)).not.toThrow()
+    expect(fd.persistence.checkpointed).toBe(true)
+  })
 })

@@ -19,9 +19,15 @@ class FakeDb implements SqliteDb {
   closed = false
   runs: Array<{ sql: string; params: unknown }> = []
   private results: Array<{ match: string; rows: unknown[] }> = []
+  private pragmaResults = new Map<string, unknown>()
 
   stub(match: string, rows: unknown[]): void {
     this.results.push({ match, rows })
+  }
+
+  /** Canned answer for a READ pragma (e.g. `user_version` → `[{ user_version: 2 }]`). */
+  stubPragma(name: string, value: unknown): void {
+    this.pragmaResults.set(name, value)
   }
 
   exec(sql: string): void {
@@ -30,6 +36,10 @@ class FakeDb implements SqliteDb {
 
   pragma(source: string): unknown {
     this.pragmas.push(source)
+    // A read pragma (`user_version`) has no `=`; return any canned value.
+    if (!source.includes('=')) {
+      return this.pragmaResults.get(source.trim())
+    }
     return undefined
   }
 
@@ -105,27 +115,47 @@ describe('SqliteStore.create (§6.3)', () => {
     expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS tasks'))).toBe(true)
     expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS sessions'))).toBe(true)
     expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS app_state'))).toBe(true)
+    expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS session_scrollback'))).toBe(
+      true
+    )
     expect(db.pragmas.some((p) => p.startsWith('user_version ='))).toBe(true)
   })
 
-  it('does NOT run the v2 ALTER on a fresh DB (no pre-existing tasks table)', () => {
+  it('does NOT run migrations on a fresh DB (no pre-existing tasks table)', () => {
     // No stub for sqlite_master → tableExists is false → the CREATE bootstraps a
-    // fresh DB already at SCHEMA_VERSION (its `tasks` has base_ref); the ALTER
-    // would fail with "duplicate column", so it must be skipped (§10).
+    // fresh DB already at SCHEMA_VERSION; the v2 ALTER would fail with "duplicate
+    // column" and the v3 CREATE is already done, so migrations must be skipped (§10).
     const db = new FakeDb()
     SqliteStore.create(db)
     expect(db.execed.some((s) => s.includes('ADD COLUMN base_ref'))).toBe(false)
-    expect(db.pragmas).toContain('user_version = 2')
+    expect(db.pragmas).toContain('user_version = 3')
   })
 
-  it('runs the v2 ALTER on a pre-existing older DB (adds base_ref)', () => {
-    // A pre-existing `tasks` table (older DB) → migrations run; user_version is
-    // stamped to the current version afterwards.
+  it('runs the pending migrations on a pre-existing older DB (base_ref + session_scrollback)', () => {
+    // A pre-existing `tasks` table with user_version 0 (older DB) → every migration
+    // runs; user_version is stamped to the current version afterwards.
     const db = new FakeDb()
     db.stub('sqlite_master', [{ name: 'tasks' }])
     SqliteStore.create(db)
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN base_ref'))).toBe(true)
-    expect(db.pragmas).toContain('user_version = 2')
+    expect(db.pragmas).toContain('user_version = 3')
+  })
+
+  it('runs ONLY the v3 migration on a v2 DB (skips the already-applied v2 ALTER)', () => {
+    // A pre-existing DB stamped at user_version 2: the v2 ALTER already ran on a
+    // prior launch (its guard skips it), only the v3 `session_scrollback` CREATE
+    // fires — proving the fromVersion guard upgrades v2 → v3 exactly once.
+    const db = new FakeDb()
+    db.stub('sqlite_master', [{ name: 'tasks' }])
+    db.stubPragma('user_version', [{ user_version: 2 }])
+    SqliteStore.create(db)
+    expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN base_ref'))).toBe(false)
+    // The v3 CREATE runs both from SCHEMA_STATEMENTS and the migration; either way
+    // the table is (re-)ensured. The IF NOT EXISTS makes the double-run safe.
+    expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS session_scrollback'))).toBe(
+      true
+    )
+    expect(db.pragmas).toContain('user_version = 3')
   })
 })
 
@@ -211,6 +241,26 @@ describe('SqliteStore writes', () => {
     expect(db.runs.some((r) => r.sql.includes('INSERT INTO app_state'))).toBe(true)
     store.setActiveTask(undefined)
     expect(db.runs.some((r) => r.sql.includes('DELETE FROM app_state'))).toBe(true)
+  })
+
+  it('saveScrollback upserts the (session_id, data) row', () => {
+    const db = new FakeDb()
+    const store = SqliteStore.create(db)
+    store.saveScrollback(asSessionId('s1'), 'the output')
+    const call = db.runs.find((r) => r.sql.includes('INSERT INTO session_scrollback'))
+    expect(call).toBeDefined()
+    expect(call!.sql).toContain('ON CONFLICT(session_id) DO UPDATE')
+    expect(call!.params).toEqual([asSessionId('s1'), 'the output'])
+  })
+
+  it('loadScrollback returns the stored data, or undefined when absent', () => {
+    const db = new FakeDb()
+    const store = SqliteStore.create(db)
+    db.stub('FROM session_scrollback', [{ data: 'restored output' }])
+    expect(store.loadScrollback(asSessionId('s1'))).toBe('restored output')
+
+    const empty = SqliteStore.create(new FakeDb())
+    expect(empty.loadScrollback(asSessionId('gone'))).toBeUndefined()
   })
 })
 

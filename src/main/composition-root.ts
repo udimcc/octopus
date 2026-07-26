@@ -40,6 +40,7 @@ import { NativeGitWorktreeProvider } from '../adapters/worktree/native-git-workt
 import { SelectingWorktreeProvider } from '../adapters/worktree/selecting-worktree-provider'
 import { createSocketProvisioner } from '../adapters/state-socket/socket-provisioner'
 import { PtySessionManager } from '../adapters/session/pty-session-manager'
+import { RingBufferScrollbackStore } from '../adapters/session/scrollback-store'
 import { InMemorySessionTypeRegistry } from '../adapters/session-types/session-type-registry'
 import { TerminalSessionTypeProvider } from '../adapters/session-types/terminal-session-type-provider'
 import { existsDir } from '../adapters/fs/dir-exists'
@@ -122,6 +123,11 @@ export function bootstrap(): AppContext {
   const configValidator = createAjvConfigValidator()
   const aggregator = worstStatusWins
   const runtimes = new MapRuntimeRegistry()
+  // Per-session output accumulator (§6.6): captured on every `onData`, flushed to
+  // `session_scrollback` on quit/exit, replayed into the fresh PTY on restart.
+  // Structurally implements the application's `ScrollbackBuffers` port (the
+  // interface-in-app / impl-in-adapter split mirrors MapRuntimeRegistry).
+  const scrollbacks = new RingBufferScrollbackStore()
 
   // 4. Load persisted state, hydrate the workspace, reconcile worktrees (I14).
   const snapshot = persistence.load()
@@ -143,6 +149,7 @@ export function bootstrap(): AppContext {
     aggregator,
     configValidator,
     socketProvisioner,
+    scrollbacks,
     currentVersion: CURRENT_VERSION
   }
 

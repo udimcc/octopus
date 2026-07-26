@@ -29,6 +29,29 @@ export interface SocketProvisioner {
 }
 
 /**
+ * In-memory, byte-capped accumulator of each session's terminal OUTPUT, keyed by
+ * session id. This realizes the §6.6 backend ring buffer (deferred in V1's
+ * renderer-only replay) so scrollback can be persisted and replayed on restart
+ * (§6.2 durable-backend seam). Held outside the domain — captured output is
+ * metadata, not live process state, so it does NOT violate I13: on restart a
+ * FRESH PTY is still spawned and the history is only prepended for the user to
+ * read. Mirrors the `RuntimeRegistry` interface-in-application / impl-in-adapter
+ * split so the application never imports the concrete ring buffer.
+ */
+export interface ScrollbackBuffers {
+  /** Append a chunk of a session's output (byte-capped, oldest evicted). */
+  append(id: SessionId, data: string): void
+  /** The retained output for a session (oldest → newest), or undefined if none. */
+  snapshot(id: SessionId): string | undefined
+  /** All buffered sessions as `[id, output]` pairs (for the quit flush). */
+  entries(): Iterable<[SessionId, string]>
+  /** Drop a session's buffer (on user close — the session is gone). */
+  delete(id: SessionId): void
+  /** Drop every buffer (teardown). */
+  clear(): void
+}
+
+/**
  * The live registry of running session runtimes, keyed by session id. Held
  * outside the domain (a `SessionRuntime` is an adapter handle, not domain state —
  * I13: live process state is never persisted). Use-cases start/stop runtimes and
@@ -59,6 +82,8 @@ export interface AppDependencies {
   readonly configValidator: ConfigValidator
   /** Dormant state-socket provisioner (§9.2, §10 V1 seam). */
   readonly socketProvisioner: SocketProvisioner
+  /** Per-session output accumulator for scrollback persistence (§6.6, §6.2). */
+  readonly scrollbacks: ScrollbackBuffers
   /** The app feature version (§10); gates session-type availability. */
   readonly currentVersion: number
   /**
