@@ -21,8 +21,8 @@ A task represents a unit of work the user needs to complete.
 
 ### Lifecycle
 
-- **Creation:** When opening a new task, a new git worktree is created via a user-provided custom script. The script creates the worktree and returns its path.
-- **Deletion:** When a task is deleted, the worktree is removed via a user-provided custom script.
+- **Creation:** Opening a new task shows a modal collecting four inputs — task name, repository directory (chosen via a native folder picker), source branch, and new branch. On confirm, Octopus creates the worktree: if the chosen repository contains a `create_worktree.sh`, it is run with the source and new branch and returns the worktree path; otherwise Octopus creates the worktree itself with git under a configurable base directory (default `~/octopus_repos/`).
+- **Deletion:** When a task is deleted, the worktree is removed symmetrically: via the repository's `delete_worktree.sh` if present, otherwise by Octopus with git.
 
 ### Behavior
 
@@ -68,7 +68,7 @@ A window listing all task names. Located on the left side of the screen.
 
 ### Controls
 
-- **New Task** button at the top of the window.
+- **New Task** button at the top of the window — opens the task-creation modal (name, repository directory picker, source branch, new branch).
 - **Delete Task** button at the top of the window.
 
 ## UI Layout

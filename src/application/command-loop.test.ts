@@ -1,0 +1,122 @@
+import { describe, it, expect } from 'vitest'
+import { CommandLoop } from './command-loop'
+import type { AppDependencies } from './dependencies'
+import type {
+  WorktreeProvider,
+  CreateWorktreeRequest,
+  CreateWorktreeResult
+} from '../ports/worktree-provider'
+import { makeDeps, taskInput } from './use-cases/test-fakes'
+import { asTaskId } from '../domain/ids'
+
+/** Yield the macrotask queue so queued microtask chains settle. */
+const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
+
+/**
+ * A worktree provider whose `create` blocks on a per-call gate, so a test can
+ * observe exactly when each command reaches (and passes) its awaited I/O — the
+ * lever for asserting the loop serializes commands rather than interleaving them.
+ */
+class GatedWorktreeProvider implements WorktreeProvider {
+  readonly log: string[] = []
+  private readonly gates: Array<() => void> = []
+
+  async create(
+    req: CreateWorktreeRequest,
+    onProgress?: (line: string) => void
+  ): Promise<CreateWorktreeResult> {
+    onProgress?.('provisioning')
+    this.log.push(`start:${req.taskName}`)
+    await new Promise<void>((resolve) => {
+      this.gates.push(() => {
+        this.log.push(`resume:${req.taskName}`)
+        resolve()
+      })
+    })
+    return { path: `/wt/${req.taskName}`, script: '/c', args: [req.taskName] }
+  }
+  async remove(): Promise<void> {}
+  async isDirty(): Promise<boolean> {
+    return false
+  }
+
+  /** Release the i-th started create (0-based). */
+  resume(i: number): void {
+    this.gates[i]?.()
+  }
+}
+
+function loopWith(worktrees: WorktreeProvider): CommandLoop {
+  const { deps } = makeDeps()
+  const wired: AppDependencies = { ...deps, worktrees }
+  return new CommandLoop(wired)
+}
+
+describe('CommandLoop single-writer serialization (§6.6)', () => {
+  it('runs commands one at a time in FIFO order — the second waits for the first', async () => {
+    const wt = new GatedWorktreeProvider()
+    const loop = loopWith(wt)
+
+    const p1 = loop.dispatch({ kind: 'createTask', input: taskInput('a') })
+    const p2 = loop.dispatch({ kind: 'createTask', input: taskInput('b') })
+
+    // The loop must have started ONLY the first command; the second is queued
+    // behind it and has not touched the (slow) provider yet.
+    await tick()
+    expect(wt.log).toEqual(['start:a'])
+
+    // Release the first; once it settles, the second begins — never before.
+    wt.resume(0)
+    await p1
+    await tick()
+    expect(wt.log).toEqual(['start:a', 'resume:a', 'start:b'])
+
+    wt.resume(1)
+    await p2
+    expect(wt.log).toEqual(['start:a', 'resume:a', 'start:b', 'resume:b'])
+  })
+})
+
+describe('CommandLoop error translation (§7)', () => {
+  it('turns a domain error into { ok: false, error } and never rejects', async () => {
+    const { deps } = makeDeps()
+    const loop = new CommandLoop(deps)
+
+    const result = await loop.dispatch({
+      kind: 'switchTask',
+      input: { taskId: asTaskId('does-not-exist') }
+    })
+    expect(result.ok).toBe(false)
+    expect(result.error).toMatch(/not found/)
+  })
+
+  it('keeps the chain alive: a command after a failed one still runs and succeeds', async () => {
+    const { deps, workspace } = makeDeps()
+    const loop = new CommandLoop(deps)
+
+    const bad = await loop.dispatch({
+      kind: 'switchTask',
+      input: { taskId: asTaskId('nope') }
+    })
+    expect(bad.ok).toBe(false)
+
+    // The FIFO chain survived the rejection; a subsequent command runs normally.
+    const ok = await loop.dispatch({ kind: 'createTask', input: taskInput('after-error') })
+    expect(ok.ok).toBe(true)
+    expect(workspace.tasks().map((t) => t.name)).toEqual(['after-error'])
+  })
+
+  it('reports success for a synchronous command', async () => {
+    const { deps } = makeDeps()
+    const loop = new CommandLoop(deps)
+
+    // Create then rename — both resolve ok:true, in order.
+    const created = await loop.dispatch({ kind: 'createTask', input: taskInput('orig') })
+    expect(created.ok).toBe(true)
+    const renamed = await loop.dispatch({
+      kind: 'renameTask',
+      input: { taskId: asTaskId('task-1'), name: 'renamed' }
+    })
+    expect(renamed.ok).toBe(true)
+  })
+})

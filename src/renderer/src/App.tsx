@@ -1,22 +1,101 @@
-import { useEffect, useState } from 'react'
+/**
+ * The renderer composition root (DESIGN §5.1, §5.6). It wires the one event
+ * subscription and hydrates the store on mount, then lays out this window by ROLE:
+ *   - **main** → the left `ProgressPanel` (task list + controls) and the right
+ *     `TaskWorkspace` (keep-alive session panes) — the full IDE.
+ *   - **secondary** (V1.5) → session-only: no progress panel, just the active
+ *     task's sessions that belong to THIS window (`SecondaryWorkspace`).
+ * Both share the `Toaster` and the boot sequence; only the main window mounts the
+ * New-Task modal + task-creation shortcut. All real UI lives in `components/`.
+ *
+ * MOUNT ORDER IS LOAD-BEARING (§5.2/§6.5): subscribe via `initEventRouting` BEFORE
+ * `getState().then(hydrate)`, so startup events the backend emits while we hydrate
+ * are routed (buffered by the backend until the first listener attaches) rather
+ * than lost. Do not reorder these two lines.
+ */
 
-// V0 placeholder shell. The real component tree — ProgressPanel + TaskWorkspace
-// (DESIGN §5.1) — lands in V1. This also exercises the preload bridge so the
-// end-to-end wiring is visibly working.
-export function App(): React.JSX.Element {
-  const [bridge, setBridge] = useState<string>('…')
+import { useCallback, useEffect, useState } from 'react'
+import { useStore } from './store/store'
+import { initEventRouting } from './pty/pty-router'
+import { openSearch } from './terminal/terminal-search'
+import { ProgressPanel } from './components/ProgressPanel'
+import { TaskWorkspace } from './components/TaskWorkspace'
+import { SecondaryWorkspace } from './components/SecondaryWorkspace'
+import { Toaster } from './components/Toaster'
+import { NewTaskModal } from './components/NewTaskModal'
+import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
+
+const shellStyle: React.CSSProperties = {
+  display: 'flex',
+  height: '100vh',
+  margin: 0,
+  background: 'var(--bg-app)',
+  color: 'var(--text-primary)',
+  fontFamily: 'var(--font-sans)'
+}
+
+/** Subscribe to events + hydrate the store once on mount (shared by both roles). */
+function useBoot(): void {
+  const hydrate = useStore((s) => s.hydrate)
+  const applyEvent = useStore((s) => s.applyEvent)
 
   useEffect(() => {
-    window.octopusAPI
-      .ping()
-      .then(setBridge)
-      .catch(() => setBridge('unavailable'))
-  }, [])
+    const unsubscribe = initEventRouting(applyEvent)
+    void window.octopusAPI.app.getState().then((state) => {
+      hydrate(state)
+      // Kick off restore of the initially-active task's sessions NOW (§6.3): the
+      // backend only spawns a restored task's PTYs (and replays their scrollback)
+      // inside `switchTask → startTaskSessions`, and nothing else fires a switch at
+      // launch. Without this, history for the active task wouldn't appear until the
+      // user clicked around. The backend pointer is already this id (set by
+      // `Workspace.hydrate`), so this switch skips the pointer move + event and only
+      // runs the idempotent session start. Every window issues it (idempotent), so a
+      // window opened later still gets its sessions started.
+      if (state.activeTaskId) void window.octopusAPI.tasks.switch({ taskId: state.activeTaskId })
+    })
+    return unsubscribe
+  }, [hydrate, applyEvent])
+}
+
+/** Search the active task's currently-visible session (shared shortcut handler). */
+function openSearchForActive(): void {
+  const { activeTaskId, activeSessionByTask } = useStore.getState()
+  if (!activeTaskId) return
+  const sessionId = activeSessionByTask[activeTaskId]
+  if (sessionId) openSearch(sessionId)
+}
+
+/** The main window: progress panel + full workspace + task creation (§5.1). */
+function MainWindowApp(): React.JSX.Element {
+  const [showNewTask, setShowNewTask] = useState(false)
+  const openNewTask = useCallback(() => setShowNewTask(true), [])
+  useKeyboardShortcuts({ onNewTask: openNewTask, onSearch: openSearchForActive })
 
   return (
-    <main>
-      <h1>Octopus</h1>
-      <p>Bridge: {bridge}</p>
+    <main style={shellStyle}>
+      <ProgressPanel onNewTask={openNewTask} />
+      <TaskWorkspace />
+      <Toaster />
+      {showNewTask ? <NewTaskModal onClose={() => setShowNewTask(false)} /> : null}
     </main>
   )
+}
+
+/** A secondary window (V1.5, §5.6): session-only, no progress panel or New Task. */
+function SecondaryWindowApp(): React.JSX.Element {
+  // Only the search shortcut is meaningful here; task creation lives in main.
+  useKeyboardShortcuts({ onNewTask: () => {}, onSearch: openSearchForActive })
+
+  return (
+    <main style={shellStyle}>
+      <SecondaryWorkspace />
+      <Toaster />
+    </main>
+  )
+}
+
+export function App(): React.JSX.Element {
+  useBoot()
+  const windowRole = useStore((s) => s.windowRole)
+  return windowRole === 'secondary' ? <SecondaryWindowApp /> : <MainWindowApp />
 }

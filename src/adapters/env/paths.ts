@@ -1,5 +1,5 @@
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { mkdirSync } from 'node:fs'
 
 /**
@@ -65,6 +65,38 @@ export function ensureAppDirs(paths: AppPaths = currentAppPaths()): AppPaths {
   mkdirSync(paths.dataDir, { recursive: true })
   mkdirSync(paths.logsDir, { recursive: true })
   return paths
+}
+
+/** The folder name for the default native-worktree base dir (§6.4). */
+const WORKTREE_DIR = 'octopus_repos'
+
+/**
+ * Resolve the base dir for native (script-less) worktrees (DESIGN §6.4). Pure —
+ * no filesystem access. `configured` is the (possibly empty / relative)
+ * `settings.worktree.location`; an empty or non-absolute value falls back to the
+ * home-based default `~/octopus_repos`, so a hand-edited relative path can never
+ * scatter worktrees under an unpredictable cwd.
+ */
+export function resolveWorktreeBase(configured: string | undefined, home: string): string {
+  if (configured && isAbsolute(configured)) {
+    return configured
+  }
+  return join(home, WORKTREE_DIR)
+}
+
+/** Convenience: the default native-worktree base for the current user's home. */
+export function resolveDefaultWorktreeBase(home: string = homedir()): string {
+  return resolveWorktreeBase(undefined, home)
+}
+
+/**
+ * Create the native-worktree base dir if it does not exist. Idempotent. Native
+ * `git worktree add` will not create the base dir's parent, so we ensure it up
+ * front; the effectful counterpart to {@link resolveWorktreeBase}.
+ */
+export function ensureWorktreeBase(base: string): string {
+  mkdirSync(base, { recursive: true })
+  return base
 }
 
 /** Platform base data dir per the XDG Base Directory spec / Windows convention. */

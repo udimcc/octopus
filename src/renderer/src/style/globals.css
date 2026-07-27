@@ -1,0 +1,300 @@
+/*
+ * Global stylesheet — the ONLY place literal design-token values live (as CSS
+ * custom properties on :root) and the only place :hover / :focus-visible /
+ * scrollbar styling can be expressed (inline style={} objects can't). Imported
+ * once from src/renderer/src/main.tsx. CSP-safe: Vite emits a <link> from 'self'
+ * in prod and an inline <style> in dev, both allowed by index.html's
+ * `style-src 'self' 'unsafe-inline'` (same path @xterm/xterm/css/xterm.css uses).
+ *
+ * tokens.ts mirrors these vars as `var(--...)` strings for inline styles — so the
+ * hex values below are the single source of truth. The one exception is the xterm
+ * GPU palette (tokens.ts `terminalTheme`), which needs concrete hex; keep it in
+ * sync with the accent/surface vars here.
+ */
+
+:root {
+  /* Background surfaces (layered, darkest → raised) */
+  --bg-app: #0e1116;
+  --bg-terminal: #0e1116;
+  --bg-sidebar: #14181f;
+  --bg-surface: #1a1f29;
+  --bg-surface-raised: #222834;
+  --bg-selected: #0f2f2c;
+  --bg-hover: rgba(255, 255, 255, 0.05);
+  --bg-input: #0e1116;
+
+  /* Borders / dividers */
+  --border: #2a3140;
+  --border-strong: #3a4353;
+  --border-subtle: rgba(255, 255, 255, 0.06);
+
+  /* Text */
+  --text-primary: #e6e9ef;
+  --text-secondary: #b3bac6;
+  --text-muted: #7a8494;
+  --text-inverse: #0e1116;
+
+  /* Accent (teal/cyan) */
+  --accent: #2dd4bf;
+  --accent-hover: #5eead4;
+  --accent-active: #14b8a6;
+  --accent-subtle: rgba(45, 212, 191, 0.14);
+  --on-accent: #04211d;
+
+  /* Semantic */
+  --error-fg: #ff9a92;
+  --error-bg: #2a1615;
+  --error-border: #5a2b28;
+  --info-fg: #7ee6e2;
+  --info-bg: #0f2b2a;
+  --info-border: #1f4a47;
+  --success-fg: #7ee0a0;
+
+  /* Overlay */
+  --overlay: rgba(0, 0, 0, 0.6);
+
+  /* Spacing (4px base) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Radii */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-pill: 999px;
+
+  /* Shadows / elevation */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.55);
+
+  /* Typography (system stacks only — CSP blocks remote fonts) */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif,
+    'Apple Color Emoji', 'Segoe UI Emoji';
+  --font-mono:
+    ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  --font-size-sm: 12px;
+  --font-size-base: 13px;
+  --font-size-lg: 15px;
+  --font-size-title: 18px;
+  --line-height-base: 1.5;
+
+  /* Transitions */
+  --transition-fast: 90ms ease;
+  --transition-base: 140ms ease;
+
+  color-scheme: dark;
+}
+
+/* Reset */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 600;
+}
+
+/* Native controls — dark base so unstyled <button>/<input> look intentional */
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: var(--font-size-base);
+  color: var(--text-primary);
+}
+
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  background: var(--bg-surface-raised);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+button:hover:not(:disabled) {
+  background: var(--border);
+  border-color: var(--border-strong);
+}
+
+button:active:not(:disabled) {
+  background: var(--border-strong);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+input,
+select,
+textarea {
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-muted);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+
+/* Keyboard focus ring (mouse clicks don't trigger :focus-visible) */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button:focus-visible {
+  border-color: var(--accent);
+}
+
+/* Custom scrollbars (Electron = Chromium) */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: var(--radius-pill);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+  background-clip: padding-box;
+}
+
+/* ---- Utility classes (hover states inline styles can't express) ---- */
+
+/* Borderless square glyph controls (gear, chevrons, close ×, ⋯, ↑ ↓). */
+.icon-button {
+  padding: var(--space-1);
+  min-width: 28px;
+  height: 28px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  line-height: 1;
+}
+
+.icon-button:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: transparent;
+  color: var(--text-primary);
+}
+
+/* Task rows and session tabs — hover tint (active state stays inline). */
+.task-row:hover {
+  background: var(--bg-hover);
+}
+
+.session-tab:hover {
+  background: var(--bg-hover);
+}
+
+/* Close glyph inside a session tab (a role=button span, not a <button>). */
+.tab-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* Dropdown / overflow menu items. */
+.menu-item {
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  transition: background var(--transition-fast);
+}
+
+.menu-item:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+/* Accent-filled primary action button. */
+.btn-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.btn-primary:active:not(:disabled) {
+  background: var(--accent-active);
+  border-color: var(--accent-active);
+}
+
+/* Destructive action button. */
+.btn-danger {
+  background: transparent;
+  color: var(--error-fg);
+  border-color: var(--error-border);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--error-bg);
+  border-color: var(--error-fg);
+  color: var(--error-fg);
+}

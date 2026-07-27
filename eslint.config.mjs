@@ -2,6 +2,7 @@ import js from '@eslint/js'
 import tseslint from 'typescript-eslint'
 import boundaries from 'eslint-plugin-boundaries'
 import eslintConfigPrettier from 'eslint-config-prettier'
+import globals from 'globals'
 
 // Enforces the DESIGN §2 dependency rule (UI → Application → Domain; adapters
 // depend inward on ports; only the composition root in `main` knows concrete
@@ -21,6 +22,27 @@ export default tseslint.config(
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
+  {
+    // Plain-JS Node tooling (build/install scripts, native + probe harnesses)
+    // runs under Node, not the browser — give it Node globals so `no-undef`
+    // doesn't flag process/require/module. These live outside src/ and are not
+    // part of the layered dependency rule.
+    files: ['scripts/**/*.{mjs,cjs}'],
+    languageOptions: {
+      globals: { ...globals.node }
+    }
+  },
+  {
+    // The .cjs probe uses CommonJS module semantics (require/module.exports) —
+    // required to run under ELECTRON_RUN_AS_NODE, which has no ESM app context.
+    files: ['scripts/**/*.cjs'],
+    languageOptions: {
+      sourceType: 'commonjs'
+    },
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off'
+    }
+  },
   {
     files: ['src/**/*.{ts,tsx}'],
     plugins: { boundaries },

@@ -34,9 +34,11 @@ sessions while **all sessions keep running in the background**.
 | Quit semantics (was open) | **Persist metadata + gracefully terminate processes; do not resurrect live process state.** Reconcile worktrees on startup. | §7, §8 |
 | PTY hosting: in-process vs daemon vs tmux | **V1: node-pty in-process behind a `SessionManager` port.** Durable backend (daemon or tmux) is a V2+ migration with the same message protocol. | §6.2 |
 | Task-state aggregation rule | **Worst-status-wins:** `Blocked > Working > Waiting > Unknown`. | §3.4, §9.3 |
-| Worktree location & repo ownership | **Script-owned; Octopus is location- and repo-agnostic.** Octopus stores the returned path verbatim; multi-repo needs no special support. | §6.4, §12.4 |
+| Worktree provisioning | **Repo-local script if present, else native git.** If `<repoDir>/create_worktree.sh` (resp. `delete_worktree.sh`) exists, Octopus runs it (script owns the location); otherwise Octopus provisions the worktree itself via `git worktree`. Detected **per task** on each create/delete. | §6.4, §12.4 |
+| Worktree location | **Octopus-owned by default**, under a configurable base dir `worktree.location` (default `~/octopus_repos/`). A repo-local create script may return any location instead; Octopus stores the path verbatim. `repo_root` stored per task, so multi-repo works with no special support. | §6.3, §6.4, §12.4 |
 | State-signal injection (OSC 133 + Claude hooks) | **Opt-out auto-injection** (rcfile sources user's rc; `.claude/settings.json` merged, never clobbered). Lands in V2. | §12.1 |
-| Branch on task creation | **Modal collects optional branch** (prefilled slug), always passed to the create script. | §12.3 |
+| Task-creation inputs | **Modal collects name, repo directory (native picker), source branch, new branch** (new-branch prefilled with a slug). All are passed to native git / the repo-local create script. | §5.4, §12.3 |
+| Single vs multiple windows | **Multi-window, V1.5.** The **main** window owns the progress panel; **secondary** windows are session-only. All windows sync on the single `activeTaskId` (switch a task → sessions switch everywhere). Session→window is an opaque `windowId` on `Session` (default `MAIN_WINDOW_ID`); pixel bounds live in persistence only, never the domain. Windows + session assignments are restored on relaunch. | §3.7, §5.6, §6.7, §10 |
 
 ---
 
@@ -44,23 +46,25 @@ sessions while **all sessions keep running in the background**.
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────┐
-│ RENDERER (React + TypeScript)                                               │
-│   ProgressPanel (task list, status icons, New/Delete Task)                  │
-│   TaskWorkspace → TaskView* → SessionTabBar (+ New Session dropdown)         │
-│                              → SessionPane* (TerminalPane / JenkinsPane)     │
-│   Zustand store (UI + domain snapshot + status); xterm.js instances in refs │
+│ MAIN RENDERER (React)          │  SECONDARY RENDERER* (V1.5, one per window) │
+│   ProgressPanel (tasks, icons, │    SecondaryWorkspace → SessionPane*        │
+│     New/Delete/New Window)     │      (sessions where windowId == thisWindow)│
+│   TaskWorkspace → TaskView* →  │    (no progress panel; session-only)        │
+│     SessionTabBar → SessionPane*│                                             │
+│   Zustand store (per renderer); xterm.js instances in refs; windowId/role    │
 └───────────────▲───────────────────────────────────────────── commands ▼────┘
                 │ events (ptyData, lifecycle, stateChanged)   │
         ┌───────┴───────────────────────────────────────────▼──────────────┐
-        │ PRELOAD: typed `window.octopusAPI` via contextBridge (only bridge) │
+        │ PRELOAD: typed `window.octopusAPI` (only bridge); getWindowId()    │
         └───────▲───────────────────────────────────────────▼──────────────┘
                 │ IPC (typed messages)                        │
 ┌───────────────┴─────────────────────────────────────────────────────────────┐
 │ MAIN PROCESS (Node.js)                                                        │
 │   Application layer: use cases + single-writer command loop                   │
 │   Domain (pure): Task, Session, WorktreeRef, State machines, Aggregator       │
+│   WindowRegistry (V1.5): windowId → webContents; routes events per window     │
 │   Ports → Adapters:                                                           │
-│     WorktreeProvider → ShellScriptWorktreeProvider                            │
+│     WorktreeProvider → SelectingWorktreeProvider (Script | NativeGit)         │
 │     SessionManager / SessionRuntime → PtyTerminalRuntime (node-pty)           │
 │     WorkspacePersistence → SqliteStore (better-sqlite3)                        │
 │     StateEvaluator (V2) → Terminal heuristic + ClaudeCode explicit            │
@@ -113,9 +117,15 @@ persistence, event routing, and any future multi-window refactor clean.
 - **Task** — `id`, `name` (display only), `worktree: WorktreeRef`, `sessions: OrderedList<Session>`,
   `activeSessionId?`, `lifecycle: TaskLifecycle`, `state: TaskState` (derived, V2+), timestamps.
 - **Session** — `id` (globally unique), `taskId`, `typeId`, `title`, `config: SessionConfig`,
-  `lifecycle: SessionLifecycle`, `state: SessionState` (V2+, default `Unknown`), `runtimeRef?`, `order`.
-- **WorktreeRef** (immutable once set) — `path: AbsolutePath`, `branch?`, `baseRef?`,
-  `provisionedBy: ScriptInvocationMeta`. Provisioning *status* lives in `TaskLifecycle`, not here.
+  `lifecycle: SessionLifecycle`, `state: SessionState` (V2+, default `Unknown`), `runtimeRef?`, `order`,
+  `windowId: WindowId` (V1.5; which window renders it, default `MAIN_WINDOW_ID`; §3.7). `windowId` is an
+  opaque assignment tag orthogonal to `taskId` — moving a session between windows never changes `taskId`
+  (I7) or lifecycle (I9), so it is **not** a cross-aggregate object reference, just a presentation label.
+- **WorktreeRef** (immutable once set) — `path: AbsolutePath`, `branch?` (the new branch), `baseRef?`
+  (the source branch it was cut from), `provisionedBy: ScriptInvocationMeta` (whose `repoRoot` is the
+  per-task repo directory). `branch`/`baseRef` are populated from the create modal (§5.4); a repo-local
+  create script that ignores them may still leave them set to the requested values. Provisioning *status*
+  lives in `TaskLifecycle`, not here.
 - **SessionType** (registry descriptor, behavior not data) — `typeId`, `displayName`, `icon`,
   `availableFromVersion`, `configSchema`, `capabilities: Set<Capability>`, runtime factory reference.
 - **SessionConfig** — per-type, validated against the type's `configSchema`. Must be fully serializable so a
@@ -158,7 +168,7 @@ precedence can be offered as a setting without touching the `Task` entity. Empty
 ### 3.5 Task lifecycle
 
 ```
- createTask(name,branch)
+ createTask(name,repoDir,sourceBranch,newBranch)
  [None] ──▶ (Provisioning) ──run WorktreeProvider.create──┐
                     success ▼                    failure ▼
                         (Ready) ◀──┐          (ProvisionFailed) ──retry/discard──▶ [None]
@@ -187,6 +197,28 @@ the list. `DeleteFailed` retains metadata so the user can retry or "force-forget
 `SessionLifecycle` ("is the runtime alive?") is **orthogonal** to `SessionState` ("what is it doing?", V2+).
 Switching tasks never changes lifecycle — background sessions stay `Running`; visibility is a UI concern, not
 a domain state. A `StartFailed`/`Exited` session maps to `Blocked` for aggregation.
+
+### 3.7 Window model (V1.5)
+
+Octopus runs across **multiple OS windows** (one per monitor). This is deliberately a **presentation +
+persistence concept, not a domain aggregate** — the domain stays pure and its invariants unchanged:
+
+- **`WindowId`** — a branded string id (like `TaskId`/`SessionId` in `src/domain/ids.ts`). A named constant
+  **`MAIN_WINDOW_ID`** identifies the single main window (stable, persisted — not a magic `null`).
+- **`Session.windowId: WindowId`** (§3.2) — the only domain touchpoint: an opaque tag saying *which window
+  renders this session right now*. It drives no rule and no lifecycle, exactly as `WorktreeRef.path` is a
+  "where it runs" bag on `Task`. The one mutation is `Session.assignToWindow(windowId)`; `taskId` is never
+  touched (I7 holds). Defaults to `MAIN_WINDOW_ID` at creation.
+- **`WindowRecord`** `{ id, role: 'main' | 'secondary', bounds: {x,y,width,height}, createdAt }` — lives
+  **only** in the `WorkspacePersistence` port + `SqliteStore` + `main` process. **Pixel geometry never enters
+  the pure domain.** Bounds are saved (debounced) on move/resize and restored at boot (§6.3, §6.7).
+
+**Sync model.** All windows share the single existing `activeTaskId` pointer (§3.2). A given window `W`
+renders exactly the sessions where `session.taskId === activeTaskId && session.windowId === W`. Switching the
+active task therefore switches sessions in **every** window simultaneously — the `activeTaskChanged` event is
+just broadcast to all windows (§6.7). A window may render **zero** sessions (empty state). `activeSessionId`
+within a task is a per-window UI selection, not shared. Roles: the **main** window shows the progress panel
+and sessions; **secondary** windows are session-only.
 
 ---
 
@@ -231,12 +263,12 @@ All `TaskView`s and their `SessionPane`s stay mounted; only the active ones are 
 Zustand store holds: `tasks`, `sessions`, `activeTaskId`, `activeSessionId` (per task), and (V2)
 `sessionStatuses` + derived `taskStatuses` (selector applying §3.4). **High-frequency `ptyData` bypasses the
 store** — it is delivered by IPC directly to the target `TerminalPane`'s `terminal.write(data)`. On startup
-the renderer calls `app:getInitialState` to hydrate; thereafter lifecycle/status events patch the store.
+the renderer calls `app:getState` (§6.5) to hydrate; thereafter lifecycle/status events patch the store.
 
 ```
 Keystroke:  xterm onData → octopusAPI.pty.input → ipcMain → pty.write
 Output:     pty onData → (batched, §6.5) → webContents.send('pty:data') → terminal.write   [not via store]
-New task:   modal → octopusAPI.tasks.create → run script → persist → resolve → store.createTask
+New task:   modal → octopusAPI.tasks.create → provision worktree (script or native git) → persist → resolve → store.createTask
 Status(V2): evaluator → send('session:status') → store.updateSessionStatus → icons re-render
 ```
 
@@ -252,6 +284,14 @@ context). `terminal.write(data)` keeps running for hidden sessions so their buff
 - **Scale mitigation:** browsers cap simultaneous WebGL contexts (~16). Above ~15 concurrent sessions, demote
   hidden terminals from the WebGL renderer to the Canvas renderer (still hardware-accelerated, fine for
   background buffering). Bound `scrollback` to ~10 000 lines/terminal.
+- **Software-GL displays (VDI/no-GPU):** the tier is also gated on GPU capability (`gpu-capability.ts`
+  probes `WEBGL_debug_renderer_info` once at startup). On a software rasterizer — SwiftShader, llvmpipe,
+  e.g. a VMware Horizon virtual desktop with no GPU — WebGL/Canvas do **not** throw; they "succeed" on the
+  CPU and then stall every frame on a synchronous `ReadPixels` readback (observed as multi-second lag typing
+  in a full-frame TUI like emacs/Spacemacs, plus `GPU stall due to ReadPixels` in the GPU log). There we skip
+  **both** accelerated tiers and leave xterm on its built-in **DOM renderer** (spans + CSS, no canvas, no
+  readback), which the X server / remoting layer blits cheaply — the fastest path when there is no real GPU.
+  This auto-reverts to WebGL on a real-GPU host.
 
 Rejected: unmount + backend-buffered replay (perceptible 50–300 ms "pop" on switch, cursor/selection
 restore complexity). The serialize-and-replay path is kept available for a future durable-backend re-attach
@@ -261,8 +301,11 @@ restore complexity). The serialize-and-replay path is kept available for a futur
 
 - **Tabs:** horizontal scroll on overflow with chevrons; overflow "…" menu beyond ~8 tabs; drag-reorder via
   `@dnd-kit/core`; per-tab `×` close (fires `pty:destroy`).
-- **New Task:** modal (name + branch) → spinner while the create script runs → on success new task becomes
-  active with empty state; on failure show stderr in a red block + Retry + toast.
+- **New Task:** modal with four fields — **name**, **repo directory** (a native OS directory picker via a
+  `dialog:pickDirectory` IPC), **source branch**, **new branch** (prefilled with a slug from the name,
+  editable). "Create Task" → spinner while the worktree is provisioned (repo-local script or native git,
+  §6.4) → on success new task becomes active with empty state; on failure show stderr in a red block +
+  Retry + toast.
 - **New Session:** dropdown populated from the session-type registry (filtered by `availableFromVersion ≤
   currentVersion`). Terminal creates immediately; Jenkins (V3) opens a small config modal.
 - **Delete Task:** confirm dialog ("closes all sessions and removes the worktree"); on dirty worktree, an
@@ -285,6 +328,35 @@ restore complexity). The serialize-and-replay path is kept available for a futur
   `ipcRenderer`/Node directly.
 - **Renderer:** rendering, Zustand store, xterm instances (in refs, never serialized to store), IPC
   subscription setup.
+
+### 5.6 Multiple windows (V1.5)
+
+Each OS window is a **separate Electron renderer process** with its own Zustand store. Two roles:
+
+- **Main window** — the existing layout (`ProgressPanel` + `TaskWorkspace` + `Toaster` + modals), plus a
+  **New Window** button in the panel header.
+- **Secondary window** — session-only: no `ProgressPanel`; a `SecondaryWorkspace` renders the sessions of
+  the active task assigned to *this* window. `App.tsx` branches on `windowRole` to pick the layout.
+
+**Identity.** A renderer learns its own id synchronously via `octopusAPI.app.getWindowId()`, which reads a
+`?windowId=<id>` query param injected into the renderer URL at window creation (§6.7) — no IPC round-trip.
+`windowRole`/`windowId`/`windows` are added to the store, hydrated from the (extended) `getState` DTO.
+
+**Rendering & keep-alive.** The §5.3 rules are unchanged and apply **per window**: every session assigned
+to a window stays mounted with `visibility:hidden` when not the active tab (never `display:none`).
+`SecondaryWorkspace` filters the session set to `session.windowId === thisWindowId`. The WebGL context
+budget (`terminal/webgl-budget.ts`, §5.3) is a **module-level** singleton and thus already **per-renderer-
+process** — each window gets its own ~15-context budget with no change, and on a software-GL/VDI host every
+window independently stays on xterm's DOM renderer.
+
+**Cross-window drag & drop — *detach + drop-on-window*.** `@dnd-kit` is DOM-scoped and cannot cross a
+`BrowserWindow` boundary, so a single HTML5 drag can't travel between windows like intra-bar tab reorder
+(§5.4) does. The gesture: dragging a tab **out of** its `SessionTabBar` (pointer leaves the bar by ~20 px)
+switches to *detach mode* — the in-window dnd-kit drag is cancelled, and on `pointerup` the renderer reads
+the native `screenX/screenY` and calls `octopusAPI.windows.windowAtPoint({x,y})` (§6.7). If the drop lands
+over another Octopus window → `sessions.move({sessionId, targetWindowId})`; if it lands on empty desktop →
+`createWindowWithSession` opens a new secondary window at the drop point and moves the session into it. The
+move is a pure view re-assignment — the PTY keeps running untouched (§6.7).
 
 ---
 
@@ -335,55 +407,92 @@ settings in a sibling `settings.json` (small, human-editable). Schema (simplifie
 ```sql
 CREATE TABLE tasks (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, worktree TEXT NOT NULL, branch TEXT,
-  repo_root TEXT, created_at INTEGER NOT NULL, position INTEGER NOT NULL,
-  active_session_id TEXT);  -- branch/repo_root nullable: script-owned, may be unknown (§6.4, §12.4)
+  base_ref TEXT, repo_root TEXT, created_at INTEGER NOT NULL, position INTEGER NOT NULL,
+  active_session_id TEXT);  -- branch=new branch, base_ref=source branch, repo_root=per-task repo dir; all nullable (§6.4)
 CREATE TABLE sessions (
   id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   type TEXT NOT NULL, label TEXT NOT NULL, shell TEXT, position INTEGER NOT NULL,
-  state TEXT NOT NULL DEFAULT 'unknown', created_at INTEGER NOT NULL, exited_at INTEGER);
+  state TEXT NOT NULL DEFAULT 'unknown', created_at INTEGER NOT NULL, exited_at INTEGER,
+  window_id TEXT NOT NULL DEFAULT 'main');  -- V1.5: which window renders it (§3.7); default = main
 CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);  -- e.g. active_task_id
+CREATE TABLE windows (  -- V1.5: window records incl. monitor placement (§3.7, §6.7)
+  id TEXT PRIMARY KEY, role TEXT NOT NULL CHECK(role IN ('main','secondary')),
+  x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0,
+  width INTEGER NOT NULL DEFAULT 1280, height INTEGER NOT NULL DEFAULT 800,
+  created_at INTEGER NOT NULL);
 ```
 
-**Persist:** task list/name/worktree/branch/repo_root/order/active-session; session definitions (id, type,
-label, shell, order); active task; global settings. **Cannot persist:** live PTY/TTY state and the foreground
-process. **Restore:** verify each worktree path exists (else mark task `Stale` with a warning, don't start
-sessions); for each terminal session, open a fresh PTY in the worktree (V1) or re-attach (durable backend).
+**Persist:** task list/name/worktree/branch/base_ref/repo_root/order/active-session; session definitions
+(id, type, label, shell, order); active task; global settings. **Cannot persist:** live PTY/TTY state and the
+foreground process. **Restore:** verify each worktree path exists (else mark task `Stale` with a warning,
+don't start sessions); for each terminal session, open a fresh PTY in the worktree (V1) or re-attach (durable
+backend). Persisted scrollback is metadata, independent of the live PTY (I13): it is loaded and published
+(as a `ptyData` event) **ahead of** the fresh PTY spawn, so restored history paints immediately without
+waiting on the shell fork. The `repo_root` column round-trips the per-task repo directory so
+delete-after-restart re-invokes the correct repo-local script / git repo (§6.4).
 
-### 6.4 Worktree script contract
+**Schema version:** `PRAGMA user_version` is stamped with the current version. Adding `base_ref` bumped it
+to **2**; `SqliteStore` runs a guarded, idempotent `ALTER TABLE tasks ADD COLUMN base_ref TEXT` when it
+opens a `user_version < 2` database (§10 — this is the first use of the migration seam). Persisted scrollback
+bumped it to **3**. **V1.5 (multi-window) bumps it to 4:** a guarded `ALTER TABLE sessions ADD COLUMN
+window_id TEXT NOT NULL DEFAULT 'main'` (the default migrates every existing session to the main window with
+no UPDATE pass), a `CREATE TABLE IF NOT EXISTS windows`, and an `INSERT OR IGNORE` seeding the `main` window
+record — the same fresh-DB-`CREATE`-plus-guarded-upgrade pattern proven at v2/v3.
 
-Octopus never manipulates git worktrees directly — it delegates to two user scripts configured in
-`settings.json` (`scripts.createWorktree`, `scripts.deleteWorktree`).
+**Windows persistence (V1.5, §3.7, §6.7).** `WorkspacePersistence` gains `loadWindows/upsertWindow/
+deleteWindow`. Window **bounds** are saved (debounced) on OS move/resize; the session's `window_id` is
+saved via the normal `upsertSession`. **Restore:** at boot, main creates a `BrowserWindow` for every
+persisted `WindowRecord` at its saved bounds, but **clamps off-screen bounds** — if a saved window
+intersects no current display work area (`screen.getAllDisplays()`, e.g. a monitor was unplugged) its
+top-left is snapped into the nearest display, preserving width/height. Each restored session then renders in
+whichever window its `window_id` names (falling back to the main window if that window record is gone).
 
-**Create** — `createWorktree <task-name> <branch-name>`; cwd `$OCTOPUS_REPO_ROOT`; env `OCTOPUS_REPO_ROOT`,
-`OCTOPUS_TASK_ID`, `OCTOPUS_VERSION`.
-- **stdout:** first non-empty line = absolute worktree path. **Exit 0** = success; non-zero → surface stderr,
-  task not created. **Timeout** 30 s (configurable) → SIGTERM, 2 s, SIGKILL.
-- **Octopus validates the returned path minimally** (absolute, exists, is a directory) and stores it verbatim
-  as the session cwd. **Octopus does not constrain *where* the worktree lives** — location and repo choice
-  are entirely the script's responsibility. This is what makes multi-repo workspaces work with no special
-  support: a script may create worktrees from any repo, anywhere. Octopus optionally warns if the path
-  doesn't look like a git worktree, but does not reject on that basis. On failure, best-effort rollback via
-  the delete script. `OCTOPUS_REPO_ROOT` (the directory Octopus was launched in) is passed only as a
-  convenience hint; the script is authoritative.
+### 6.4 Worktree provisioning contract
+
+Worktree create/delete go through the `WorktreeProvider` port. The V1 implementation is a
+`SelectingWorktreeProvider` composing two adapters behind that single unchanged port (§10): a
+**`ScriptWorktreeProvider`** (repo-local user script) and a **`NativeGitWorktreeProvider`** (Octopus runs
+git itself). The selector **probes per task** — `<repoDir>/create_worktree.sh` (resp. `delete_worktree.sh`)
+in the task's chosen repo directory — and delegates to the script provider if the file exists, else to the
+native provider. `repoDir` comes from the New-Task modal (§5.4) and is stored per task (`repo_root`), so
+different tasks may target different repos, some with custom scripts and some without. Both paths run
+through the same `ScriptRunner` (argv, `shell:false`, timeouts, captured stdout/stderr — I17); native git is
+never handed a shell string.
+
+**Create.** Both paths receive the source branch and the new branch; env `OCTOPUS_REPO_ROOT` (= `repoDir`),
+`OCTOPUS_TASK_ID`, `OCTOPUS_VERSION`; cwd `repoDir`; **timeout** 30 s (configurable via
+`worktreeCreateTimeoutMs`) → SIGTERM, 2 s, SIGKILL. On failure (non-zero exit / timeout / validation) the
+task is **not** created; stderr is surfaced.
+- **Repo-local script** — invoked `create_worktree.sh <source-branch> <new-branch>`. **stdout:** first
+  non-empty line = absolute worktree path; the script owns *where* the worktree lives. Octopus validates the
+  path minimally (absolute, exists, is a directory), warns (does not reject) if it doesn't look like a git
+  worktree, and stores it verbatim as the session cwd.
+- **Native git** — Octopus computes the path under the configured base dir `worktree.location` (default
+  `~/octopus_repos/`, created if missing) as `<location>/<sanitized-new-branch>-<short-task-id>` (flat
+  layout; the id suffix guarantees uniqueness), then runs
+  `git -C <repoDir> worktree add -b <new-branch> <computed-path> <source-branch>`. The computed path is
+  validated the same way and stored.
 
 ```bash
 #!/usr/bin/env bash
+# <repo>/create_worktree.sh — optional; only needed when native `git worktree` isn't enough.
 set -euo pipefail
-TASK_NAME="$1"; BRANCH="$2"
-WORKTREE_PATH="${OCTOPUS_REPO_ROOT}/../worktrees/${TASK_NAME}-${OCTOPUS_TASK_ID:0:8}"
+SOURCE_BRANCH="$1"; NEW_BRANCH="$2"
+WORKTREE_PATH="${OCTOPUS_REPO_ROOT}/../worktrees/${NEW_BRANCH//\//-}-${OCTOPUS_TASK_ID:0:8}"
 cd "$OCTOPUS_REPO_ROOT"
-git worktree add -b "$BRANCH" "$WORKTREE_PATH" origin/main 1>&2   # diagnostics → stderr
-echo "$WORKTREE_PATH"                                              # only the path → stdout
+git worktree add -b "$NEW_BRANCH" "$WORKTREE_PATH" "$SOURCE_BRANCH" 1>&2   # diagnostics → stderr
+echo "$WORKTREE_PATH"                                                      # only the path → stdout
 ```
 
-**Delete** — `deleteWorktree <task-name> <worktree-path>`; same env; stdout ignored; exit 0 = success
-(non-zero → warn, but the task record is still removed since the user asked). Because Octopus doesn't assume
-worktree location, deletion is delegated to the script; Octopus's **safety checks before calling** are:
-(1) path sanity — the path is exactly the one the create script returned for this task (stored verbatim), is
-absolute, and is neither `/` nor `OCTOPUS_REPO_ROOT` nor an ancestor of it; (2) uncommitted changes —
-`git -C <wt> status --porcelain` non-empty → confirm dialog; (3) all sessions killed first (SIGHUP, 2 s,
-SIGKILL) so nothing holds an fd inside the worktree. Stderr (≤64 KB) is shown in an error dialog with
-script path + exit code.
+**Delete** — symmetric. If `<repoDir>/delete_worktree.sh` exists it is invoked
+`delete_worktree.sh <task-name> <worktree-path>` (stdout ignored; exit 0 = success, non-zero → warn but the
+task record is still removed since the user asked); otherwise Octopus runs
+`git -C <repoDir> worktree remove <worktree-path>` (with `--force` when the user has confirmed deletion of a
+dirty worktree — see the gate below — since git refuses a dirty tree otherwise). **Safety checks before
+calling either path:** (1) path sanity — the path is exactly the one stored for this task, is absolute, and
+is neither `/` nor `repoDir` nor an ancestor of it; (2) uncommitted changes — `git -C <wt> status
+--porcelain` non-empty → confirm dialog; (3) all sessions killed first (SIGHUP, 2 s, SIGKILL) so nothing
+holds an fd inside the worktree. Stderr (≤64 KB) is shown in an error dialog with the command + exit code.
 
 ### 6.5 IPC protocol
 
@@ -393,9 +502,10 @@ Request/reply commands use `ipcMain.handle` (with a renderer-generated `requestI
 carry it over a Unix socket unchanged.
 
 ```
-Commands (UI→backend): createTask, deleteTask{force?}, renameTask, reorderTask,
-  createSession, closeSession, renameSession, reorderSession,
+Commands (UI→backend): createTask{name,repoDir,sourceBranch,newBranch}, deleteTask{force?},
+  renameTask, reorderTask, createSession, closeSession, renameSession, reorderSession,
   writeToPty, resizePty, getState, updateSettings
+Queries (UI→backend, no domain mutation): pickDirectory (native OS folder picker for the New-Task modal)
 Events (backend→UI):  ptyData, sessionCreated, sessionExited, sessionClosed,
   taskCreated, taskDeleted, taskRenamed, taskStale, scriptProgress, scriptError,
   sessionStateChanged (V2), taskStateChanged (V2), error
@@ -403,10 +513,18 @@ Events (backend→UI):  ptyData, sessionCreated, sessionExited, sessionClosed,
 
 ### 6.6 Concurrency & resilience
 
-- **Output batching / back-pressure:** per-session accumulator flushed on a 16 ms (60 Hz) timer, or
-  immediately at a 256 KB cap. node-pty has no flow control by design (blocking a PTY would stall an
-  interactive agent) — manage on the output side. **Inactive tabs:** don't send `ptyData`; append to the
-  per-session ring buffer (~500 KB) and replay on tab activation.
+- **Output batching / back-pressure:** per-session accumulator, **leading-edge**: the first chunk arriving
+  on an idle buffer flushes immediately (so an interactive keystroke echo — e.g. typing in `vi` — meets the
+  §11 `<5 ms` target instead of waiting a whole interval), then a **short 3 ms** trailing timer coalesces any
+  follow-up chunks in the window into one flush; a 256 KB cap forces an immediate flush regardless. The window
+  is short by design: a `vi` redraw arrives as several back-to-back chunks (cursor hide → glyph → cursor show),
+  so leading-edge alone would flush the invisible cursor-hide instantly but leave the visible glyph waiting out
+  the window — felt as input lag. xterm already paces painting to ~60 Hz via `requestAnimationFrame`, so this
+  timer does not gate the render rate; it only bounds IPC message *count*, and under a genuine flood the 256 KB
+  byte-cap dominates (flushes become byte-driven, not timer-driven) — so 3 ms carries no IPC-storm risk.
+  node-pty has no flow control by design (blocking a PTY would stall an interactive agent) — manage on the
+  output side. **Inactive tabs:** don't send `ptyData`; append to the per-session ring buffer (~500 KB) and
+  replay on tab activation.
 - **Single-writer domain:** all domain mutations (including ingested `sessionStateChanged`) are commands on
   one logical writer; adapters do I/O off-thread and feed results back as events. No locks around aggregates;
   deterministic tests. better-sqlite3 is synchronous but sub-ms; move to a worker thread only if profiling
@@ -416,6 +534,49 @@ Events (backend→UI):  ptyData, sessionCreated, sessionExited, sessionClosed,
   (+ warning).
 - **App quit:** SIGHUP all PTYs (fire-and-forget), `PRAGMA wal_checkpoint(TRUNCATE)`, then quit. Warn the
   user if any session is `Working`/`Blocked`.
+
+### 6.7 Multi-window backend (V1.5)
+
+**Event routing — `WindowRegistry`.** The single-target event forwarder (§6.5, one `webContents`) is
+replaced by a **`WindowRegistry`**: a `Map<WindowId, { webContents, ready, pending[] }>` with **one** bus
+subscription whose closure routes each mapped `EventDTO` by kind:
+- **`ptyData` and session-scoped events** (`sessionCreated/Exited/Closed/Renamed/Reordered`) → **only the
+  window hosting that session** (look up `session.windowId`; drop silently if the session is mid-close).
+- **`sessionMovedToWindow`** (new) → **both** the source and target windows, so both re-render in one cycle.
+- **Task-level / broadcast events** (`taskCreated/Deleted/Renamed/Reordered/Stale`, `activeTaskChanged`,
+  `scriptProgress/Error`, `error`, settings, and the dormant V2 `sessionStateChanged/taskStateChanged`) →
+  **all** windows — every window keeps its active-task view (and the main window its full task list) correct.
+
+Each window identifies itself at creation via a `?windowId=<id>` URL param (§5.6). Per-window `markReady`
+fires from that window's `getState` call — the handler resolves the caller via
+`BrowserWindow.fromWebContents(e.sender)` — so each renderer's buffered startup events flush exactly when it
+can receive them (generalizes the §6.5 single-window `onHydrate`).
+
+**New protocol (transport-agnostic, §6.5 — the V2 daemon carries `windowId` unchanged):**
+- **Commands:** `createWindow{role:'secondary', bounds?}`, `closeWindow{windowId, disposition:'move-to-main'
+  | 'kill-sessions'}`, `moveSessionToWindow{sessionId, targetWindowId}`, and `createWindowWithSession
+  {sessionId, bounds?}` (atomic create-then-move so the drop-on-desktop path is one dispatch, not a racy
+  two-round-trip).
+- **Query (bypasses the command loop, like `pickDirectory`):** `windowAtPoint{x,y}` → the `windowId` of the
+  Octopus window whose OS bounds contain the screen point, or `null` (empty desktop). Used by cross-window DnD.
+- **Events:** `windowCreated`, `windowClosed`, `sessionMovedToWindow{sessionId, taskId, fromWindowId,
+  toWindowId}`.
+
+**Move choreography (reuses the existing replay path — no PTY restart).** PTYs are keyed only by `sessionId`
+in main, so moving a session is a pure view re-assignment: `moveSessionToWindow` →
+`session.assignToWindow(target)` → `upsertSession` → emit `sessionMovedToWindow`. The **source** renderer
+unmounts the `SessionPane`/xterm (its cleanup unregisters the sink, releases the WebGL lease); the **target**
+renderer mounts a fresh xterm and its `registerTerminalSink` replays the `pty-router` pending ring buffer
+(the same 500 KB pre-mount buffer used at session restore, §6.6). The session is `Running`, not `Created`, so
+`startTaskSessions` is **not** re-triggered — no scrollback reload from SQLite, no flash. Subsequent `ptyData`
+is routed by the registry to the new window.
+
+**Window lifecycle.** *New Window* → `createWindow` (secondary). *Closing a secondary window* with live
+sessions shows a modal dialog (move-to-main vs kill-sessions vs cancel) → `closeWindow{disposition}`
+(move-to-main bulk-moves its sessions to the main window; kill-sessions closes each). *Closing the main
+window* quits the app: it triggers the §6.6 graceful shutdown (persist everything, SIGHUP PTYs, checkpoint).
+A quit-in-progress (`before-quit`) sets an `isQuitting` flag that suppresses the secondary close dialog so a
+`Ctrl+Q` isn't blocked. `window-all-closed` no longer force-quits (secondary closes must not kill the app).
 
 ---
 
@@ -445,8 +606,14 @@ Events (backend→UI):  ptyData, sessionCreated, sessionExited, sessionClosed,
 - **I16.** Never persist secrets. Jenkins config stores a `credentialsRef`; a `CredentialsProvider` port
   resolves it from the OS keychain (libsecret) at runtime. Define this port's shape in V1's persistence
   design so V3 doesn't retrofit secret handling.
-- **I17.** User scripts and terminal commands are a trust boundary: run via `ScriptRunner` with explicit cwd,
-  **no shell-string interpolation of untrusted names** (pass args safely), timeouts, captured exit/stderr.
+- **I17.** User scripts, native `git` invocations, and terminal commands are a trust boundary: run via
+  `ScriptRunner` with explicit cwd, **no shell-string interpolation of untrusted names** (branch names,
+  paths, and repo dirs are passed as argv elements with `shell:false`), timeouts, captured exit/stderr.
+- **I18.** (V1.5) A session has exactly one `windowId` at all times (default `MAIN_WINDOW_ID`); moving it
+  between windows changes only `windowId`, never `taskId` (I7) or lifecycle (I9). A session whose persisted
+  `window_id` names a window that no longer exists falls back to `MAIN_WINDOW_ID` on restore (never orphaned).
+  On restore, windows and their session assignments are reconstructed alongside tasks/sessions (extends
+  I13/I14/I15) — live process state is still not resurrected (fresh PTYs, I13).
 
 ---
 
@@ -556,7 +723,8 @@ versions.
   icons**.
 - **Application:** `CreateTask`, `DeleteTask`, `SwitchTask`, `OpenSession`, `CloseSession`, `ReorderSession`;
   single-writer command loop; `EventBus` that already carries `sessionStateChanged` (emitted by nobody yet).
-- **Ports/Adapters:** `WorktreeProvider`+`ShellScriptWorktreeProvider`, `ScriptRunner`,
+- **Ports/Adapters:** `WorktreeProvider` + `SelectingWorktreeProvider` (composing `ScriptWorktreeProvider` +
+  `NativeGitWorktreeProvider` — repo-local script or native git behind one port), `ScriptRunner`,
   `SessionManager`/`SessionRuntime`+`PtyTerminalRuntime`, `WorkspacePersistence`+`SqliteStore`,
   `IdGenerator`, `Clock`, `EventBus`.
 - **UI:** ProgressPanel (task list, New/Delete Task), TaskWorkspace (tabs, registry-driven New-Session
@@ -566,6 +734,27 @@ versions.
   already keyed by `typeId`; `SessionConfig` already validated against `configSchema`;
   `OCTOPUS_STATE_SOCKET` env + per-session socket dir provisioned (unused); `CredentialsProvider` port shape
   defined.
+
+### V1.5 — Multiple windows
+
+Ships on top of feature-complete V1; **strictly additive** — no domain/port/IPC signature changes, only new
+fields, commands, events, and one schema migration. Each layer's addition:
+- **Domain:** `WindowId` branded id + `MAIN_WINDOW_ID` constant; `Session.windowId` field +
+  `assignToWindow()`; `windowId` in `SessionSnapshot`. No aggregate/invariant changes (§3.7, I18).
+- **Application:** commands `createWindow`, `closeWindow`, `moveSessionToWindow`, `createWindowWithSession`
+  (+ their use cases + command-loop cases); `windows` + `thisWindowId` added to the `getState` read model
+  (sessions returned unfiltered — the renderer filters by `windowId`).
+- **Ports/Adapters:** `loadWindows/upsertWindow/deleteWindow` on `WorkspacePersistence` + `SqliteStore`;
+  schema **v3→4** migration (`window_id` column + `windows` table + seed main, §6.3).
+- **Infra/IPC:** `WindowRegistry` (replaces the single-target forwarder, §6.7); new channels + `windows`
+  API group + synchronous `app.getWindowId()`; `WindowDTO`/`WindowedWorkspaceStateDTO`; three new events.
+- **UI:** main/secondary `App` split; `SecondaryWorkspace`; New Window button; cross-window detach DnD
+  (§5.6). `pty-router`/`webgl-budget` need **no** change (per-renderer-process singletons already correct).
+
+**Forward-compatibility.** V2 is unaffected: status icons (§9) render per-session in whatever window hosts
+the session; `sessionStateChanged/taskStateChanged` are broadcast to all windows. The V2 durable-session
+daemon (§6.2) stays compatible — it echoes `windowId` on each event to route to the right window. V3 (Jenkins)
+is untouched: a `JenkinsPane` carries a `windowId` like any session and moves between windows the same way.
 
 ### V2 — Session state + aggregation + icons
 
@@ -592,12 +781,15 @@ versions.
 | # | Risk | Sev | Mitigation |
 |---|---|---|---|
 | R1 | Terminal state-detection reliability (heuristics misfire) | High | OSC 133 injected by default; Claude Code hooks for authoritative Blocked; manual "refresh state" affordance; log every transition w/ layer+confidence to tune thresholds. |
-| R2 | PTY performance with many sessions | Med | Single epoll loop; 16 ms output batching; 200 ms tcgetpgrp off the hot path; O(1)/byte OSC parse; 20 sessions ≈ 100 syscalls/s — negligible. |
-| R3 | Worktree script safety | High | Validate returned path (absolute, under configured root, is a git worktree); containment check before delete; 30 s timeout; show script output; **pass args safely (no shell interpolation)**. |
+| R2 | PTY performance with many sessions | Med | Single epoll loop; output batching (leading-edge + 3 ms trailing coalesce, §6.6); 200 ms tcgetpgrp off the hot path; O(1)/byte OSC parse; 20 sessions ≈ 100 syscalls/s — negligible. |
+| R3 | Worktree provisioning safety (repo-local script **or** native git) | High | Validate the resulting path (absolute, exists, is a directory; warn if not a git worktree); containment check before delete (exactly the stored path, not `/`/`repoDir`/an ancestor); 30 s timeout; show command output; **all inputs passed as argv — no shell interpolation** for both scripts and native git (I17). |
 | R4 | Keeping many sessions alive / crash loses agent work | Med | V1 accepts loss + fresh-shell restore; durable backend (tmux/daemon) is the V2+ mitigation behind `SessionManager`; warn on quit if Working/Blocked. |
 | R5 | Security (air-gapped on-prem): socket spoofing, secrets | Med | Per-user `chmod 700` socket dir; validate/size-cap socket messages; secrets only via keychain (`credentialsRef`), never in the store/JSON. |
 | R6 | OSC parsing correctness on adversarial output | Low–Med | Reuse a hardened parser (xterm.js's); cap param length (1 KB) + sequence timeout; never propagate parse errors to the renderer. |
 | R7 | State flicker | Med | Debounce/hysteresis (§9.3); Blocked exempt (must be instant). |
+| R8 | (V1.5) Cross-window move race — window moved between drop and `windowAtPoint`, or overlapping unmount/mount | Low | Hit-test is best-effort; worst case the session lands in the wrong window and is re-draggable. Source/target renderers are separate processes, so a brief double-sink during the move overlap cannot collide; the `pty-router` pending buffer covers the pre-mount gap (§6.7). |
+| R9 | (V1.5) Quit blocked by the secondary-window close dialog | Low | `before-quit` sets an `isQuitting` flag; the secondary `close` handler skips its dialog when quitting, so `Ctrl+Q` runs the normal graceful shutdown (§6.7). |
+| R10 | (V1.5) Persisted window off-screen after a monitor change | Low | On restore, clamp any window intersecting no display work area to the nearest display (`screen.getAllDisplays()`), preserving size (§6.3). |
 
 **Observability:** structured JSON state-transition log at `~/.local/share/octopus/state.log`;
 keyboard-toggled debug overlay showing the last N transitions per session (source layer + reason).
@@ -615,7 +807,7 @@ throwaway repo with a fake create/delete script.
 
 ## 12. Resolved Decisions
 
-These four were reviewed and decided; recorded here so implementation doesn't re-litigate them.
+These were reviewed and decided; recorded here so implementation doesn't re-litigate them.
 
 1. **Auto-inject OSC 133 & Claude Code hooks — YES, opt-out.** Octopus injects OSC 133 via an `--rcfile` that
    sources the user's own rc first (never edits `~/.bashrc`) and writes hooks into
@@ -628,12 +820,23 @@ These four were reviewed and decided; recorded here so implementation doesn't re
    kept clean enough that swapping in a tmux/daemon backend is drop-in. Pull it earlier only if long-running
    agents surviving crashes becomes a priority; tmux is the recommended backend (persistence + re-attach for
    free).
-3. **Task creation passes an optional `branch` arg.** The New-Task modal collects a branch, prefilled with a
-   slug derived from the task name (e.g. `feature/add-feature-1`). It is always passed to the create script,
-   which is free to use or ignore it. One-field-fast common case; no branch-naming policy baked into Octopus.
-4. **Octopus is location- and repo-agnostic; the create script owns everything.** Octopus does **not** assume
-   or constrain where a worktree lives or which repo it comes from — the create script creates the worktree
-   and returns its path, which Octopus stores verbatim and uses as the session cwd (§6.4). This dissolves the
-   multi-repo question: a script can create worktrees from any repo, anywhere, with no special support.
-   `repo_root` is stored per task (not just globally), and `OCTOPUS_REPO_ROOT` is passed to scripts only as a
-   convenience hint.
+3. **Task creation collects four inputs via a modal.** Name, repo directory (native OS directory picker),
+   source branch, and new branch (prefilled with a slug from the name, e.g. `feature/add-feature-1`; editable).
+   All are passed to native git / the repo-local create script. This replaces the earlier "name + optional
+   branch, script owns everything" decision: making the repo, source, and target explicit is what makes
+   provisioning clear and self-service. No branch-naming policy is baked in beyond the editable prefill.
+4. **Octopus owns worktree provisioning by default, with a repo-local script escape hatch.** When a repo has
+   no `create_worktree.sh`/`delete_worktree.sh`, Octopus creates/removes the worktree natively via `git`,
+   placing new worktrees under a configurable base dir `worktree.location` (default `~/octopus_repos/`). When
+   those scripts *do* exist in the chosen repo directory, Octopus runs them instead and stores the path they
+   return verbatim — so a team needing custom logic (special layout, submodules, LFS) keeps full control.
+   Either way `repo_root` is stored **per task**, so multi-repo workspaces work with no special support:
+   different tasks may target different repos. `OCTOPUS_REPO_ROOT` (= the task's repo dir) is passed to both
+   paths (§6.4).
+5. **Multiple windows (V1.5) — main + secondary, synced on one active task.** The main window owns the
+   progress panel; secondary windows are session-only. All windows share the single `activeTaskId`, so
+   switching a task switches sessions in every window. Session→window is an opaque `windowId` on `Session`
+   (default `MAIN_WINDOW_ID`); window bounds live only in persistence. Cross-window DnD is *detach +
+   drop-on-window* (§5.6). Closing a secondary window with live sessions asks (move-to-main vs kill); closing
+   the main window quits the app. Windows + assignments restore on relaunch, with off-screen clamping (§3.7,
+   §5.6, §6.7, I18).

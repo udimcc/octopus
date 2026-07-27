@@ -1,0 +1,94 @@
+/**
+ * `createTask` use case (DESIGN §3.5, §6.4). Drives a task None → Provisioning →
+ * Ready, running the create script through the `WorktreeProvider` behind the
+ * scenes and persisting only once the worktree is validated.
+ *
+ * Sequence:
+ *   1. Create the task (`None`), mark `Provisioning`, add to workspace, emit
+ *      `taskCreated` (Provisioning) so the UI can show a spinner immediately.
+ *   2. Run the create script; stream stderr as `scriptProgress` events (§6.4).
+ *   3. On success: build a `WorktreeRef`, `markReady`, provision the (dormant)
+ *      per-session socket dir, persist the task in a transaction, set it active,
+ *      and emit `taskCreated` (Ready) + `activeTaskChanged`.
+ *   4. On failure: `markProvisionFailed`, best-effort rollback via the delete
+ *      script, emit `scriptError`. The task record is kept in `ProvisionFailed`
+ *      so the UI can offer Retry / force-forget (§3.5) — it is NOT persisted
+ *      (only `Ready` tasks reach the DB, matching `taskToRow`'s worktree guard).
+ *
+ * The whole thing runs inside the single-writer loop, so no other mutation
+ * interleaves while the (slow) script runs — the workspace is consistent
+ * throughout (§6.6).
+ */
+
+import type { AppDependencies } from '../dependencies'
+import type { CreateTaskInput } from '../commands'
+import { Task } from '../../domain/task'
+import { WorktreeRef } from '../../domain/worktree-ref'
+
+export async function createTask(deps: AppDependencies, input: CreateTaskInput): Promise<void> {
+  const id = deps.ids.newTaskId()
+  const now = deps.clock.now()
+  const position = deps.workspace.tasks().length
+
+  const task = Task.create({ id, name: input.name, position, createdAt: now })
+  task.markProvisioning()
+  deps.workspace.addTask(task)
+  // Announce the provisioning task so the UI shows a spinner while the script runs.
+  deps.bus.publish({ type: 'taskCreated', task: task.toSnapshot(deps.aggregator) })
+
+  try {
+    const result = await deps.worktrees.create(
+      {
+        taskId: id,
+        taskName: input.name,
+        repoDir: input.repoDir,
+        sourceBranch: input.sourceBranch,
+        newBranch: input.newBranch
+      },
+      (line) => deps.bus.publish({ type: 'scriptProgress', taskId: id, line })
+    )
+
+    const worktree = WorktreeRef.create({
+      path: result.path,
+      branch: input.newBranch,
+      baseRef: input.sourceBranch,
+      provisionedBy: {
+        script: result.script,
+        args: result.args,
+        repoRoot: input.repoDir,
+        provisionedAt: deps.clock.now()
+      }
+    })
+    task.markReady(worktree)
+
+    // Dormant §9.2 seam: ensure the private socket dir exists for this uid so V2
+    // tooling can bind per-session sockets. Nothing listens in V1.
+    deps.socketProvisioner.ensureSocketDir()
+
+    // Persist the now-Ready task and make it active, atomically (§6.6).
+    deps.persistence.transaction(() => {
+      deps.persistence.upsertTask(task.toSnapshot(deps.aggregator))
+      deps.workspace.setActiveTask(id)
+      deps.persistence.setActiveTask(id)
+    })
+
+    deps.bus.publish({ type: 'taskCreated', task: task.toSnapshot(deps.aggregator) })
+    deps.bus.publish({ type: 'activeTaskChanged', taskId: id })
+  } catch (err) {
+    task.markProvisionFailed()
+    const message = err instanceof Error ? err.message : String(err)
+    // Rollback is best-effort and path-dependent: the provider rejects WITHOUT
+    // returning a validated path (script/git non-zero exit, timeout, or failed
+    // validation), so Octopus has no worktree path to remove (§6.4). The failed
+    // task therefore stays in `ProvisionFailed` — unpersisted — for the UI to
+    // Retry or force-forget (§3.5). Cleanup of any partial on-disk worktree is the
+    // script's / git's own concern.
+    deps.bus.publish({
+      type: 'scriptError',
+      taskId: id,
+      script: 'create_worktree',
+      exitCode: null,
+      stderr: message
+    })
+  }
+}

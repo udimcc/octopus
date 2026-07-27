@@ -10,8 +10,12 @@ files:
   - out/**
   - package.json
 
-# V0 has no native modules. Flip to true in V1 once node-pty / better-sqlite3 are
-# added (they must be rebuilt against Electron's ABI via @electron/rebuild).
+# Native modules (node-pty, better-sqlite3) are prepared for Electron's ABI by our
+# own `postinstall` (scripts/rebuild-natives.mjs), NOT by electron-builder. This
+# MUST stay false: electron-builder's rebuild would try to COMPILE against
+# Electron 33's node-headers, which are not on the air-gapped Artifactory mirror
+# (verified 404). Instead we ship node-pty compiled from source (it is N-API, so
+# ABI-stable) and better-sqlite3 as its official prebuilt electron-v130 binary.
 npmRebuild: false
 
 # Air-gapped: Electron's own binary comes from the internal Artifactory mirror,

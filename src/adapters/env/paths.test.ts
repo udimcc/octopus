@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolveAppPaths } from './paths'
+import { resolveAppPaths, resolveWorktreeBase, resolveDefaultWorktreeBase } from './paths'
 
 describe('resolveAppPaths', () => {
   it('honours XDG_DATA_HOME on Linux when set to an absolute path', () => {
@@ -42,5 +42,27 @@ describe('resolveAppPaths', () => {
     const paths = resolveAppPaths({ env: {}, platform: 'win32', home: 'C:\\Users\\dev' })
     expect(paths.dataDir).toContain('Roaming')
     expect(paths.dataDir).toContain('octopus')
+  })
+})
+
+describe('resolveWorktreeBase (§6.4)', () => {
+  it('uses a configured absolute location verbatim', () => {
+    expect(resolveWorktreeBase('/data/worktrees', '/home/dev')).toBe('/data/worktrees')
+  })
+
+  it('falls back to ~/octopus_repos when the location is empty', () => {
+    expect(resolveWorktreeBase('', '/home/dev')).toBe('/home/dev/octopus_repos')
+  })
+
+  it('falls back to ~/octopus_repos when the location is undefined', () => {
+    expect(resolveWorktreeBase(undefined, '/home/dev')).toBe('/home/dev/octopus_repos')
+  })
+
+  it('rejects a non-absolute (relative) location so worktrees never scatter under cwd', () => {
+    expect(resolveWorktreeBase('relative/worktrees', '/home/dev')).toBe('/home/dev/octopus_repos')
+  })
+
+  it('resolveDefaultWorktreeBase mirrors the unset fallback for a given home', () => {
+    expect(resolveDefaultWorktreeBase('/home/dev')).toBe('/home/dev/octopus_repos')
   })
 })
