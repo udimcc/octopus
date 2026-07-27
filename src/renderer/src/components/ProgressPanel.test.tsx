@@ -82,6 +82,22 @@ describe('<ProgressPanel>', () => {
     expect(screen.getByText(/Delete "Alpha"\?/)).toBeInTheDocument()
   })
 
+  it('does not re-open the Delete confirm for another task after the target is deleted', () => {
+    seed([task('t1', { name: 'Alpha' }), task('t2', { name: 'Beta', position: 1 })], 't1')
+    render(<ProgressPanel onNewTask={vi.fn()} />)
+
+    // Open the delete confirm for the active task (t1).
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Task' }))
+    expect(screen.getByRole('dialog', { name: 'Delete Task' })).toBeInTheDocument()
+
+    // The delete completes: the store drops t1 and clears activeTaskId.
+    useStore.getState().applyEvent({ type: 'taskDeleted', taskId: 't1' })
+
+    // Switching to another task must NOT revive the delete dialog.
+    fireEvent.click(screen.getByRole('button', { name: 'Beta' }))
+    expect(screen.queryByRole('dialog', { name: 'Delete Task' })).not.toBeInTheDocument()
+  })
+
   it('opens the Settings modal from the gear', () => {
     render(<ProgressPanel onNewTask={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: 'settings' }))

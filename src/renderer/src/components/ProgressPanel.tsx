@@ -38,7 +38,7 @@ export function ProgressPanel({ onNewTask }: ProgressPanelProps): React.JSX.Elem
   const activeTaskId = useStore((s) => s.activeTaskId)
   const setActiveTask = useStore((s) => s.setActiveTask)
 
-  const [showDelete, setShowDelete] = useState(false)
+  const [deleteTaskId, setDeleteTaskId] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }))
@@ -99,7 +99,7 @@ export function ProgressPanel({ onNewTask }: ProgressPanelProps): React.JSX.Elem
         </button>
         <button
           type="button"
-          onClick={() => setShowDelete(true)}
+          onClick={() => setDeleteTaskId(activeTaskId ?? null)}
           disabled={!activeTaskId}
           style={headerButton}
         >
@@ -139,8 +139,8 @@ export function ProgressPanel({ onNewTask }: ProgressPanelProps): React.JSX.Elem
         </SortableContext>
       </DndContext>
 
-      {showDelete && activeTaskId ? (
-        <DeleteTaskConfirm taskId={activeTaskId} onClose={() => setShowDelete(false)} />
+      {deleteTaskId && tasks[deleteTaskId] ? (
+        <DeleteTaskConfirm taskId={deleteTaskId} onClose={() => setDeleteTaskId(null)} />
       ) : null}
       {showSettings ? <SettingsModal onClose={() => setShowSettings(false)} /> : null}
     </aside>
