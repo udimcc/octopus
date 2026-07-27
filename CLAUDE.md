@@ -128,6 +128,13 @@ restores the `.bak`. See `CHANGELOG.md` and `DESIGN §6.3`.
 - **electron-vite is pinned to 3.1.0.** v4/5 require Node ≥20.19; the host runs **Node 20.17.x**. Pairs with
   vite 5.4, `@vitejs/plugin-react` 4.7, vitest 3.2. Don't bump these without also bumping Node.
 - **Electron 33** (bundles Node 20, matches host). Majors up to 43 are mirror-reachable if a bump is wanted.
+- **`build:unpack` runs electron-builder with `NODE_OPTIONS=--experimental-require-module`.** `electron-builder`
+  26.x (`app-builder-lib`, compiled CJS) `require()`s `@noble/hashes/blake2.js`, which is ESM-only (`"type":
+  "module"`). On **Node 20.17** `require(esm)` is off by default, so the load throws `ERR_REQUIRE_ESM` (the module
+  is loaded eagerly even for the `dir` target, which never calls the blockmap code). The flag enables Node's
+  own CJS→ESM interop — the same behavior that is **on by default from Node 22.12** — so it becomes a no-op once
+  the host's Node is bumped. It is scoped to the electron-builder step only (typecheck/vite don't need it). This
+  is the supported fix; do **not** patch `node_modules` or add a `@noble/hashes` `override` (all 2.x are ESM).
 
 ## Conventions
 
