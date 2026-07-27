@@ -5,7 +5,7 @@
  * lives in `composition-root.ts`; window/lifecycle plumbing in `window.ts`.
  */
 
-import { app, screen, BrowserWindow } from 'electron'
+import { app, screen, BrowserWindow, Menu } from 'electron'
 import { bootstrap, type AppContext } from './composition-root'
 import { createWindow, registerQuitHandler, optionsFromRecord } from './window'
 import { clampToDisplays, type Rect } from './window-bounds'
@@ -55,6 +55,10 @@ function restoreWindow(opts: CreateWindowOptions): void {
 }
 
 void app.whenReady().then(() => {
+  // Remove Electron's default application menu bar (File/Edit/View/Window/Help).
+  // Octopus has no use for it; the app is driven entirely through the renderer UI.
+  Menu.setApplicationMenu(null)
+
   const records = ctx.deps.persistence.loadWindows()
 
   // Main window first (it owns the progress panel). Fall back to a default record
