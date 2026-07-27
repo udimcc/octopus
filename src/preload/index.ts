@@ -87,7 +87,8 @@ const octopusAPI: OctopusAPI = {
     getWindowId: (): string =>
       new URLSearchParams(
         (globalThis as unknown as { location: { search: string } }).location.search
-      ).get('windowId') ?? 'main'
+      ).get('windowId') ?? 'main',
+    getVersion: (): Promise<string> => ipcRenderer.invoke(CHANNELS.appGetVersion)
   },
 
   dialog: {

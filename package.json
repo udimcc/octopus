@@ -12,6 +12,7 @@
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
     "build:unpack": "npm run build && electron-builder --dir --config electron-builder.yml",
+    "release": "node scripts/release.mjs",
     "preview": "electron-vite preview",
     "typecheck:node": "tsc -p tsconfig.node.json --noEmit",
     "typecheck:web": "tsc -p tsconfig.web.json --noEmit",

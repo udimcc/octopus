@@ -27,5 +27,9 @@ electronDownload:
 # (AppImage/deb builders fetch those from GitHub, which is unreachable). Packaged
 # installers are a V1+ concern gated on a verified ELECTRON_BUILDER_BINARIES_MIRROR.
 linux:
+  # Pin the launcher name: without this it defaults to `productName` ("Octopus"),
+  # a capitalized name the release script and install symlink would have to special-
+  # case. `octopus` keeps the on-disk binary stable, lowercase, and scriptable.
+  executableName: octopus
   target:
     - dir

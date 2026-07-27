@@ -30,6 +30,7 @@ that V2/V3 fill, so later versions stay additive rather than rewrites.
 | `npm run dev` | Launch the app with HMR (needs a display; it's a GUI Electron app). |
 | `npm run build` | `typecheck` then build all three bundles to `out/`. |
 | `npm run build:unpack` | Build + unpacked app under `release/` (Linux `dir` target only). |
+| `npm run release` | Cut a release: build → stage → `Octopus-<version>-x86_64.tar.gz` (see **Releasing**). |
 | `npm run typecheck` | `typecheck:node` + `typecheck:web` (two separate TS projects — see below). |
 | `npm run lint` / `lint:fix` | ESLint, **including the architectural dependency-rule boundary**. |
 | `npm run format` / `format:check` | Prettier. |
@@ -92,6 +93,35 @@ the public registry at build or runtime. `EBADENGINE` warnings on install are ha
 `electron-builder.yml` mirrors the Electron download similarly and currently ships only the Linux `dir` target
 (`npmRebuild: false`); packaged installers (AppImage/deb) need `ELECTRON_BUILDER_BINARIES_MIRROR` pointed at a
 verified Artifactory generic repo first — deferred to V1+.
+
+## Releasing
+
+Octopus ships as a **`tar.gz` + install script**, not an apt package. The `dir` target
+already builds offline-of-GitHub; AppImage remains the eventual primary once
+`ELECTRON_BUILDER_BINARIES_MIRROR` is pointed at a verified Artifactory generic repo (its
+helper binaries come from GitHub — the same deferral noted in `electron-builder.yml`).
+
+**Cut a release:**
+1. `npm version <x.y.z>` — bumps `package.json` and creates the `v<x.y.z>` git tag (single
+   source of truth; mirrored into `release/${version}/` by electron-builder). Note this is
+   the **release/semver** version — distinct from the feature-set integer `CURRENT_VERSION`
+   in `src/shared/version.ts` (§10), which gates session types and must not be conflated.
+2. `npm run release` (`scripts/release.mjs`) — refuses a dirty/untagged tree, asserts the
+   native `.node` binaries are present, runs `build:unpack`, then stages and tars
+   `release/<version>/Octopus-<version>-x86_64.tar.gz`. Inside: `octopus-<version>/` with
+   the `linux-unpacked/` payload + `install.sh`/`uninstall.sh` + `CHANGELOG.md`.
+
+**Install (user side):** extract, `cd octopus-<version>`, `./install.sh` — copies the app
+to a per-user program dir and symlinks `octopus` into `~/.local/bin`. `uninstall.sh`
+reverses it. Neither touches the **data** dir (`~/.local/share/octopus`).
+
+**Upgrade/rollback semantics (important).** Installs are **replace-in-place** and share
+one data dir, so the DB is the compatibility surface. Migrations are **forward-only and
+append-only** (`schema.ts` — add a new `MIGRATION` + bump `SCHEMA_VERSION`, never edit old
+DDL). Upgrading auto-migrates (after writing an `octopus.db.bak-v<N>` backup). Rolling back
+the binary is safe: an older build that meets a **newer** DB refuses to start with a fatal
+dialog (`IncompatibleDbError`) rather than corrupting it — the user runs a newer build or
+restores the `.bak`. See `CHANGELOG.md` and `DESIGN §6.3`.
 
 ## Version pins to respect
 

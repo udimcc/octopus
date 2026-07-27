@@ -32,7 +32,9 @@ const EMPTY_STATE: WindowedWorkspaceStateDTO = {
   // V1.5: each renderer is stamped with its window identity + the window list.
   thisWindowId: 'main',
   thisWindowRole: 'main',
-  windows: [{ id: 'main', role: 'main', bounds: { x: 0, y: 0, width: 1280, height: 800 }, createdAt: 0 }]
+  windows: [
+    { id: 'main', role: 'main', bounds: { x: 0, y: 0, width: 1280, height: 800 }, createdAt: 0 }
+  ]
 }
 
 /**
@@ -67,7 +69,8 @@ export function makeStubBridge(options?: {
     app: {
       getState: vi.fn().mockResolvedValue(state),
       updateSettings: ack,
-      getWindowId: vi.fn(() => windowId)
+      getWindowId: vi.fn(() => windowId),
+      getVersion: vi.fn().mockResolvedValue('0.0.0-test')
     },
     dialog: { pickDirectory: vi.fn().mockResolvedValue(undefined) },
     onEvent: (handler) => {
