@@ -11,7 +11,7 @@
  * lifecycle suffix only (`TaskListItem`).
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   DndContext,
   PointerSensor,
@@ -40,6 +40,14 @@ export function ProgressPanel({ onNewTask }: ProgressPanelProps): React.JSX.Elem
 
   const [deleteTaskId, setDeleteTaskId] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
+  // The release/semver version (§10), shown in the title. Static + display-only, so
+  // it lives here rather than in the event-projected store (whose `version` is the
+  // unrelated feature-set integer). Fetched once; null until it resolves.
+  const [version, setVersion] = useState<string | null>(null)
+
+  useEffect(() => {
+    void window.octopusAPI.app.getVersion().then(setVersion)
+  }, [])
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }))
 
@@ -81,7 +89,7 @@ export function ProgressPanel({ onNewTask }: ProgressPanelProps): React.JSX.Elem
             color: color.text
           }}
         >
-          Octopus
+          Octopus{version ? ` - ${version}` : ''}
         </h1>
         <button
           type="button"

@@ -98,6 +98,13 @@ describe('<ProgressPanel>', () => {
     expect(screen.queryByRole('dialog', { name: 'Delete Task' })).not.toBeInTheDocument()
   })
 
+  it('shows the app version next to the title', async () => {
+    // The stub bridge resolves app.getVersion() to '0.0.0-test'.
+    render(<ProgressPanel onNewTask={vi.fn()} />)
+    // The version arrives async; findBy waits for the store-independent effect.
+    await screen.findByText((_content, el) => el?.textContent === 'Octopus - 0.0.0-test')
+  })
+
   it('opens the Settings modal from the gear', () => {
     render(<ProgressPanel onNewTask={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: 'settings' }))
