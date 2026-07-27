@@ -92,7 +92,7 @@ describe('<NewTaskModal>', () => {
     expect(screen.getByLabelText('repo directory')).toHaveValue('')
   })
 
-  it('dispatches create with the trimmed four-field payload', () => {
+  it('dispatches create with the trimmed four-field payload (mode: new)', () => {
     render(<NewTaskModal onClose={vi.fn()} />)
     fill('task name', 'My Feature')
     fill('repo directory', '/repos/app')
@@ -100,11 +100,90 @@ describe('<NewTaskModal>', () => {
     fill('new branch', ' feature/x ')
     fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
     expect(window.octopusAPI.tasks.create).toHaveBeenCalledWith({
+      mode: 'new',
       name: 'My Feature',
       repoDir: '/repos/app',
       sourceBranch: 'main',
       newBranch: 'feature/x'
     })
+  })
+
+  it('defaults to the "From New Worktree" tab and hints master as the source branch', () => {
+    render(<NewTaskModal onClose={vi.fn()} />)
+    expect(screen.getByRole('tab', { name: 'From New Worktree' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    )
+    expect(screen.getByLabelText('source branch')).toHaveAttribute('placeholder', 'master')
+  })
+
+  it('the Existing tab shows only task name + worktree directory', () => {
+    render(<NewTaskModal onClose={vi.fn()} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Worktree' }))
+    expect(screen.getByLabelText('task name')).toBeInTheDocument()
+    expect(screen.getByLabelText('worktree directory')).toBeInTheDocument()
+    // New-worktree-only fields are gone.
+    expect(screen.queryByLabelText('repo directory')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('source branch')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('new branch')).not.toBeInTheDocument()
+  })
+
+  it('gates Create on name + worktree dir in the Existing tab', () => {
+    render(<NewTaskModal onClose={vi.fn()} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Worktree' }))
+    const create = screen.getByRole('button', { name: 'Create Task' })
+    expect(create).toBeDisabled()
+    fill('task name', 'Adopted')
+    expect(create).toBeDisabled() // worktree dir still empty
+    fill('worktree directory', '/home/u/wt-x')
+    expect(create).toBeEnabled()
+  })
+
+  it('dispatches create with the existing-worktree payload (mode: existing)', () => {
+    render(<NewTaskModal onClose={vi.fn()} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Worktree' }))
+    fill('task name', ' Adopted ')
+    fill('worktree directory', '/home/u/wt-x')
+    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
+    expect(window.octopusAPI.tasks.create).toHaveBeenCalledWith({
+      mode: 'existing',
+      name: 'Adopted',
+      worktreeDir: '/home/u/wt-x'
+    })
+  })
+
+  it('the Existing tab closes on success (activeTaskChanged)', async () => {
+    const onClose = vi.fn()
+    render(<NewTaskModal onClose={onClose} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Worktree' }))
+    fill('task name', 'Adopted')
+    fill('worktree directory', '/home/u/wt-x')
+    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
+    await waitFor(() => expect(window.octopusAPI.tasks.create).toHaveBeenCalled())
+
+    emit({ type: 'activeTaskChanged', taskId: 'task-1' })
+    expect(onClose).toHaveBeenCalled()
+  })
+
+  it('the Existing tab shows the adopt stderr inline on scriptError', async () => {
+    const onClose = vi.fn()
+    render(<NewTaskModal onClose={onClose} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Worktree' }))
+    fill('task name', 'Adopted')
+    fill('worktree directory', '/home/u/wt-x')
+    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
+    await waitFor(() => expect(window.octopusAPI.tasks.create).toHaveBeenCalled())
+
+    emit({
+      type: 'scriptError',
+      taskId: 'task-1',
+      script: 'adopt',
+      exitCode: null,
+      stderr: 'not a git worktree: /home/u/wt-x'
+    })
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('not a git worktree'))
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled()
   })
 
   it('closes on success (activeTaskChanged for the created task)', async () => {

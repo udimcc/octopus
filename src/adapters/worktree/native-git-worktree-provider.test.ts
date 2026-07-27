@@ -47,7 +47,7 @@ const SETTINGS: Settings = {
 const BASE = '/base'
 
 function provider(
-  runner: FakeRunner,
+  runner: ScriptRunner,
   probe: PathProbe = goodProbe,
   onWarning?: (m: string) => void
 ) {
@@ -183,6 +183,100 @@ describe('NativeGitWorktreeProvider.remove (§6.4)', () => {
     const runner = new FakeRunner()
     runner.rejectWith = new Error('spawn ENOENT')
     await expect(provider(runner).remove(removeReq)).rejects.toThrow(/ENOENT/)
+  })
+})
+
+/**
+ * `adopt` issues two git calls (`worktree list --porcelain`, then `rev-parse`), so
+ * it needs per-call results — this runner dispatches by the git subcommand.
+ */
+class AdoptRunner implements ScriptRunner {
+  calls: RunCall[] = []
+  list: ScriptResult = { exitCode: 0, signal: null, stdout: '', stderr: '', timedOut: false }
+  revParse: ScriptResult = {
+    exitCode: 0,
+    signal: null,
+    stdout: 'feature/x\n',
+    stderr: '',
+    timedOut: false
+  }
+
+  async run(
+    command: string,
+    args: readonly string[],
+    opts: ScriptRunOptions
+  ): Promise<ScriptResult> {
+    this.calls.push({ command, args, opts })
+    if (args.includes('rev-parse')) return this.revParse
+    return this.list
+  }
+}
+
+describe('NativeGitWorktreeProvider.adopt (§6.4)', () => {
+  const adoptReq = {
+    taskId: asTaskId('abcdef0123456789'),
+    taskName: 'Alpha',
+    worktreeDir: '/home/u/worktrees/wt-x'
+  }
+  // The FIRST porcelain `worktree ` line is the main worktree = the repo root.
+  const porcelain =
+    'worktree /home/u/project\nHEAD abc\nbranch refs/heads/main\n\nworktree /home/u/worktrees/wt-x\nHEAD def\nbranch refs/heads/feature/x\n'
+
+  it('returns the first porcelain entry as repoRoot, the picked dir as path, and the branch', async () => {
+    const runner = new AdoptRunner()
+    runner.list = { ...runner.list, stdout: porcelain }
+    runner.revParse = { ...runner.revParse, stdout: 'feature/x\n' }
+
+    const res = await provider(runner).adopt(adoptReq)
+
+    expect(res.repoRoot).toBe('/home/u/project')
+    expect(res.path).toBe('/home/u/worktrees/wt-x')
+    expect(res.branch).toBe('feature/x')
+
+    // Read-only, argv-only, run in the picked directory.
+    expect(runner.calls[0].args).toEqual([
+      '-C',
+      '/home/u/worktrees/wt-x',
+      'worktree',
+      'list',
+      '--porcelain'
+    ])
+    expect(runner.calls[0].opts.cwd).toBe('/home/u/worktrees/wt-x')
+  })
+
+  it('treats a detached HEAD (rev-parse → HEAD) as no branch', async () => {
+    const runner = new AdoptRunner()
+    runner.list = { ...runner.list, stdout: porcelain }
+    runner.revParse = { ...runner.revParse, stdout: 'HEAD\n' }
+
+    const res = await provider(runner).adopt(adoptReq)
+    expect(res.branch).toBeUndefined()
+  })
+
+  it('rejects a non-git directory (git worktree list non-zero)', async () => {
+    const runner = new AdoptRunner()
+    runner.list = { ...runner.list, exitCode: 128, stderr: 'fatal: not a git repository' }
+    await expect(provider(runner).adopt(adoptReq)).rejects.toThrow(/not a git worktree/)
+  })
+
+  it('refuses the repository main working tree (would be undeletable)', async () => {
+    const runner = new AdoptRunner()
+    // Picked dir IS the main worktree → first porcelain entry equals it.
+    runner.list = {
+      ...runner.list,
+      stdout: 'worktree /home/u/worktrees/wt-x\nHEAD abc\nbranch refs/heads/main\n'
+    }
+    await expect(provider(runner).adopt(adoptReq)).rejects.toThrow(/main working tree/)
+  })
+
+  it('rejects when the picked directory fails validation', async () => {
+    const runner = new AdoptRunner()
+    const badProbe: PathProbe = { isDirectory: () => false, looksLikeGitWorktree: () => false }
+    await expect(provider(runner, badProbe).adopt(adoptReq)).rejects.toThrow(
+      /does not exist or is not a directory/
+    )
+    // Validation happens before any git call.
+    expect(runner.calls).toEqual([])
   })
 })
 

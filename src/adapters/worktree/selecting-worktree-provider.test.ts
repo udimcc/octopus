@@ -5,22 +5,32 @@ import type {
   WorktreeProvider,
   CreateWorktreeRequest,
   CreateWorktreeResult,
+  AdoptWorktreeRequest,
+  AdoptWorktreeResult,
   RemoveWorktreeRequest
 } from '../../ports/worktree-provider'
 import { asTaskId } from '../../domain/ids'
 
 /** A stub delegate that records the calls it received and returns a fixed result. */
-function stubProvider(
-  tag: string
-): WorktreeProvider & { creates: CreateWorktreeRequest[]; removes: RemoveWorktreeRequest[] } {
+function stubProvider(tag: string): WorktreeProvider & {
+  creates: CreateWorktreeRequest[]
+  removes: RemoveWorktreeRequest[]
+  adopts: AdoptWorktreeRequest[]
+} {
   const creates: CreateWorktreeRequest[] = []
   const removes: RemoveWorktreeRequest[] = []
+  const adopts: AdoptWorktreeRequest[] = []
   return {
     creates,
     removes,
+    adopts,
     async create(req: CreateWorktreeRequest): Promise<CreateWorktreeResult> {
       creates.push(req)
       return { path: `/wt/${tag}`, script: tag, args: [] }
+    },
+    async adopt(req: AdoptWorktreeRequest): Promise<AdoptWorktreeResult> {
+      adopts.push(req)
+      return { path: `/wt/${tag}`, repoRoot: `/repo/${tag}`, branch: tag }
     },
     async remove(req: RemoveWorktreeRequest): Promise<void> {
       removes.push(req)
@@ -122,6 +132,26 @@ describe('SelectingWorktreeProvider.remove dispatch (§6.4)', () => {
 
     expect(native.removes).toHaveLength(1)
     expect(script.removes).toEqual([])
+  })
+})
+
+describe('SelectingWorktreeProvider.adopt (§6.4)', () => {
+  it('is provider-neutral: never probes for a script, always delegates to native', async () => {
+    const hasScript = vi.fn()
+    const script = stubProvider('script')
+    const native = stubProvider('native')
+    const sel = new SelectingWorktreeProvider({ script, native, hasScript })
+
+    const res = await sel.adopt({
+      taskId: asTaskId('t1'),
+      taskName: 'Alpha',
+      worktreeDir: '/wt/existing'
+    })
+
+    expect(hasScript).not.toHaveBeenCalled()
+    expect(native.adopts).toHaveLength(1)
+    expect(script.adopts).toEqual([])
+    expect(res.repoRoot).toBe('/repo/native')
   })
 })
 

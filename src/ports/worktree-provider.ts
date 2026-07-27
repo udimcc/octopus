@@ -7,6 +7,9 @@
  *
  * The interface SHAPE is frozen across versions (§10); only the request payloads
  * gain fields (`repoDir`/`sourceBranch`/`newBranch`) as the modal supplies them.
+ * `adopt` was added additively during V1 development (the modal grew a "From
+ * Existing Worktree" mode) — the freeze protects the not-yet-built V2 daemon
+ * protocol, so widening the port before that binding exists is safe.
  */
 
 import type { TaskId } from '../domain/ids'
@@ -31,6 +34,27 @@ export interface CreateWorktreeResult {
   readonly args: readonly string[]
 }
 
+export interface AdoptWorktreeRequest {
+  readonly taskId: TaskId
+  /** Display name (available to diagnostics; symmetric with create). */
+  readonly taskName: string
+  /** The existing worktree directory the user selected in the modal. */
+  readonly worktreeDir: string
+}
+
+export interface AdoptWorktreeResult {
+  /** The adopted worktree path (validated, absolute) — stored as the session cwd. */
+  readonly path: string
+  /**
+   * The MAIN worktree / repo root that owns this worktree. Stored as the task's
+   * `repoRoot` so a later delete points git (or `delete_worktree.sh`) at the repo,
+   * and so `assertSafeToDelete` sees a `path` distinct from `repoRoot` (§6.4).
+   */
+  readonly repoRoot: string
+  /** Current branch of the worktree, if on one; `undefined` on detached HEAD. */
+  readonly branch?: string
+}
+
 export interface RemoveWorktreeRequest {
   readonly taskId: TaskId
   readonly taskName: string
@@ -52,6 +76,15 @@ export interface WorktreeProvider {
     req: CreateWorktreeRequest,
     onProgress?: (line: string) => void
   ): Promise<CreateWorktreeResult>
+
+  /**
+   * Adopt an EXISTING worktree directory (§6.4). Detects the owning repo root and
+   * current branch via git; validates the directory the same way as a created
+   * path. Rejects if the directory is not a git worktree, or if it is the repo's
+   * MAIN working tree (adopting the primary checkout would make the task
+   * undeletable — delete would target the repo itself).
+   */
+  adopt(req: AdoptWorktreeRequest): Promise<AdoptWorktreeResult>
 
   /**
    * Remove the worktree (repo-local script or native git, §6.4). The caller kills

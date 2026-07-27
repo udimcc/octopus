@@ -4,6 +4,27 @@ All notable changes to Octopus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0]
+
+### Added
+
+- **Start a task from an existing worktree.** The New-Task dialog now has two tabs: *From
+  New Worktree* (provision a fresh `git worktree`, as before) and *From Existing Worktree*
+  (pick a directory Octopus already has checked out). Adoption detects the worktree's
+  owning repository and current branch via git, so the task is delete-safe (the owning
+  repo — never the worktree — is recorded as the deletion root). Picking a repository's
+  main working tree is rejected with a clear message.
+
+### Changed
+
+- The New-Task *Source branch* field placeholder is now `master` (was `main`).
+
+### Fixed
+
+- **Restored `package.json` scripts and devDependencies.** The `1.0.0` release commit
+  truncated `package.json`, dropping every `scripts` entry and all `devDependencies`,
+  which broke `npm run dev`/`build`/`test`/`lint`. Both sections are restored.
+
 ## [1.0.0]
 
 First released build. Delivered as a `tar.gz` with an `install.sh` (not an apt package);

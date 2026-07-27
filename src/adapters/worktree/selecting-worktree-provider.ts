@@ -22,6 +22,8 @@ import type {
   WorktreeProvider,
   CreateWorktreeRequest,
   CreateWorktreeResult,
+  AdoptWorktreeRequest,
+  AdoptWorktreeResult,
   RemoveWorktreeRequest
 } from '../../ports/worktree-provider'
 import { CREATE_SCRIPT_NAME, DELETE_SCRIPT_NAME } from './script-worktree-provider'
@@ -57,6 +59,12 @@ export class SelectingWorktreeProvider implements WorktreeProvider {
       ? this.script
       : this.native
     return provider.create(req, onProgress)
+  }
+
+  adopt(req: AdoptWorktreeRequest): Promise<AdoptWorktreeResult> {
+    // Provider-neutral git detection (like `isDirty`): the native adapter owns it
+    // regardless of whether the repo ships create/delete scripts.
+    return this.native.adopt(req)
   }
 
   remove(req: RemoveWorktreeRequest): Promise<void> {

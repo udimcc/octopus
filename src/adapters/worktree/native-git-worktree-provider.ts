@@ -21,18 +21,44 @@
  * `isDirty`: shared `git status --porcelain` helper.
  */
 
+import { normalize, sep } from 'node:path'
 import type { Settings } from '../../ports/settings-store'
 import type { ScriptRunner } from '../../ports/script-runner'
 import type {
   WorktreeProvider,
   CreateWorktreeRequest,
   CreateWorktreeResult,
+  AdoptWorktreeRequest,
+  AdoptWorktreeResult,
   RemoveWorktreeRequest
 } from '../../ports/worktree-provider'
 import { validateWorktreePath, assertSafeToDelete, type PathProbe } from './path-safety'
 import { fsPathProbe } from './fs-path-probe'
 import { computeWorktreePath } from './worktree-path'
-import { GIT, scriptEnv, firstLine, gitIsDirty } from './worktree-support'
+import { GIT, scriptEnv, firstNonEmptyLine, firstLine, gitIsDirty } from './worktree-support'
+
+/** Normalize + strip a single trailing separator (keep root) for path identity. */
+function canonPath(p: string): string {
+  const n = normalize(p.trim())
+  if (n.length > 1 && n.endsWith(sep)) {
+    return n.slice(0, -1)
+  }
+  return n
+}
+
+/**
+ * The main worktree path from `git worktree list --porcelain` output: the value
+ * of the FIRST `worktree ` record (git always lists the main worktree first).
+ * Returns `''` if no `worktree ` line is present.
+ */
+function parseMainWorktree(porcelain: string): string {
+  for (const line of porcelain.split('\n')) {
+    if (line.startsWith('worktree ')) {
+      return line.slice('worktree '.length).trim()
+    }
+  }
+  return ''
+}
 
 export interface NativeGitWorktreeProviderDeps {
   readonly runner: ScriptRunner
@@ -114,6 +140,60 @@ export class NativeGitWorktreeProvider implements WorktreeProvider {
     }
 
     return { path: worktreePath, script: GIT, args }
+  }
+
+  async adopt(req: AdoptWorktreeRequest): Promise<AdoptWorktreeResult> {
+    // Validate the picked directory the same way as a created path (absolute,
+    // exists, is a dir; a missing `.git` is a non-fatal warning, §6.4).
+    const validation = validateWorktreePath(req.worktreeDir, this.probe)
+    if (!validation.ok) {
+      throw new Error(validation.error)
+    }
+    if (validation.warning) {
+      this.onWarning?.(validation.warning)
+    }
+
+    const env = scriptEnv(req.taskId, req.worktreeDir)
+
+    // The FIRST `worktree ` line of the porcelain listing is always the main
+    // worktree — its path is the repo root we store for delete safety (§6.4).
+    const list = await this.runner.run(
+      GIT,
+      ['-C', req.worktreeDir, 'worktree', 'list', '--porcelain'],
+      {
+        cwd: req.worktreeDir,
+        env
+      }
+    )
+    if (list.exitCode !== 0) {
+      throw new Error(`not a git worktree: ${req.worktreeDir} (${firstLine(list.stderr)})`)
+    }
+    const repoRoot = parseMainWorktree(list.stdout)
+    if (!repoRoot) {
+      throw new Error(`could not determine the repo root for: ${req.worktreeDir}`)
+    }
+
+    // Refuse the repo's MAIN working tree: storing repoRoot === path would make
+    // the task undeletable (assertSafeToDelete refuses candidate === repoRoot).
+    if (canonPath(repoRoot) === canonPath(req.worktreeDir)) {
+      throw new Error(
+        'selected directory is the repository’s main working tree, not a linked worktree; create a new worktree instead'
+      )
+    }
+
+    // Detect the current branch; `HEAD` means detached → no branch.
+    const head = await this.runner.run(
+      GIT,
+      ['-C', req.worktreeDir, 'rev-parse', '--abbrev-ref', 'HEAD'],
+      {
+        cwd: req.worktreeDir,
+        env
+      }
+    )
+    const headRef = firstNonEmptyLine(head.stdout).trim()
+    const branch = head.exitCode === 0 && headRef !== '' && headRef !== 'HEAD' ? headRef : undefined
+
+    return { path: canonPath(req.worktreeDir), repoRoot: canonPath(repoRoot), branch }
   }
 
   async remove(req: RemoveWorktreeRequest): Promise<void> {

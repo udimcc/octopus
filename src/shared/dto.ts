@@ -122,7 +122,12 @@ export interface WorkspaceStateDTO {
 export interface WindowDTO {
   readonly id: string
   readonly role: 'main' | 'secondary'
-  readonly bounds: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
+  readonly bounds: {
+    readonly x: number
+    readonly y: number
+    readonly width: number
+    readonly height: number
+  }
   readonly createdAt: number
 }
 
@@ -142,15 +147,35 @@ export interface WindowedWorkspaceStateDTO extends WorkspaceStateDTO {
 
 // ── Command inputs (UI → backend) ─────────────────────────────────────────────
 
-export interface CreateTaskInput {
+/**
+ * Create a task by provisioning a BRAND-NEW worktree (New-Task modal, "From New
+ * Worktree" tab, §5.4). Octopus runs the repo-local create script / native git.
+ */
+export interface CreateTaskFromNewInput {
+  readonly mode: 'new'
   readonly name: string
   /** The chosen repository directory (from the native folder picker, §5.4). */
   readonly repoDir: string
-  /** Branch to create the worktree FROM (editable; `main` placeholder). */
+  /** Branch to create the worktree FROM (editable; `master` placeholder). */
   readonly sourceBranch: string
   /** Branch to create the worktree ON (prefilled slug the user may edit). */
   readonly newBranch: string
 }
+
+/**
+ * Create a task by ADOPTING an existing worktree directory (New-Task modal,
+ * "From Existing Worktree" tab). Octopus detects the worktree's owning repo and
+ * branch via git instead of provisioning anything.
+ */
+export interface CreateTaskFromExistingInput {
+  readonly mode: 'existing'
+  readonly name: string
+  /** The existing worktree directory the user picked (native folder picker). */
+  readonly worktreeDir: string
+}
+
+/** Discriminated on `mode`: provision a new worktree or adopt an existing one. */
+export type CreateTaskInput = CreateTaskFromNewInput | CreateTaskFromExistingInput
 
 export interface DeleteTaskInput {
   readonly taskId: string

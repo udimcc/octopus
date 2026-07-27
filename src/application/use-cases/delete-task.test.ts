@@ -7,7 +7,9 @@ import { asTaskId } from '../../domain/ids'
 import { TaskLifecycle } from '../../domain/lifecycle'
 
 /** Seed one Ready, active task ('task-1') with `sessionCount` running sessions. */
-async function seedReadyTask(sessionCount = 0): Promise<FakeDeps & { taskId: ReturnType<typeof asTaskId> }> {
+async function seedReadyTask(
+  sessionCount = 0
+): Promise<FakeDeps & { taskId: ReturnType<typeof asTaskId> }> {
   const fd = makeDeps()
   await createTask(fd.deps, taskInput('T'))
   const taskId = asTaskId('task-1')
@@ -75,6 +77,32 @@ describe('deleteTask strict teardown order (I3, §6.6)', () => {
     // Announced taskDeleted (+ activeTaskChanged since it was active).
     expect(fd.bus.ofType('taskDeleted').map((e) => e.taskId)).toEqual([fd.taskId])
     expect(fd.bus.ofType('activeTaskChanged')).toHaveLength(2) // create + delete
+  })
+})
+
+describe('deleteTask on an adopted worktree (§6.4)', () => {
+  it('removes with repoDir = the owning repo (distinct from the worktree path)', async () => {
+    const fd = makeDeps()
+    fd.worktrees.adoptedPath = '/home/u/worktrees/wt-x'
+    fd.worktrees.adoptedRepoRoot = '/home/u/project'
+    await createTask(fd.deps, {
+      mode: 'existing',
+      name: 'Adopted',
+      worktreeDir: '/home/u/worktrees/wt-x'
+    })
+    const taskId = asTaskId('task-1')
+
+    const result = await deleteTask(fd.deps, { taskId })
+
+    expect(result).toEqual({ ok: true })
+    expect(fd.worktrees.removeCalls).toHaveLength(1)
+    // repoDir is the owning repo, path is the linked worktree — so
+    // assertSafeToDelete sees candidate !== repoRoot and permits the delete.
+    expect(fd.worktrees.removeCalls[0]).toMatchObject({
+      path: '/home/u/worktrees/wt-x',
+      repoDir: '/home/u/project'
+    })
+    expect(fd.workspace.task(taskId)).toBeUndefined()
   })
 })
 

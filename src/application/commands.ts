@@ -13,7 +13,9 @@ import type { TaskId, SessionId, TypeId, WindowId } from '../domain/ids'
 import type { SessionConfig } from '../domain/session-config'
 import type { SessionState } from '../domain/state'
 
-export interface CreateTaskInput {
+/** Provision a brand-new worktree (New-Task modal "From New Worktree", §5.4). */
+export interface CreateTaskFromNewInput {
+  readonly mode: 'new'
   readonly name: string
   /** The task's chosen repository directory (New-Task modal, §5.4). */
   readonly repoDir: string
@@ -22,6 +24,17 @@ export interface CreateTaskInput {
   /** Branch to create the worktree ON. */
   readonly newBranch: string
 }
+
+/** Adopt an existing worktree directory (New-Task modal "From Existing Worktree"). */
+export interface CreateTaskFromExistingInput {
+  readonly mode: 'existing'
+  readonly name: string
+  /** The existing worktree directory the user picked. */
+  readonly worktreeDir: string
+}
+
+/** Discriminated on `mode`: provision a new worktree or adopt an existing one. */
+export type CreateTaskInput = CreateTaskFromNewInput | CreateTaskFromExistingInput
 
 export interface DeleteTaskInput {
   readonly taskId: TaskId

@@ -97,15 +97,9 @@ export function registerIpcHandlers(
 
   // ── Task commands ─────────────────────────────────────────────────────────
   ipcMain.handle(CHANNELS.taskCreate, async (_e, input: CreateTaskInput): Promise<CommandAck> => {
-    const result = await loop.dispatch({
-      kind: 'createTask',
-      input: {
-        name: input.name,
-        repoDir: input.repoDir,
-        sourceBranch: input.sourceBranch,
-        newBranch: input.newBranch
-      }
-    })
+    // The DTO and the application command share the same `mode`-discriminated
+    // shape (all string fields, no branded ids), so forward it verbatim.
+    const result = await loop.dispatch({ kind: 'createTask', input })
     return ack(result)
   })
 

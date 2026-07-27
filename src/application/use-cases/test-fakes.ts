@@ -35,6 +35,8 @@ import type {
   WorktreeProvider,
   CreateWorktreeRequest,
   CreateWorktreeResult,
+  AdoptWorktreeRequest,
+  AdoptWorktreeResult,
   RemoveWorktreeRequest
 } from '../../ports/worktree-provider'
 import type {
@@ -54,16 +56,20 @@ import {
   type SocketProvisioner,
   type ScrollbackBuffers
 } from '../dependencies'
-import type { CreateTaskInput } from '../commands'
+import type { CreateTaskInput, CreateTaskFromNewInput } from '../commands'
 import { createAjvConfigValidator } from '../config-validator'
 
 /**
- * Build a `CreateTaskInput` with sensible defaults for tests that only need a
- * task to exist (repoDir/branches irrelevant to the assertion). Pass `name` and
- * override any of the four fields as needed.
+ * Build a "From New Worktree" `CreateTaskInput` with sensible defaults for tests
+ * that only need a task to exist (repoDir/branches irrelevant to the assertion).
+ * Pass `name` and override any of the new-mode fields as needed.
  */
-export function taskInput(name: string, overrides: Partial<CreateTaskInput> = {}): CreateTaskInput {
+export function taskInput(
+  name: string,
+  overrides: Partial<Omit<CreateTaskFromNewInput, 'mode'>> = {}
+): CreateTaskInput {
   return {
+    mode: 'new',
     name,
     repoDir: '/repo',
     sourceBranch: 'main',
@@ -267,14 +273,21 @@ export class FakeSettingsStore implements SettingsStore {
 /** Fake worktree provider whose `create`/`remove`/`isDirty` behaviour is configurable. */
 export class FakeWorktreeProvider implements WorktreeProvider {
   readonly createCalls: CreateWorktreeRequest[] = []
+  readonly adoptCalls: AdoptWorktreeRequest[] = []
   readonly removeCalls: RemoveWorktreeRequest[] = []
   dirty = false
   /** When set, `create` rejects (script failure). */
   createRejectsWith?: Error
+  /** When set, `adopt` rejects (not a git worktree / main-tree refusal). */
+  adoptRejectsWith?: Error
   /** When set, `remove` rejects (safety refusal / spawn failure). */
   removeRejectsWith?: Error
   /** Path returned by a successful `create`. */
   createdPath = '/wt/task'
+  /** Result returned by a successful `adopt` (main repo distinct from path). */
+  adoptedPath = '/repo/../wt-existing'
+  adoptedRepoRoot = '/repo'
+  adoptedBranch: string | undefined = 'existing-branch'
 
   async create(
     req: CreateWorktreeRequest,
@@ -290,6 +303,13 @@ export class FakeWorktreeProvider implements WorktreeProvider {
       script: 'git',
       args: ['worktree', 'add', '-b', req.newBranch, this.createdPath, req.sourceBranch]
     }
+  }
+  async adopt(req: AdoptWorktreeRequest): Promise<AdoptWorktreeResult> {
+    this.adoptCalls.push(req)
+    if (this.adoptRejectsWith) {
+      throw this.adoptRejectsWith
+    }
+    return { path: this.adoptedPath, repoRoot: this.adoptedRepoRoot, branch: this.adoptedBranch }
   }
   async remove(req: RemoveWorktreeRequest): Promise<void> {
     this.removeCalls.push(req)

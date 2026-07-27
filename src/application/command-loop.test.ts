@@ -4,7 +4,8 @@ import type { AppDependencies } from './dependencies'
 import type {
   WorktreeProvider,
   CreateWorktreeRequest,
-  CreateWorktreeResult
+  CreateWorktreeResult,
+  AdoptWorktreeResult
 } from '../ports/worktree-provider'
 import { makeDeps, taskInput } from './use-cases/test-fakes'
 import { asTaskId } from '../domain/ids'
@@ -34,6 +35,9 @@ class GatedWorktreeProvider implements WorktreeProvider {
       })
     })
     return { path: `/wt/${req.taskName}`, script: '/c', args: [req.taskName] }
+  }
+  async adopt(): Promise<AdoptWorktreeResult> {
+    return { path: '/wt/adopted', repoRoot: '/repo', branch: 'main' }
   }
   async remove(): Promise<void> {}
   async isDirty(): Promise<boolean> {

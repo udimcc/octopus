@@ -34,6 +34,7 @@ import type {
   WorktreeProvider,
   CreateWorktreeRequest,
   CreateWorktreeResult,
+  AdoptWorktreeResult,
   RemoveWorktreeRequest
 } from '../../ports/worktree-provider'
 import { validateWorktreePath, assertSafeToDelete, type PathProbe } from './path-safety'
@@ -101,6 +102,16 @@ export class ScriptWorktreeProvider implements WorktreeProvider {
     }
 
     return { path: path.trim(), script, args }
+  }
+
+  /**
+   * Adoption is git detection (repo root + branch), independent of any repo-local
+   * script — `SelectingWorktreeProvider` always routes `adopt` to the native
+   * provider (like `isDirty`), so this is never reached. Present only to satisfy
+   * the port.
+   */
+  adopt(): Promise<AdoptWorktreeResult> {
+    return Promise.reject(new Error('ScriptWorktreeProvider.adopt should never be called'))
   }
 
   async remove(req: RemoveWorktreeRequest): Promise<void> {

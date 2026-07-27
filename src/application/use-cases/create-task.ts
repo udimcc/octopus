@@ -21,7 +21,12 @@
  */
 
 import type { AppDependencies } from '../dependencies'
-import type { CreateTaskInput } from '../commands'
+import type {
+  CreateTaskInput,
+  CreateTaskFromNewInput,
+  CreateTaskFromExistingInput
+} from '../commands'
+import type { TaskId } from '../../domain/ids'
 import { Task } from '../../domain/task'
 import { WorktreeRef } from '../../domain/worktree-ref'
 
@@ -37,28 +42,12 @@ export async function createTask(deps: AppDependencies, input: CreateTaskInput):
   deps.bus.publish({ type: 'taskCreated', task: task.toSnapshot(deps.aggregator) })
 
   try {
-    const result = await deps.worktrees.create(
-      {
-        taskId: id,
-        taskName: input.name,
-        repoDir: input.repoDir,
-        sourceBranch: input.sourceBranch,
-        newBranch: input.newBranch
-      },
-      (line) => deps.bus.publish({ type: 'scriptProgress', taskId: id, line })
-    )
-
-    const worktree = WorktreeRef.create({
-      path: result.path,
-      branch: input.newBranch,
-      baseRef: input.sourceBranch,
-      provisionedBy: {
-        script: result.script,
-        args: result.args,
-        repoRoot: input.repoDir,
-        provisionedAt: deps.clock.now()
-      }
-    })
+    // Either provision a brand-new worktree or adopt an existing directory; both
+    // yield a validated `WorktreeRef` and rejoin the shared markReady tail below.
+    const worktree =
+      input.mode === 'new'
+        ? await provisionNew(deps, id, input)
+        : await adoptExisting(deps, id, input)
     task.markReady(worktree)
 
     // Dormant §9.2 seam: ensure the private socket dir exists for this uid so V2
@@ -86,9 +75,68 @@ export async function createTask(deps: AppDependencies, input: CreateTaskInput):
     deps.bus.publish({
       type: 'scriptError',
       taskId: id,
-      script: 'create_worktree',
+      script: input.mode === 'new' ? 'create_worktree' : 'adopt',
       exitCode: null,
       stderr: message
     })
   }
+}
+
+/** Provision a brand-new worktree (repo-local script or native git, §6.4). */
+async function provisionNew(
+  deps: AppDependencies,
+  id: TaskId,
+  input: CreateTaskFromNewInput
+): Promise<WorktreeRef> {
+  const result = await deps.worktrees.create(
+    {
+      taskId: id,
+      taskName: input.name,
+      repoDir: input.repoDir,
+      sourceBranch: input.sourceBranch,
+      newBranch: input.newBranch
+    },
+    (line) => deps.bus.publish({ type: 'scriptProgress', taskId: id, line })
+  )
+
+  return WorktreeRef.create({
+    path: result.path,
+    branch: input.newBranch,
+    baseRef: input.sourceBranch,
+    provisionedBy: {
+      script: result.script,
+      args: result.args,
+      repoRoot: input.repoDir,
+      provisionedAt: deps.clock.now()
+    }
+  })
+}
+
+/**
+ * Adopt an existing worktree directory. The provider detects the owning repo root
+ * (stored as `repoRoot` so a later delete is safe, §6.4) and current branch;
+ * `baseRef` is unknown for an adopted worktree.
+ */
+async function adoptExisting(
+  deps: AppDependencies,
+  id: TaskId,
+  input: CreateTaskFromExistingInput
+): Promise<WorktreeRef> {
+  const result = await deps.worktrees.adopt({
+    taskId: id,
+    taskName: input.name,
+    worktreeDir: input.worktreeDir
+  })
+
+  return WorktreeRef.create({
+    path: result.path,
+    branch: result.branch,
+    baseRef: undefined,
+    provisionedBy: {
+      script: 'adopt',
+      args: [],
+      repoRoot: result.repoRoot,
+      provisionedAt: deps.clock.now()
+    }
+  })
 }

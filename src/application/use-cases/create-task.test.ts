@@ -8,6 +8,7 @@ describe('createTask (§3.5, §6.4)', () => {
     const { deps, workspace, worktrees, persistence, bus, socketProvisioner } = makeDeps()
 
     await createTask(deps, {
+      mode: 'new',
       name: 'My Task',
       repoDir: '/repo',
       sourceBranch: 'main',
@@ -77,6 +78,58 @@ describe('createTask (§3.5, §6.4)', () => {
     expect(scriptErrors[0].stderr).toMatch(/create\.sh exited 1/)
     expect(bus.ofType('taskCreated')).toHaveLength(1)
     expect(bus.ofType('activeTaskChanged')).toEqual([])
+  })
+
+  it('adopts an existing worktree: stores repoRoot = owning repo (delete-safe) and detected branch', async () => {
+    const { deps, workspace, worktrees, persistence, bus } = makeDeps()
+    worktrees.adoptedPath = '/home/u/worktrees/wt-x'
+    worktrees.adoptedRepoRoot = '/home/u/project'
+    worktrees.adoptedBranch = 'feature/adopted'
+
+    await createTask(deps, {
+      mode: 'existing',
+      name: 'Adopted',
+      worktreeDir: '/home/u/worktrees/wt-x'
+    })
+
+    // adopt() was called (not create()) with the picked directory.
+    expect(worktrees.createCalls).toEqual([])
+    expect(worktrees.adoptCalls).toHaveLength(1)
+    expect(worktrees.adoptCalls[0]).toMatchObject({
+      taskName: 'Adopted',
+      worktreeDir: '/home/u/worktrees/wt-x'
+    })
+
+    const task = workspace.tasks()[0]
+    expect(task.lifecycle).toBe(TaskLifecycle.Ready)
+    expect(task.worktree?.path).toBe('/home/u/worktrees/wt-x')
+    expect(task.worktree?.branch).toBe('feature/adopted')
+    // baseRef is unknown for an adopted worktree.
+    expect(task.worktree?.baseRef).toBeUndefined()
+    // repoRoot MUST be the owning repo (not the worktree) so delete is safe (§6.4).
+    expect(task.worktree?.provisionedBy.repoRoot).toBe('/home/u/project')
+    expect(task.worktree?.provisionedBy.script).toBe('adopt')
+
+    expect(persistence.transactions).toBe(1)
+    expect(workspace.activeTaskId).toBe(task.id)
+    // Same terminal events as a created task, so the modal closes on success.
+    expect(bus.ofType('taskCreated')).toHaveLength(2)
+    expect(bus.ofType('activeTaskChanged')).toHaveLength(1)
+  })
+
+  it('on adoption failure marks ProvisionFailed and emits scriptError (script: adopt)', async () => {
+    const { deps, workspace, persistence, bus, worktrees } = makeDeps()
+    worktrees.adoptRejectsWith = new Error('not a git worktree: /tmp/x')
+
+    await createTask(deps, { mode: 'existing', name: 'Doomed', worktreeDir: '/tmp/x' })
+
+    expect(workspace.tasks()[0].lifecycle).toBe(TaskLifecycle.ProvisionFailed)
+    expect(persistence.transactions).toBe(0)
+    expect(workspace.activeTaskId).toBeUndefined()
+    const scriptErrors = bus.ofType('scriptError')
+    expect(scriptErrors).toHaveLength(1)
+    expect(scriptErrors[0].script).toBe('adopt')
+    expect(scriptErrors[0].stderr).toMatch(/not a git worktree/)
   })
 
   it('positions a second task after the first', async () => {
