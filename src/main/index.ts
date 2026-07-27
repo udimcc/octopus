@@ -5,7 +5,7 @@
  * lives in `composition-root.ts`; window/lifecycle plumbing in `window.ts`.
  */
 
-import { app, screen, BrowserWindow, Menu } from 'electron'
+import { app, dialog, screen, BrowserWindow, Menu } from 'electron'
 import { bootstrap, type AppContext } from './composition-root'
 import { createWindow, registerQuitHandler, optionsFromRecord } from './window'
 import { clampToDisplays, type Rect } from './window-bounds'
@@ -24,7 +24,20 @@ import type { CreateWindowOptions } from './window'
 app.commandLine.appendSwitch('enable-unsafe-swiftshader')
 
 // Prepare the runtime environment and wire adapters before any window opens.
-const ctx: AppContext = bootstrap()
+// A failure here (most notably an IncompatibleDbError — a DB written by a newer
+// Octopus after a version rollback, §6.3) is fatal and unrecoverable: there is no
+// window yet, so show a native error box (works before `app.whenReady`) and exit
+// non-zero rather than crashing with an unhandled exception and no explanation.
+let ctx: AppContext
+try {
+  ctx = bootstrap()
+} catch (err) {
+  const message = err instanceof Error ? err.message : String(err)
+  console.error(`[octopus] startup failed: ${message}`)
+  dialog.showErrorBox('Octopus cannot start', message)
+  app.exit(1)
+  throw err // unreachable after app.exit; satisfies definite-assignment for `ctx`
+}
 registerQuitHandler(ctx)
 
 /** Open one window and record its webContents.id → WindowId for hit-testing (§6.7). */
@@ -81,7 +94,11 @@ void app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       const mainId: WindowId = MAIN_WINDOW_ID
-      restoreWindow({ windowId: mainId, role: 'main', bounds: { x: 0, y: 0, width: 1280, height: 800 } })
+      restoreWindow({
+        windowId: mainId,
+        role: 'main',
+        bounds: { x: 0, y: 0, width: 1280, height: 800 }
+      })
     }
   })
 })

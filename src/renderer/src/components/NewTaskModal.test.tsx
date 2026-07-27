@@ -23,7 +23,12 @@ function stubOctopusAPI(): { api: OctopusAPI; emit: (event: EventDTO) => void } 
       windowAtPoint: vi.fn().mockResolvedValue(null)
     },
     pty: { write: vi.fn(), resize: vi.fn() },
-    app: { getState: vi.fn(), updateSettings: ack, getWindowId: vi.fn(() => 'main') },
+    app: {
+      getState: vi.fn(),
+      updateSettings: ack,
+      getWindowId: vi.fn(() => 'main'),
+      getVersion: vi.fn().mockResolvedValue('0.0.0-test')
+    },
     dialog: { pickDirectory: vi.fn().mockResolvedValue(undefined) },
     onEvent: (handler) => {
       listeners.add(handler)

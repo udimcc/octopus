@@ -31,6 +31,7 @@ import {
   type SessionRow,
   type WindowRow
 } from './mappers'
+import { IncompatibleDbError } from './errors'
 
 export class SqliteStore implements WorkspacePersistence {
   private readonly db: SqliteDb
@@ -48,8 +49,15 @@ export class SqliteStore implements WorkspacePersistence {
    * older DB whose `tasks` table predates the column — the guard on `user_version`
    * makes the `ALTER` a no-op for a fresh DB (already at SCHEMA_VERSION) and for an
    * already-migrated one, so exactly one of the two paths adds the column (§10).
+   *
+   * `beforeMigrate` (optional) is invoked EXACTLY when a pre-existing older DB is
+   * about to be upgraded — after the future-DB guard and connection pragmas, but
+   * before any `CREATE`/`ALTER` runs. `open-database.ts` uses it to snapshot the
+   * live DB file (the pre-migration backup) without pulling `node:fs` into this
+   * host-Node-testable module. It is NOT called for a fresh DB or an
+   * already-current one (nothing to migrate, nothing to back up).
    */
-  static create(db: SqliteDb): SqliteStore {
+  static create(db: SqliteDb, beforeMigrate?: (fromVersion: number) => void): SqliteStore {
     for (const pragma of CONNECTION_PRAGMAS) {
       db.exec(pragma)
     }
@@ -59,6 +67,22 @@ export class SqliteStore implements WorkspacePersistence {
     // after the CREATE below) apart from an old DB that needs an `ALTER`.
     const preExisting = tableExists(db, 'tasks')
     const fromVersion = readUserVersion(db)
+
+    // Refuse a DB written by a NEWER Octopus (rollback with the shared data dir,
+    // §6.3): the forward-only migrations cannot downgrade it, and the unconditional
+    // `user_version` stamp below would otherwise SILENTLY lower the recorded version
+    // — leaving the DB physically at the newer schema but labelled older, so the
+    // next upgrade re-runs an already-applied migration and dies ("duplicate
+    // column"). Throw before touching the DB so the file is left exactly as-is.
+    if (preExisting && fromVersion > SCHEMA_VERSION) {
+      throw new IncompatibleDbError(fromVersion, SCHEMA_VERSION)
+    }
+
+    // Back up the file before an actual upgrade (older → current). Guard mirrors the
+    // `runMigrations` condition below so a fresh/already-current DB is never copied.
+    if (preExisting && fromVersion < SCHEMA_VERSION) {
+      beforeMigrate?.(fromVersion)
+    }
 
     for (const stmt of SCHEMA_STATEMENTS) {
       db.exec(stmt)
@@ -71,6 +95,10 @@ export class SqliteStore implements WorkspacePersistence {
       runMigrations(db, fromVersion)
     }
 
+    // Safe to stamp: the guard above rejected `fromVersion > SCHEMA_VERSION`, so this
+    // only ever raises (fresh/older DB) or holds (already-current) the version —
+    // never lowers it. Keep the guard and this line in lockstep; removing the guard
+    // would reintroduce the silent downgrade described above.
     db.pragma(`user_version = ${SCHEMA_VERSION}`)
     return new SqliteStore(db)
   }

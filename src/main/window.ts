@@ -46,7 +46,12 @@ export function createWindow(ctx: AppContext, opts: CreateWindowOptions): Browse
     x: opts.bounds?.x,
     y: opts.bounds?.y,
     show: false,
-    title: opts.role === 'main' ? 'Octopus' : 'Octopus — Session Window',
+    // Surface the release version (semver from package.json) in the title so users
+    // can tell which build they're running — valuable after a version rollback.
+    title:
+      opts.role === 'main'
+        ? `Octopus ${app.getVersion()}`
+        : `Octopus ${app.getVersion()} — Session Window`,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       // Security posture (§5.5): renderer gets no Node access; the only bridge is

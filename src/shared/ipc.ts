@@ -67,6 +67,14 @@ export const CHANNELS = {
   appUpdateSettings: 'app:updateSettings',
 
   /**
+   * The running app's release version (request/reply). A stateless main-side QUERY
+   * (resolves `app.getVersion()`, i.e. package.json's version) that bypasses the
+   * command loop, like `getState`. Distinct from the feature-set `CURRENT_VERSION`
+   * carried in the state DTO (§10): this is the semver shown to the user.
+   */
+  appGetVersion: 'app:getVersion',
+
+  /**
    * Native directory picker (request/reply). A stateless main-side QUERY — like
    * `getState`, it does NOT go through the command loop (§6.5). Resolves to the
    * chosen absolute path, or `undefined` if the user cancelled.
@@ -164,6 +172,11 @@ export interface OctopusAPI {
      * IPC round-trip is needed. Defaults to `'main'` if the param is absent.
      */
     getWindowId(): string
+    /**
+     * The running app's release version (semver, e.g. `'1.0.0'`), for display in an
+     * About affordance. Distinct from the feature-set version in `getState().version`.
+     */
+    getVersion(): Promise<string>
   }
 
   dialog: {

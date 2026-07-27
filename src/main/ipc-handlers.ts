@@ -17,7 +17,7 @@
  * the loop so their ordering relative to close/create is preserved (§6.6).
  */
 
-import { ipcMain, dialog, BrowserWindow } from 'electron'
+import { app, ipcMain, dialog, BrowserWindow } from 'electron'
 import { CHANNELS, type PtyWriteInput, type PtyResizeInput } from '../shared/ipc'
 import type {
   CommandAck,
@@ -43,7 +43,14 @@ import type { AppDependencies } from '../application/dependencies'
 import type { CommandResult } from '../application/commands'
 import type { SettingsPatch } from '../application/commands'
 import { getState } from '../application/queries/get-state'
-import { asTaskId, asSessionId, asTypeId, asWindowId, MAIN_WINDOW_ID, type WindowId } from '../domain/ids'
+import {
+  asTaskId,
+  asSessionId,
+  asTypeId,
+  asWindowId,
+  MAIN_WINDOW_ID,
+  type WindowId
+} from '../domain/ids'
 import { toWindowedWorkspaceStateDTO, toSessionConfig } from './dto-mappers'
 
 function ack(result: CommandResult): CommandAck {
@@ -72,10 +79,7 @@ export interface IpcHandlerHooks {
 }
 
 /** Resolve the WindowId of the calling renderer (`e.sender`), defaulting to main. */
-function senderWindowId(
-  windowIds: Map<number, WindowId>,
-  sender: Electron.WebContents
-): WindowId {
+function senderWindowId(windowIds: Map<number, WindowId>, sender: Electron.WebContents): WindowId {
   return windowIds.get(sender.id) ?? MAIN_WINDOW_ID
 }
 
@@ -213,13 +217,16 @@ export function registerIpcHandlers(
   })
 
   // ── Window commands (V1.5, §6.7) ────────────────────────────────────────────
-  ipcMain.handle(CHANNELS.windowCreate, async (_e, input: CreateWindowInput): Promise<CommandAck> => {
-    const result = await loop.dispatch({
-      kind: 'createWindow',
-      input: { role: 'secondary', bounds: input.bounds }
-    })
-    return ack(result)
-  })
+  ipcMain.handle(
+    CHANNELS.windowCreate,
+    async (_e, input: CreateWindowInput): Promise<CommandAck> => {
+      const result = await loop.dispatch({
+        kind: 'createWindow',
+        input: { role: 'secondary', bounds: input.bounds }
+      })
+      return ack(result)
+    }
+  )
 
   ipcMain.handle(CHANNELS.windowClose, async (_e, input: CloseWindowInput): Promise<CommandAck> => {
     const result = await loop.dispatch({
@@ -271,6 +278,10 @@ export function registerIpcHandlers(
     hooks.onHydrate?.(windowId)
     return dto
   })
+
+  // The running app's release version (semver from package.json). Stateless query,
+  // bypasses the command loop. Distinct from the feature-set version in the state DTO.
+  ipcMain.handle(CHANNELS.appGetVersion, (): string => app.getVersion())
 
   ipcMain.handle(
     CHANNELS.appUpdateSettings,

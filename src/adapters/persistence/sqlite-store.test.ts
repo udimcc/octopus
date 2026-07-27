@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { SqliteStore } from './sqlite-store'
+import { IncompatibleDbError } from './errors'
 import type { SqliteDb, SqliteStatement } from './sqlite-db'
 import type { TaskRow, SessionRow } from './mappers'
 import { asTaskId, asSessionId, asTypeId } from '../../domain/ids'
@@ -167,10 +168,59 @@ describe('SqliteStore.create (§6.3)', () => {
     db.stubPragma('user_version', [{ user_version: 3 }])
     SqliteStore.create(db)
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN base_ref'))).toBe(false)
-    expect(db.execed.some((s) => s.includes('ALTER TABLE sessions ADD COLUMN window_id'))).toBe(true)
+    expect(db.execed.some((s) => s.includes('ALTER TABLE sessions ADD COLUMN window_id'))).toBe(
+      true
+    )
     expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS windows'))).toBe(true)
     expect(db.execed.some((s) => s.includes('INSERT OR IGNORE INTO windows'))).toBe(true)
     expect(db.pragmas).toContain('user_version = 4')
+  })
+
+  it('throws IncompatibleDbError on a DB newer than this binary, without touching it', () => {
+    // A pre-existing DB stamped one past SCHEMA_VERSION (a rollback: a newer Octopus
+    // migrated it forward, §6.3). The guard must fire BEFORE any CREATE/ALTER and,
+    // crucially, before the `user_version =` stamp — otherwise the DB would be
+    // silently downgraded and the next upgrade would re-run an applied migration.
+    const db = new FakeDb()
+    db.stub('sqlite_master', [{ name: 'tasks' }])
+    db.stubPragma('user_version', [{ user_version: 5 }])
+    expect(() => SqliteStore.create(db)).toThrow(IncompatibleDbError)
+    // No schema statements ran and the version was NOT lowered.
+    expect(db.execed.some((s) => s.includes('CREATE TABLE'))).toBe(false)
+    expect(db.pragmas.some((p) => p.startsWith('user_version ='))).toBe(false)
+  })
+
+  it('does NOT guard or stamp-down a fresh DB whose user_version reads 0', () => {
+    // Defensive: a fresh DB (no tasks table) never trips the future-DB guard even
+    // though fromVersion (0) < SCHEMA_VERSION; it bootstraps and stamps to current.
+    const db = new FakeDb()
+    expect(() => SqliteStore.create(db)).not.toThrow()
+    expect(db.pragmas).toContain('user_version = 4')
+  })
+
+  it('invokes beforeMigrate with fromVersion on an upgrade, but not on fresh/current DBs', () => {
+    // Upgrade (older → current): callback fires once with the OLD version so the
+    // caller can snapshot octopus.db.bak-v<from>.
+    const upgrading = new FakeDb()
+    upgrading.stub('sqlite_master', [{ name: 'tasks' }])
+    upgrading.stubPragma('user_version', [{ user_version: 2 }])
+    const onUpgrade = vi.fn()
+    SqliteStore.create(upgrading, onUpgrade)
+    expect(onUpgrade).toHaveBeenCalledExactlyOnceWith(2)
+
+    // Fresh DB: nothing to migrate, so no backup.
+    const fresh = new FakeDb()
+    const onFresh = vi.fn()
+    SqliteStore.create(fresh, onFresh)
+    expect(onFresh).not.toHaveBeenCalled()
+
+    // Already-current DB: nothing to migrate, so no backup.
+    const current = new FakeDb()
+    current.stub('sqlite_master', [{ name: 'tasks' }])
+    current.stubPragma('user_version', [{ user_version: 4 }])
+    const onCurrent = vi.fn()
+    SqliteStore.create(current, onCurrent)
+    expect(onCurrent).not.toHaveBeenCalled()
   })
 })
 
