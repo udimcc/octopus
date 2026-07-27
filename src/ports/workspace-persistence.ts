@@ -8,8 +8,21 @@
  * stays free of any storage-engine types.
  */
 
-import type { TaskId, SessionId } from '../domain/ids'
+import type { TaskId, SessionId, WindowId } from '../domain/ids'
 import type { WorkspaceSnapshot, TaskSnapshot, SessionSnapshot } from '../domain/snapshots'
+
+/**
+ * A persisted OS window (V1.5, DESIGN §3.7, §6.3). Pixel geometry deliberately
+ * lives here — in the persistence port + adapter + main — and never in the pure
+ * domain. `role` distinguishes the single `main` window (which owns the progress
+ * panel) from session-only `secondary` windows.
+ */
+export interface WindowRecord {
+  readonly id: WindowId
+  readonly role: 'main' | 'secondary'
+  readonly bounds: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
+  readonly createdAt: number
+}
 
 export interface WorkspacePersistence {
   /** Load the full persisted workspace on startup (empty on first run) (§6.3). */
@@ -36,6 +49,13 @@ export interface WorkspacePersistence {
 
   /** Persist the single active-task pointer into app_state (§6.3). */
   setActiveTask(taskId: TaskId | undefined): void
+
+  /** Load every persisted window record on startup (V1.5, §3.7, §6.3). */
+  loadWindows(): WindowRecord[]
+  /** Insert or update a window row (id/role/bounds/created_at) (V1.5). */
+  upsertWindow(record: WindowRecord): void
+  /** Delete a window row (its sessions are reassigned by the use case, not cascaded) (V1.5). */
+  deleteWindow(id: WindowId): void
 
   /** Run `fn` inside a single transaction; used for the delete sequence (§6.6). */
   transaction<T>(fn: () => T): T

@@ -15,7 +15,7 @@
  *   5. `new CommandLoop(deps)`; late-bind `deps.onRuntimeExit` to route a runtime's
  *      spontaneous exit back through the loop as `handleRuntimeExit` (single-writer,
  *      §6.6).
- *   6. Create the event-forwarder + register IPC handlers.
+ *   6. Create the window registry (event router) + register IPC handlers.
  *
  * Returns an `AppContext` the entry point (`index.ts`/`window.ts`) uses to open a
  * window, forward events, and shut down cleanly (§6.3 quit).
@@ -54,16 +54,29 @@ import { worstStatusWins } from '../domain/task-state-aggregator'
 import { Workspace } from '../domain/workspace'
 import type { Settings } from '../ports/settings-store'
 import type { EventBus } from '../ports/event-bus'
+import { MAIN_WINDOW_ID, asSessionId, type WindowId } from '../domain/ids'
+import { locateSession } from '../application/use-cases/locate-session'
 import { CURRENT_VERSION } from '../shared/version'
 import { registerIpcHandlers } from './ipc-handlers'
-import { createEventForwarder, type EventForwarder } from './event-forwarder'
+import { createWindowRegistry, type WindowRegistry } from './window-registry'
 
 export interface AppContext {
   readonly paths: AppPaths
   readonly commandLoop: CommandLoop
   readonly deps: AppDependencies
   readonly bus: EventBus
-  readonly forwarder: EventForwarder
+  /** Routes backend events to the right window(s) (§6.7); replaces the forwarder. */
+  readonly registry: WindowRegistry
+  /**
+   * webContents.id → WindowId, populated as windows open (V1.5, §6.7). Backs the
+   * `windowAtPoint` hit-test and per-window `markReady` (via `e.sender`).
+   */
+  readonly windowIds: Map<number, WindowId>
+  /**
+   * True once `before-quit` has fired (§6.7). Read by secondary windows to skip
+   * their close dialog during a graceful quit. Mutable by design.
+   */
+  isQuitting: boolean
   /** Graceful teardown: SIGHUP runtimes + checkpoint/close the store (I13, §6.3). */
   readonly shutdown: () => void
 }
@@ -135,6 +148,19 @@ export function bootstrap(): AppContext {
     defaultSessionTypeId: getSettings().defaultSessionTypeId
   })
 
+  // 4b. Seed the main window record if absent (V1.5, §6.7). The v4 migration's
+  //     INSERT OR IGNORE covers an upgraded DB; this belt-and-suspenders covers a
+  //     fresh DB (created by CREATE TABLE, which seeds no rows) so `loadWindows`
+  //     always includes `main` and hydration never orphans a session (I18).
+  if (!persistence.loadWindows().some((w) => w.id === MAIN_WINDOW_ID)) {
+    persistence.upsertWindow({
+      id: MAIN_WINDOW_ID,
+      role: 'main',
+      bounds: { x: 0, y: 0, width: 1280, height: 800 },
+      createdAt: clock.now()
+    })
+  }
+
   const deps: AppDependencies = {
     workspace,
     persistence,
@@ -165,19 +191,36 @@ export function bootstrap(): AppContext {
     })
   }
 
-  // 6. Event forwarder + IPC handlers. `onHydrate` flushes buffered startup events
-  //    once the renderer's getState (post-onEvent-registration) lands (§6.5).
-  const forwarder = createEventForwarder(bus)
-  registerIpcHandlers(commandLoop, deps, { onHydrate: () => forwarder.markReady() })
+  // 6. Window registry + IPC handlers (§6.7). The registry routes each event to the
+  //    window(s) that should see it; `resolveSessionWindow` looks up a session's
+  //    current window via the live workspace (undefined once it's removed → the
+  //    registry broadcasts, so a just-closed tab's event still reaches its window).
+  const windowRegistry = createWindowRegistry(bus, (sessionId) => {
+    const located = locateSession(workspace, asSessionId(sessionId))
+    return located?.session.windowId
+  })
+
+  // webContents.id → WindowId, filled as windows open (backs windowAtPoint +
+  // per-window markReady). Mutated by the entry point/window.ts as windows appear.
+  const windowIds = new Map<number, WindowId>()
+
+  // `onHydrate(windowId)` marks THAT window ready so its buffered startup events
+  // flush exactly when its renderer can receive them (§6.7, generalizes §6.5).
+  registerIpcHandlers(commandLoop, deps, {
+    windowIds,
+    onHydrate: (windowId) => windowRegistry.markReady(windowId)
+  })
 
   return {
     paths,
     commandLoop,
     deps,
     bus,
-    forwarder,
+    registry: windowRegistry,
+    windowIds,
+    isQuitting: false,
     shutdown: () => {
-      forwarder.dispose()
+      windowRegistry.dispose()
       shutdown(deps)
     }
   }

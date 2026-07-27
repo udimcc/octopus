@@ -18,11 +18,12 @@
  *    columns are written for record fidelity but intentionally NOT resurrected.
  */
 
-import { asTaskId, asSessionId, asTypeId } from '../../domain/ids'
+import { asTaskId, asSessionId, asTypeId, asWindowId } from '../../domain/ids'
 import { SessionState, TaskState } from '../../domain/state'
 import { TaskLifecycle, SessionLifecycle } from '../../domain/lifecycle'
 import type { SessionConfig } from '../../domain/session-config'
 import type { TaskSnapshot, SessionSnapshot } from '../../domain/snapshots'
+import type { WindowRecord } from '../../ports/workspace-persistence'
 
 /** A `tasks` row (§6.3). Nullable columns surface as `null` from better-sqlite3. */
 export interface TaskRow {
@@ -49,6 +50,19 @@ export interface SessionRow {
   state: string
   created_at: number
   exited_at: number | null
+  /** V1.5 (§3.7): which window renders the session; NOT NULL DEFAULT 'main'. */
+  window_id: string
+}
+
+/** A `windows` row (V1.5, §3.7, §6.3). */
+export interface WindowRow {
+  id: string
+  role: string
+  x: number
+  y: number
+  width: number
+  height: number
+  created_at: number
 }
 
 /**
@@ -90,7 +104,22 @@ export function sessionToRow(snap: SessionSnapshot): SessionRow {
     position: snap.order,
     state: snap.state,
     created_at: snap.createdAt,
-    exited_at: snap.exitedAt ?? null
+    exited_at: snap.exitedAt ?? null,
+    // Persist the assignment tag; `Session.toSnapshot` always emits a windowId (§3.7).
+    window_id: snap.windowId ?? 'main'
+  }
+}
+
+/** Serialize a window record for persistence (V1.5, §3.7). */
+export function windowToRow(record: WindowRecord): WindowRow {
+  return {
+    id: record.id,
+    role: record.role,
+    x: record.bounds.x,
+    y: record.bounds.y,
+    width: record.bounds.width,
+    height: record.bounds.height,
+    created_at: record.createdAt
   }
 }
 
@@ -144,6 +173,19 @@ export function rowToSessionSnapshot(row: SessionRow): SessionSnapshot {
     state: SessionState.Unknown,
     order: row.position,
     createdAt: row.created_at,
-    exitedAt: undefined
+    exitedAt: undefined,
+    // Window assignment is persisted metadata (not live process state), so it
+    // round-trips on restore — a restored session reappears in its window (I18).
+    windowId: asWindowId(row.window_id)
+  }
+}
+
+/** Reconstruct a window record from its row (V1.5, §3.7). */
+export function rowToWindowRecord(row: WindowRow): WindowRecord {
+  return {
+    id: asWindowId(row.id),
+    role: row.role === 'secondary' ? 'secondary' : 'main',
+    bounds: { x: row.x, y: row.y, width: row.width, height: row.height },
+    createdAt: row.created_at
   }
 }

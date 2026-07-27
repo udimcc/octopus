@@ -1,8 +1,8 @@
 /**
  * Wire events (backend → renderer), the DTO mirror of the domain `EventBus`'s
  * `DomainEvent` (`src/ports/event-bus.ts`). All flow over the single `app:event`
- * channel as a `type`-discriminated union; `main`'s event-forwarder maps each
- * `DomainEvent` to its `EventDTO` and `webContents.send`s it (§6.5).
+ * channel as a `type`-discriminated union; `main`'s window-registry maps each
+ * `DomainEvent` to its `EventDTO` and routes it to the right window(s) (§6.5, §6.7).
  *
  * `ptyData` rides this same channel but the renderer routes it straight to the
  * terminal, bypassing the store (§5.2) — it never blocks command replies because
@@ -94,6 +94,26 @@ export interface ErrorEventDTO {
   readonly sessionId?: string
 }
 
+// ── Window lifecycle events (V1.5, §6.7) ─────────────────────────────────────
+
+export interface WindowCreatedEventDTO {
+  readonly type: 'windowCreated'
+  readonly windowId: string
+  readonly role: 'main' | 'secondary'
+  readonly bounds: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
+}
+export interface WindowClosedEventDTO {
+  readonly type: 'windowClosed'
+  readonly windowId: string
+}
+export interface SessionMovedToWindowEventDTO {
+  readonly type: 'sessionMovedToWindow'
+  readonly sessionId: string
+  readonly taskId: string
+  readonly fromWindowId: string
+  readonly toWindowId: string
+}
+
 // ── Dormant V2 state seams (§10) — emitted by nobody in V1 ───────────────────
 
 export interface SessionStateChangedEventDTO {
@@ -124,5 +144,8 @@ export type EventDTO =
   | ScriptProgressEventDTO
   | ScriptErrorEventDTO
   | ErrorEventDTO
+  | WindowCreatedEventDTO
+  | WindowClosedEventDTO
+  | SessionMovedToWindowEventDTO
   | SessionStateChangedEventDTO
   | TaskStateChangedEventDTO

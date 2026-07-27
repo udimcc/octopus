@@ -10,9 +10,9 @@
  * `mappers.ts`; this class is just prepared statements + the schema bootstrap.
  */
 
-import type { TaskId, SessionId } from '../../domain/ids'
+import type { TaskId, SessionId, WindowId } from '../../domain/ids'
 import type { WorkspaceSnapshot, TaskSnapshot, SessionSnapshot } from '../../domain/snapshots'
-import type { WorkspacePersistence } from '../../ports/workspace-persistence'
+import type { WorkspacePersistence, WindowRecord } from '../../ports/workspace-persistence'
 import type { SqliteDb } from './sqlite-db'
 import {
   SCHEMA_STATEMENTS,
@@ -24,9 +24,12 @@ import {
 import {
   taskToRow,
   sessionToRow,
+  windowToRow,
   rowToTaskSnapshot,
+  rowToWindowRecord,
   type TaskRow,
-  type SessionRow
+  type SessionRow,
+  type WindowRow
 } from './mappers'
 
 export class SqliteStore implements WorkspacePersistence {
@@ -124,15 +127,16 @@ export class SqliteStore implements WorkspacePersistence {
     const row = sessionToRow(session)
     this.db
       .prepare(
-        `INSERT INTO sessions (id, task_id, type, label, shell, config, position, state, created_at, exited_at)
-         VALUES (@id, @task_id, @type, @label, @shell, @config, @position, @state, @created_at, @exited_at)
+        `INSERT INTO sessions (id, task_id, type, label, shell, config, position, state, created_at, exited_at, window_id)
+         VALUES (@id, @task_id, @type, @label, @shell, @config, @position, @state, @created_at, @exited_at, @window_id)
          ON CONFLICT(id) DO UPDATE SET
            label = excluded.label,
            shell = excluded.shell,
            config = excluded.config,
            position = excluded.position,
            state = excluded.state,
-           exited_at = excluded.exited_at`
+           exited_at = excluded.exited_at,
+           window_id = excluded.window_id`
       )
       .run(row)
   }
@@ -168,6 +172,35 @@ export class SqliteStore implements WorkspacePersistence {
          ON CONFLICT(key) DO UPDATE SET value = excluded.value`
       )
       .run(ACTIVE_TASK_KEY, taskId)
+  }
+
+  loadWindows(): WindowRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM windows ORDER BY created_at ASC')
+      .all() as WindowRow[]
+    return rows.map(rowToWindowRecord)
+  }
+
+  upsertWindow(record: WindowRecord): void {
+    const row = windowToRow(record)
+    this.db
+      .prepare(
+        `INSERT INTO windows (id, role, x, y, width, height, created_at)
+         VALUES (@id, @role, @x, @y, @width, @height, @created_at)
+         ON CONFLICT(id) DO UPDATE SET
+           role = excluded.role,
+           x = excluded.x,
+           y = excluded.y,
+           width = excluded.width,
+           height = excluded.height`
+      )
+      .run(row)
+  }
+
+  deleteWindow(id: WindowId): void {
+    // Sessions are NOT cascaded: the close-window use case reassigns them to the
+    // main window (or closes them) BEFORE this runs (§6.7), so no orphan rows.
+    this.db.prepare('DELETE FROM windows WHERE id = ?').run(id)
   }
 
   transaction<T>(fn: () => T): T {

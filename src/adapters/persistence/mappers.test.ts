@@ -6,7 +6,7 @@ import {
   rowToSessionSnapshot,
   type SessionRow
 } from './mappers'
-import { asTaskId, asSessionId, asTypeId } from '../../domain/ids'
+import { asTaskId, asSessionId, asTypeId, asWindowId } from '../../domain/ids'
 import { TaskState, SessionState } from '../../domain/state'
 import { TaskLifecycle, SessionLifecycle } from '../../domain/lifecycle'
 import type { TaskSnapshot, SessionSnapshot } from '../../domain/snapshots'
@@ -128,7 +128,8 @@ describe('rowToSessionSnapshot (I13, §6.3 — fresh on reload)', () => {
       position: 3,
       state: 'blocked',
       created_at: 42,
-      exited_at: 777
+      exited_at: 777,
+      window_id: 'win-2'
     }
     const snap = rowToSessionSnapshot(row)
     expect(snap.lifecycle).toBe(SessionLifecycle.Created)
@@ -137,6 +138,9 @@ describe('rowToSessionSnapshot (I13, §6.3 — fresh on reload)', () => {
     expect(snap.config).toEqual({ kind: 'terminal', shell: '/bin/bash' })
     expect(snap.order).toBe(3)
     expect(snap.title).toBe('build')
+    // V1.5 (I18): the window assignment round-trips on reload so a restored
+    // session reappears in its window, unlike the reset lifecycle/state above.
+    expect(snap.windowId).toBe(asWindowId('win-2'))
   })
 })
 
@@ -164,7 +168,8 @@ describe('rowToTaskSnapshot (I13/I14, §6.3)', () => {
         position: 0,
         state: 'unknown',
         created_at: 100,
-        exited_at: null
+        exited_at: null,
+        window_id: 'main'
       }
     ]
     const snap = rowToTaskSnapshot(taskRow, sessionRows)

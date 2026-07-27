@@ -24,7 +24,10 @@ function seed(t: TaskDTO): void {
     activeTaskId: t.id,
     sessionTypes: [],
     settings: { worktree: { location: '' }, terminal: {}, defaultSessionTypeId: 'terminal' },
-    version: 1
+    version: 1,
+    thisWindowId: 'main',
+    thisWindowRole: 'main',
+    windows: []
   })
 }
 

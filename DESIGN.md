@@ -38,6 +38,7 @@ sessions while **all sessions keep running in the background**.
 | Worktree location | **Octopus-owned by default**, under a configurable base dir `worktree.location` (default `~/octopus_repos/`). A repo-local create script may return any location instead; Octopus stores the path verbatim. `repo_root` stored per task, so multi-repo works with no special support. | §6.3, §6.4, §12.4 |
 | State-signal injection (OSC 133 + Claude hooks) | **Opt-out auto-injection** (rcfile sources user's rc; `.claude/settings.json` merged, never clobbered). Lands in V2. | §12.1 |
 | Task-creation inputs | **Modal collects name, repo directory (native picker), source branch, new branch** (new-branch prefilled with a slug). All are passed to native git / the repo-local create script. | §5.4, §12.3 |
+| Single vs multiple windows | **Multi-window, V1.5.** The **main** window owns the progress panel; **secondary** windows are session-only. All windows sync on the single `activeTaskId` (switch a task → sessions switch everywhere). Session→window is an opaque `windowId` on `Session` (default `MAIN_WINDOW_ID`); pixel bounds live in persistence only, never the domain. Windows + session assignments are restored on relaunch. | §3.7, §5.6, §6.7, §10 |
 
 ---
 
@@ -45,21 +46,23 @@ sessions while **all sessions keep running in the background**.
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────┐
-│ RENDERER (React + TypeScript)                                               │
-│   ProgressPanel (task list, status icons, New/Delete Task)                  │
-│   TaskWorkspace → TaskView* → SessionTabBar (+ New Session dropdown)         │
-│                              → SessionPane* (TerminalPane / JenkinsPane)     │
-│   Zustand store (UI + domain snapshot + status); xterm.js instances in refs │
+│ MAIN RENDERER (React)          │  SECONDARY RENDERER* (V1.5, one per window) │
+│   ProgressPanel (tasks, icons, │    SecondaryWorkspace → SessionPane*        │
+│     New/Delete/New Window)     │      (sessions where windowId == thisWindow)│
+│   TaskWorkspace → TaskView* →  │    (no progress panel; session-only)        │
+│     SessionTabBar → SessionPane*│                                             │
+│   Zustand store (per renderer); xterm.js instances in refs; windowId/role    │
 └───────────────▲───────────────────────────────────────────── commands ▼────┘
                 │ events (ptyData, lifecycle, stateChanged)   │
         ┌───────┴───────────────────────────────────────────▼──────────────┐
-        │ PRELOAD: typed `window.octopusAPI` via contextBridge (only bridge) │
+        │ PRELOAD: typed `window.octopusAPI` (only bridge); getWindowId()    │
         └───────▲───────────────────────────────────────────▼──────────────┘
                 │ IPC (typed messages)                        │
 ┌───────────────┴─────────────────────────────────────────────────────────────┐
 │ MAIN PROCESS (Node.js)                                                        │
 │   Application layer: use cases + single-writer command loop                   │
 │   Domain (pure): Task, Session, WorktreeRef, State machines, Aggregator       │
+│   WindowRegistry (V1.5): windowId → webContents; routes events per window     │
 │   Ports → Adapters:                                                           │
 │     WorktreeProvider → SelectingWorktreeProvider (Script | NativeGit)         │
 │     SessionManager / SessionRuntime → PtyTerminalRuntime (node-pty)           │
@@ -114,7 +117,10 @@ persistence, event routing, and any future multi-window refactor clean.
 - **Task** — `id`, `name` (display only), `worktree: WorktreeRef`, `sessions: OrderedList<Session>`,
   `activeSessionId?`, `lifecycle: TaskLifecycle`, `state: TaskState` (derived, V2+), timestamps.
 - **Session** — `id` (globally unique), `taskId`, `typeId`, `title`, `config: SessionConfig`,
-  `lifecycle: SessionLifecycle`, `state: SessionState` (V2+, default `Unknown`), `runtimeRef?`, `order`.
+  `lifecycle: SessionLifecycle`, `state: SessionState` (V2+, default `Unknown`), `runtimeRef?`, `order`,
+  `windowId: WindowId` (V1.5; which window renders it, default `MAIN_WINDOW_ID`; §3.7). `windowId` is an
+  opaque assignment tag orthogonal to `taskId` — moving a session between windows never changes `taskId`
+  (I7) or lifecycle (I9), so it is **not** a cross-aggregate object reference, just a presentation label.
 - **WorktreeRef** (immutable once set) — `path: AbsolutePath`, `branch?` (the new branch), `baseRef?`
   (the source branch it was cut from), `provisionedBy: ScriptInvocationMeta` (whose `repoRoot` is the
   per-task repo directory). `branch`/`baseRef` are populated from the create modal (§5.4); a repo-local
@@ -191,6 +197,28 @@ the list. `DeleteFailed` retains metadata so the user can retry or "force-forget
 `SessionLifecycle` ("is the runtime alive?") is **orthogonal** to `SessionState` ("what is it doing?", V2+).
 Switching tasks never changes lifecycle — background sessions stay `Running`; visibility is a UI concern, not
 a domain state. A `StartFailed`/`Exited` session maps to `Blocked` for aggregation.
+
+### 3.7 Window model (V1.5)
+
+Octopus runs across **multiple OS windows** (one per monitor). This is deliberately a **presentation +
+persistence concept, not a domain aggregate** — the domain stays pure and its invariants unchanged:
+
+- **`WindowId`** — a branded string id (like `TaskId`/`SessionId` in `src/domain/ids.ts`). A named constant
+  **`MAIN_WINDOW_ID`** identifies the single main window (stable, persisted — not a magic `null`).
+- **`Session.windowId: WindowId`** (§3.2) — the only domain touchpoint: an opaque tag saying *which window
+  renders this session right now*. It drives no rule and no lifecycle, exactly as `WorktreeRef.path` is a
+  "where it runs" bag on `Task`. The one mutation is `Session.assignToWindow(windowId)`; `taskId` is never
+  touched (I7 holds). Defaults to `MAIN_WINDOW_ID` at creation.
+- **`WindowRecord`** `{ id, role: 'main' | 'secondary', bounds: {x,y,width,height}, createdAt }` — lives
+  **only** in the `WorkspacePersistence` port + `SqliteStore` + `main` process. **Pixel geometry never enters
+  the pure domain.** Bounds are saved (debounced) on move/resize and restored at boot (§6.3, §6.7).
+
+**Sync model.** All windows share the single existing `activeTaskId` pointer (§3.2). A given window `W`
+renders exactly the sessions where `session.taskId === activeTaskId && session.windowId === W`. Switching the
+active task therefore switches sessions in **every** window simultaneously — the `activeTaskChanged` event is
+just broadcast to all windows (§6.7). A window may render **zero** sessions (empty state). `activeSessionId`
+within a task is a per-window UI selection, not shared. Roles: the **main** window shows the progress panel
+and sessions; **secondary** windows are session-only.
 
 ---
 
@@ -301,6 +329,35 @@ restore complexity). The serialize-and-replay path is kept available for a futur
 - **Renderer:** rendering, Zustand store, xterm instances (in refs, never serialized to store), IPC
   subscription setup.
 
+### 5.6 Multiple windows (V1.5)
+
+Each OS window is a **separate Electron renderer process** with its own Zustand store. Two roles:
+
+- **Main window** — the existing layout (`ProgressPanel` + `TaskWorkspace` + `Toaster` + modals), plus a
+  **New Window** button in the panel header.
+- **Secondary window** — session-only: no `ProgressPanel`; a `SecondaryWorkspace` renders the sessions of
+  the active task assigned to *this* window. `App.tsx` branches on `windowRole` to pick the layout.
+
+**Identity.** A renderer learns its own id synchronously via `octopusAPI.app.getWindowId()`, which reads a
+`?windowId=<id>` query param injected into the renderer URL at window creation (§6.7) — no IPC round-trip.
+`windowRole`/`windowId`/`windows` are added to the store, hydrated from the (extended) `getState` DTO.
+
+**Rendering & keep-alive.** The §5.3 rules are unchanged and apply **per window**: every session assigned
+to a window stays mounted with `visibility:hidden` when not the active tab (never `display:none`).
+`SecondaryWorkspace` filters the session set to `session.windowId === thisWindowId`. The WebGL context
+budget (`terminal/webgl-budget.ts`, §5.3) is a **module-level** singleton and thus already **per-renderer-
+process** — each window gets its own ~15-context budget with no change, and on a software-GL/VDI host every
+window independently stays on xterm's DOM renderer.
+
+**Cross-window drag & drop — *detach + drop-on-window*.** `@dnd-kit` is DOM-scoped and cannot cross a
+`BrowserWindow` boundary, so a single HTML5 drag can't travel between windows like intra-bar tab reorder
+(§5.4) does. The gesture: dragging a tab **out of** its `SessionTabBar` (pointer leaves the bar by ~20 px)
+switches to *detach mode* — the in-window dnd-kit drag is cancelled, and on `pointerup` the renderer reads
+the native `screenX/screenY` and calls `octopusAPI.windows.windowAtPoint({x,y})` (§6.7). If the drop lands
+over another Octopus window → `sessions.move({sessionId, targetWindowId})`; if it lands on empty desktop →
+`createWindowWithSession` opens a new secondary window at the drop point and moves the session into it. The
+move is a pure view re-assignment — the PTY keeps running untouched (§6.7).
+
 ---
 
 ## 6. Backend: Process, PTY, Persistence, IPC
@@ -355,8 +412,14 @@ CREATE TABLE tasks (
 CREATE TABLE sessions (
   id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   type TEXT NOT NULL, label TEXT NOT NULL, shell TEXT, position INTEGER NOT NULL,
-  state TEXT NOT NULL DEFAULT 'unknown', created_at INTEGER NOT NULL, exited_at INTEGER);
+  state TEXT NOT NULL DEFAULT 'unknown', created_at INTEGER NOT NULL, exited_at INTEGER,
+  window_id TEXT NOT NULL DEFAULT 'main');  -- V1.5: which window renders it (§3.7); default = main
 CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);  -- e.g. active_task_id
+CREATE TABLE windows (  -- V1.5: window records incl. monitor placement (§3.7, §6.7)
+  id TEXT PRIMARY KEY, role TEXT NOT NULL CHECK(role IN ('main','secondary')),
+  x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0,
+  width INTEGER NOT NULL DEFAULT 1280, height INTEGER NOT NULL DEFAULT 800,
+  created_at INTEGER NOT NULL);
 ```
 
 **Persist:** task list/name/worktree/branch/base_ref/repo_root/order/active-session; session definitions
@@ -370,7 +433,19 @@ delete-after-restart re-invokes the correct repo-local script / git repo (§6.4)
 
 **Schema version:** `PRAGMA user_version` is stamped with the current version. Adding `base_ref` bumped it
 to **2**; `SqliteStore` runs a guarded, idempotent `ALTER TABLE tasks ADD COLUMN base_ref TEXT` when it
-opens a `user_version < 2` database (§10 — this is the first use of the migration seam).
+opens a `user_version < 2` database (§10 — this is the first use of the migration seam). Persisted scrollback
+bumped it to **3**. **V1.5 (multi-window) bumps it to 4:** a guarded `ALTER TABLE sessions ADD COLUMN
+window_id TEXT NOT NULL DEFAULT 'main'` (the default migrates every existing session to the main window with
+no UPDATE pass), a `CREATE TABLE IF NOT EXISTS windows`, and an `INSERT OR IGNORE` seeding the `main` window
+record — the same fresh-DB-`CREATE`-plus-guarded-upgrade pattern proven at v2/v3.
+
+**Windows persistence (V1.5, §3.7, §6.7).** `WorkspacePersistence` gains `loadWindows/upsertWindow/
+deleteWindow`. Window **bounds** are saved (debounced) on OS move/resize; the session's `window_id` is
+saved via the normal `upsertSession`. **Restore:** at boot, main creates a `BrowserWindow` for every
+persisted `WindowRecord` at its saved bounds, but **clamps off-screen bounds** — if a saved window
+intersects no current display work area (`screen.getAllDisplays()`, e.g. a monitor was unplugged) its
+top-left is snapped into the nearest display, preserving width/height. Each restored session then renders in
+whichever window its `window_id` names (falling back to the main window if that window record is gone).
 
 ### 6.4 Worktree provisioning contract
 
@@ -460,6 +535,49 @@ Events (backend→UI):  ptyData, sessionCreated, sessionExited, sessionClosed,
 - **App quit:** SIGHUP all PTYs (fire-and-forget), `PRAGMA wal_checkpoint(TRUNCATE)`, then quit. Warn the
   user if any session is `Working`/`Blocked`.
 
+### 6.7 Multi-window backend (V1.5)
+
+**Event routing — `WindowRegistry`.** The single-target event forwarder (§6.5, one `webContents`) is
+replaced by a **`WindowRegistry`**: a `Map<WindowId, { webContents, ready, pending[] }>` with **one** bus
+subscription whose closure routes each mapped `EventDTO` by kind:
+- **`ptyData` and session-scoped events** (`sessionCreated/Exited/Closed/Renamed/Reordered`) → **only the
+  window hosting that session** (look up `session.windowId`; drop silently if the session is mid-close).
+- **`sessionMovedToWindow`** (new) → **both** the source and target windows, so both re-render in one cycle.
+- **Task-level / broadcast events** (`taskCreated/Deleted/Renamed/Reordered/Stale`, `activeTaskChanged`,
+  `scriptProgress/Error`, `error`, settings, and the dormant V2 `sessionStateChanged/taskStateChanged`) →
+  **all** windows — every window keeps its active-task view (and the main window its full task list) correct.
+
+Each window identifies itself at creation via a `?windowId=<id>` URL param (§5.6). Per-window `markReady`
+fires from that window's `getState` call — the handler resolves the caller via
+`BrowserWindow.fromWebContents(e.sender)` — so each renderer's buffered startup events flush exactly when it
+can receive them (generalizes the §6.5 single-window `onHydrate`).
+
+**New protocol (transport-agnostic, §6.5 — the V2 daemon carries `windowId` unchanged):**
+- **Commands:** `createWindow{role:'secondary', bounds?}`, `closeWindow{windowId, disposition:'move-to-main'
+  | 'kill-sessions'}`, `moveSessionToWindow{sessionId, targetWindowId}`, and `createWindowWithSession
+  {sessionId, bounds?}` (atomic create-then-move so the drop-on-desktop path is one dispatch, not a racy
+  two-round-trip).
+- **Query (bypasses the command loop, like `pickDirectory`):** `windowAtPoint{x,y}` → the `windowId` of the
+  Octopus window whose OS bounds contain the screen point, or `null` (empty desktop). Used by cross-window DnD.
+- **Events:** `windowCreated`, `windowClosed`, `sessionMovedToWindow{sessionId, taskId, fromWindowId,
+  toWindowId}`.
+
+**Move choreography (reuses the existing replay path — no PTY restart).** PTYs are keyed only by `sessionId`
+in main, so moving a session is a pure view re-assignment: `moveSessionToWindow` →
+`session.assignToWindow(target)` → `upsertSession` → emit `sessionMovedToWindow`. The **source** renderer
+unmounts the `SessionPane`/xterm (its cleanup unregisters the sink, releases the WebGL lease); the **target**
+renderer mounts a fresh xterm and its `registerTerminalSink` replays the `pty-router` pending ring buffer
+(the same 500 KB pre-mount buffer used at session restore, §6.6). The session is `Running`, not `Created`, so
+`startTaskSessions` is **not** re-triggered — no scrollback reload from SQLite, no flash. Subsequent `ptyData`
+is routed by the registry to the new window.
+
+**Window lifecycle.** *New Window* → `createWindow` (secondary). *Closing a secondary window* with live
+sessions shows a modal dialog (move-to-main vs kill-sessions vs cancel) → `closeWindow{disposition}`
+(move-to-main bulk-moves its sessions to the main window; kill-sessions closes each). *Closing the main
+window* quits the app: it triggers the §6.6 graceful shutdown (persist everything, SIGHUP PTYs, checkpoint).
+A quit-in-progress (`before-quit`) sets an `isQuitting` flag that suppresses the secondary close dialog so a
+`Ctrl+Q` isn't blocked. `window-all-closed` no longer force-quits (secondary closes must not kill the app).
+
 ---
 
 ## 7. Invariants & Consistency Rules
@@ -491,6 +609,11 @@ Events (backend→UI):  ptyData, sessionCreated, sessionExited, sessionClosed,
 - **I17.** User scripts, native `git` invocations, and terminal commands are a trust boundary: run via
   `ScriptRunner` with explicit cwd, **no shell-string interpolation of untrusted names** (branch names,
   paths, and repo dirs are passed as argv elements with `shell:false`), timeouts, captured exit/stderr.
+- **I18.** (V1.5) A session has exactly one `windowId` at all times (default `MAIN_WINDOW_ID`); moving it
+  between windows changes only `windowId`, never `taskId` (I7) or lifecycle (I9). A session whose persisted
+  `window_id` names a window that no longer exists falls back to `MAIN_WINDOW_ID` on restore (never orphaned).
+  On restore, windows and their session assignments are reconstructed alongside tasks/sessions (extends
+  I13/I14/I15) — live process state is still not resurrected (fresh PTYs, I13).
 
 ---
 
@@ -612,6 +735,27 @@ versions.
   `OCTOPUS_STATE_SOCKET` env + per-session socket dir provisioned (unused); `CredentialsProvider` port shape
   defined.
 
+### V1.5 — Multiple windows
+
+Ships on top of feature-complete V1; **strictly additive** — no domain/port/IPC signature changes, only new
+fields, commands, events, and one schema migration. Each layer's addition:
+- **Domain:** `WindowId` branded id + `MAIN_WINDOW_ID` constant; `Session.windowId` field +
+  `assignToWindow()`; `windowId` in `SessionSnapshot`. No aggregate/invariant changes (§3.7, I18).
+- **Application:** commands `createWindow`, `closeWindow`, `moveSessionToWindow`, `createWindowWithSession`
+  (+ their use cases + command-loop cases); `windows` + `thisWindowId` added to the `getState` read model
+  (sessions returned unfiltered — the renderer filters by `windowId`).
+- **Ports/Adapters:** `loadWindows/upsertWindow/deleteWindow` on `WorkspacePersistence` + `SqliteStore`;
+  schema **v3→4** migration (`window_id` column + `windows` table + seed main, §6.3).
+- **Infra/IPC:** `WindowRegistry` (replaces the single-target forwarder, §6.7); new channels + `windows`
+  API group + synchronous `app.getWindowId()`; `WindowDTO`/`WindowedWorkspaceStateDTO`; three new events.
+- **UI:** main/secondary `App` split; `SecondaryWorkspace`; New Window button; cross-window detach DnD
+  (§5.6). `pty-router`/`webgl-budget` need **no** change (per-renderer-process singletons already correct).
+
+**Forward-compatibility.** V2 is unaffected: status icons (§9) render per-session in whatever window hosts
+the session; `sessionStateChanged/taskStateChanged` are broadcast to all windows. The V2 durable-session
+daemon (§6.2) stays compatible — it echoes `windowId` on each event to route to the right window. V3 (Jenkins)
+is untouched: a `JenkinsPane` carries a `windowId` like any session and moves between windows the same way.
+
 ### V2 — Session state + aggregation + icons
 
 - Implement `TerminalHeuristicProvider` (OSC 133 + tcgetpgrp + activity) and `ClaudeCodeProvider`
@@ -643,6 +787,9 @@ versions.
 | R5 | Security (air-gapped on-prem): socket spoofing, secrets | Med | Per-user `chmod 700` socket dir; validate/size-cap socket messages; secrets only via keychain (`credentialsRef`), never in the store/JSON. |
 | R6 | OSC parsing correctness on adversarial output | Low–Med | Reuse a hardened parser (xterm.js's); cap param length (1 KB) + sequence timeout; never propagate parse errors to the renderer. |
 | R7 | State flicker | Med | Debounce/hysteresis (§9.3); Blocked exempt (must be instant). |
+| R8 | (V1.5) Cross-window move race — window moved between drop and `windowAtPoint`, or overlapping unmount/mount | Low | Hit-test is best-effort; worst case the session lands in the wrong window and is re-draggable. Source/target renderers are separate processes, so a brief double-sink during the move overlap cannot collide; the `pty-router` pending buffer covers the pre-mount gap (§6.7). |
+| R9 | (V1.5) Quit blocked by the secondary-window close dialog | Low | `before-quit` sets an `isQuitting` flag; the secondary `close` handler skips its dialog when quitting, so `Ctrl+Q` runs the normal graceful shutdown (§6.7). |
+| R10 | (V1.5) Persisted window off-screen after a monitor change | Low | On restore, clamp any window intersecting no display work area to the nearest display (`screen.getAllDisplays()`), preserving size (§6.3). |
 
 **Observability:** structured JSON state-transition log at `~/.local/share/octopus/state.log`;
 keyboard-toggled debug overlay showing the last N transitions per session (source layer + reason).
@@ -660,7 +807,7 @@ throwaway repo with a fake create/delete script.
 
 ## 12. Resolved Decisions
 
-These four were reviewed and decided; recorded here so implementation doesn't re-litigate them.
+These were reviewed and decided; recorded here so implementation doesn't re-litigate them.
 
 1. **Auto-inject OSC 133 & Claude Code hooks — YES, opt-out.** Octopus injects OSC 133 via an `--rcfile` that
    sources the user's own rc first (never edits `~/.bashrc`) and writes hooks into
@@ -686,3 +833,10 @@ These four were reviewed and decided; recorded here so implementation doesn't re
    Either way `repo_root` is stored **per task**, so multi-repo workspaces work with no special support:
    different tasks may target different repos. `OCTOPUS_REPO_ROOT` (= the task's repo dir) is passed to both
    paths (§6.4).
+5. **Multiple windows (V1.5) — main + secondary, synced on one active task.** The main window owns the
+   progress panel; secondary windows are session-only. All windows share the single `activeTaskId`, so
+   switching a task switches sessions in every window. Session→window is an opaque `windowId` on `Session`
+   (default `MAIN_WINDOW_ID`); window bounds live only in persistence. Cross-window DnD is *detach +
+   drop-on-window* (§5.6). Closing a secondary window with live sessions asks (move-to-main vs kill); closing
+   the main window quits the app. Windows + assignments restore on relaunch, with off-screen clamping (§3.7,
+   §5.6, §6.7, I18).

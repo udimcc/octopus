@@ -15,9 +15,15 @@ function stubOctopusAPI(): { api: OctopusAPI; emit: (event: EventDTO) => void } 
   const api: OctopusAPI = {
     ping: vi.fn().mockResolvedValue('pong'),
     tasks: { create: ack, delete: ack, rename: ack, reorder: ack, switch: ack },
-    sessions: { create: ack, close: ack, rename: ack, reorder: ack },
+    sessions: { create: ack, close: ack, rename: ack, reorder: ack, move: ack },
+    windows: {
+      create: ack,
+      close: ack,
+      createWithSession: ack,
+      windowAtPoint: vi.fn().mockResolvedValue(null)
+    },
     pty: { write: vi.fn(), resize: vi.fn() },
-    app: { getState: vi.fn(), updateSettings: ack },
+    app: { getState: vi.fn(), updateSettings: ack, getWindowId: vi.fn(() => 'main') },
     dialog: { pickDirectory: vi.fn().mockResolvedValue(undefined) },
     onEvent: (handler) => {
       listeners.add(handler)

@@ -9,7 +9,7 @@
  * deliberate, tested seam rather than a shared import.
  */
 
-import type { TaskId, SessionId, TypeId } from './ids'
+import type { TaskId, SessionId, TypeId, WindowId } from './ids'
 import type { SessionState, TaskState } from './state'
 import type { TaskLifecycle, SessionLifecycle } from './lifecycle'
 import type { SessionConfig } from './session-config'
@@ -34,6 +34,12 @@ export interface SessionSnapshot {
   readonly order: number
   readonly createdAt: number
   readonly exitedAt?: number
+  /**
+   * Which window renders this session (V1.5, DESIGN §3.7). Opaque tag; drives no
+   * invariant or lifecycle. Optional on read so pre-V1.5 snapshots hydrate as
+   * `MAIN_WINDOW_ID` (see `Session.fromSnapshot`).
+   */
+  readonly windowId?: WindowId
 }
 
 export interface TaskSnapshot {

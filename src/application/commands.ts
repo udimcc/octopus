@@ -9,7 +9,7 @@
  * will dispatch to recompute `TaskState`. Defined now, dispatched by nobody.
  */
 
-import type { TaskId, SessionId, TypeId } from '../domain/ids'
+import type { TaskId, SessionId, TypeId, WindowId } from '../domain/ids'
 import type { SessionConfig } from '../domain/session-config'
 import type { SessionState } from '../domain/state'
 
@@ -48,6 +48,8 @@ export interface CreateSessionInput {
   readonly typeId?: TypeId
   readonly title?: string
   readonly config?: SessionConfig
+  /** Which window hosts the new session (V1.5, §6.7). Omitted → main window. */
+  readonly windowId?: WindowId
 }
 
 export interface CloseSessionInput {
@@ -100,6 +102,50 @@ export interface IngestSessionStateInput {
   readonly state: SessionState
 }
 
+/** Pixel geometry for a new OS window (V1.5, §6.7). Optional → OS default placement. */
+export interface WindowBounds {
+  readonly x: number
+  readonly y: number
+  readonly width: number
+  readonly height: number
+}
+
+/**
+ * Open a new secondary window (V1.5, §6.7). `role` is always `secondary` — the
+ * single main window is created at boot, never via a command. `bounds` seeds the
+ * OS window position (e.g. the drop point of a detached tab); omitted → OS default.
+ */
+export interface CreateWindowInput {
+  readonly role: 'secondary'
+  readonly bounds?: WindowBounds
+}
+
+/**
+ * Close a secondary window (V1.5, §6.7). `disposition` decides its live sessions:
+ * `move-to-main` reassigns each to the main window; `kill-sessions` closes each.
+ * The renderer resolves this via the OS close dialog before dispatching.
+ */
+export interface CloseWindowInput {
+  readonly windowId: WindowId
+  readonly disposition: 'move-to-main' | 'kill-sessions'
+}
+
+/** Reassign a session to another (already-open) window (V1.5, §3.7, §6.7). */
+export interface MoveSessionToWindowInput {
+  readonly sessionId: SessionId
+  readonly targetWindowId: WindowId
+}
+
+/**
+ * Atomically open a new secondary window and move a session into it (V1.5, §6.7).
+ * The detach-onto-empty-desktop gesture: one dispatch emits `windowCreated` then
+ * `sessionMovedToWindow`, so no intermediate empty-window state races the drop.
+ */
+export interface CreateWindowWithSessionInput {
+  readonly sessionId: SessionId
+  readonly bounds?: WindowBounds
+}
+
 /**
  * The command union. Discriminated on `kind`; the loop's `switch` is exhaustive.
  * `ingestSessionState` is present but never dispatched in V1 (§10).
@@ -119,6 +165,10 @@ export type Command =
   | { readonly kind: 'updateSettings'; readonly input: SettingsPatch }
   | { readonly kind: 'handleRuntimeExit'; readonly input: HandleRuntimeExitInput }
   | { readonly kind: 'ingestSessionState'; readonly input: IngestSessionStateInput }
+  | { readonly kind: 'createWindow'; readonly input: CreateWindowInput }
+  | { readonly kind: 'closeWindow'; readonly input: CloseWindowInput }
+  | { readonly kind: 'moveSessionToWindow'; readonly input: MoveSessionToWindowInput }
+  | { readonly kind: 'createWindowWithSession'; readonly input: CreateWindowWithSessionInput }
 
 /**
  * Result of a command. `ok=false` + `needsDirtyConfirm` is the delete-task dirty
@@ -129,4 +179,9 @@ export interface CommandResult {
   readonly ok: boolean
   readonly needsDirtyConfirm?: boolean
   readonly error?: string
+  /**
+   * The id of a window just created by `createWindow`/`createWindowWithSession`
+   * (V1.5, §6.7). `main` needs it to open the OS `BrowserWindow` for the new id.
+   */
+  readonly windowId?: WindowId
 }

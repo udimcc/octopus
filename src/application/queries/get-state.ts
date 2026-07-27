@@ -18,6 +18,7 @@
 import type { AppDependencies } from '../dependencies'
 import type { WorkspaceSnapshot } from '../../domain/snapshots'
 import type { Settings } from '../../ports/settings-store'
+import type { WindowRecord } from '../../ports/workspace-persistence'
 
 /** A session type projected to serializable metadata (no `createRuntime` fn). */
 export interface SessionTypeView {
@@ -34,6 +35,12 @@ export interface AppStateView {
   readonly sessionTypes: readonly SessionTypeView[]
   readonly settings: Settings
   readonly version: number
+  /**
+   * Every persisted OS window (V1.5, §6.7). Sessions are returned UNFILTERED in
+   * `workspace`; each renderer filters them by its own `windowId` (injected at the
+   * DTO boundary in `main`, not here — this pure query has no per-window notion).
+   */
+  readonly windows: readonly WindowRecord[]
 }
 
 export function getState(deps: AppDependencies): AppStateView {
@@ -53,6 +60,7 @@ export function getState(deps: AppDependencies): AppStateView {
     workspace,
     sessionTypes,
     settings: deps.settings.load(),
-    version: deps.currentVersion
+    version: deps.currentVersion,
+    windows: deps.persistence.loadWindows()
   }
 }

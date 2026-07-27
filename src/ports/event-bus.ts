@@ -14,7 +14,7 @@
  * store (§5.2).
  */
 
-import type { TaskId, SessionId } from '../domain/ids'
+import type { TaskId, SessionId, WindowId } from '../domain/ids'
 import type { SessionState, TaskState } from '../domain/state'
 import type { TaskSnapshot, SessionSnapshot } from '../domain/snapshots'
 
@@ -106,6 +106,26 @@ export interface ErrorEvent {
   readonly sessionId?: SessionId
 }
 
+// ── Window lifecycle events (V1.5, §6.7) ──────────────────────────────────────────
+
+export interface WindowCreatedEvent {
+  readonly type: 'windowCreated'
+  readonly windowId: WindowId
+  readonly role: 'main' | 'secondary'
+  readonly bounds: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
+}
+export interface WindowClosedEvent {
+  readonly type: 'windowClosed'
+  readonly windowId: WindowId
+}
+export interface SessionMovedToWindowEvent {
+  readonly type: 'sessionMovedToWindow'
+  readonly sessionId: SessionId
+  readonly taskId: TaskId
+  readonly fromWindowId: WindowId
+  readonly toWindowId: WindowId
+}
+
 // ── Dormant V2 state seams (§10 V1) — emitted by nobody in V1 ─────────────────────
 
 export interface SessionStateChangedEvent {
@@ -136,6 +156,9 @@ export type DomainEvent =
   | ScriptProgressEvent
   | ScriptErrorEvent
   | ErrorEvent
+  | WindowCreatedEvent
+  | WindowClosedEvent
+  | SessionMovedToWindowEvent
   | SessionStateChangedEvent
   | TaskStateChangedEvent
 

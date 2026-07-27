@@ -55,6 +55,8 @@ export interface SessionDTO {
   readonly order: number
   readonly createdAt: number
   readonly exitedAt?: number
+  /** Which window renders this session (V1.5, §3.7). Defaults to `'main'`. */
+  readonly windowId: string
 }
 
 export interface TaskDTO {
@@ -116,6 +118,28 @@ export interface WorkspaceStateDTO {
   readonly version: number
 }
 
+/** A persisted OS window on the wire (V1.5, §6.7). Mirror of `WindowRecord`. */
+export interface WindowDTO {
+  readonly id: string
+  readonly role: 'main' | 'secondary'
+  readonly bounds: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
+  readonly createdAt: number
+}
+
+/**
+ * The per-window hydration payload (V1.5, §5.6, §6.7). Extends
+ * {@link WorkspaceStateDTO} with the identity of the window making the `getState`
+ * call (`thisWindowId`/`thisWindowRole`, injected by `main` from `e.sender`) and
+ * the full window list. Sessions in `tasks` are UNFILTERED; each renderer shows
+ * only those whose `windowId === thisWindowId`. Additive: the base DTO is
+ * unchanged, so pre-V1.5 consumers keep compiling.
+ */
+export interface WindowedWorkspaceStateDTO extends WorkspaceStateDTO {
+  readonly thisWindowId: string
+  readonly thisWindowRole: 'main' | 'secondary'
+  readonly windows: readonly WindowDTO[]
+}
+
 // ── Command inputs (UI → backend) ─────────────────────────────────────────────
 
 export interface CreateTaskInput {
@@ -175,6 +199,49 @@ export interface ReorderSessionInput {
   readonly toIndex: number
 }
 
+// ── Window command inputs (V1.5, §5.6, §6.7) ──────────────────────────────────
+
+/** Pixel geometry on the wire (V1.5). Mirror of the application `WindowBounds`. */
+export interface WindowBoundsDTO {
+  readonly x: number
+  readonly y: number
+  readonly width: number
+  readonly height: number
+}
+
+/** Open a new secondary window (V1.5). `bounds` omitted → OS default placement. */
+export interface CreateWindowInput {
+  readonly bounds?: WindowBoundsDTO
+}
+
+/** Close a secondary window, deciding its live sessions' fate (V1.5, §6.7). */
+export interface CloseWindowInput {
+  readonly windowId: string
+  readonly disposition: 'move-to-main' | 'kill-sessions'
+}
+
+/** Reassign a session to another open window (V1.5, §3.7). */
+export interface MoveSessionInput {
+  readonly sessionId: string
+  readonly targetWindowId: string
+}
+
+/** Atomically open a new secondary window hosting a detached session (V1.5). */
+export interface CreateWindowWithSessionInput {
+  readonly sessionId: string
+  readonly bounds?: WindowBoundsDTO
+}
+
+/**
+ * A screen-space point to hit-test against open windows (V1.5, §6.7). The
+ * detach-drop gesture asks `windows.windowAtPoint` which window (if any) sits under
+ * the pointer on release.
+ */
+export interface WindowAtPointInput {
+  readonly x: number
+  readonly y: number
+}
+
 /**
  * Result of a command (mirror of the application's `CommandResult`). `ok=false`
  * with `needsDirtyConfirm` is the delete-task dirty gate: the UI shows the
@@ -184,4 +251,6 @@ export interface CommandAck {
   readonly ok: boolean
   readonly needsDirtyConfirm?: boolean
   readonly error?: string
+  /** Id of a window created by `windows.create`/`windows.createWithSession` (V1.5). */
+  readonly windowId?: string
 }

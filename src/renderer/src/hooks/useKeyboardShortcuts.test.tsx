@@ -21,6 +21,7 @@ function session(id: string, over: Partial<SessionDTO> = {}): SessionDTO {
     state: 'unknown',
     order: 0,
     createdAt: 1000,
+    windowId: 'main',
     ...over
   }
 }
@@ -44,7 +45,10 @@ function seed(tasks: TaskDTO[], activeTaskId?: string): void {
     activeTaskId,
     sessionTypes: [],
     settings: { worktree: { location: '' }, terminal: {}, defaultSessionTypeId: 'terminal' },
-    version: 1
+    version: 1,
+    thisWindowId: 'main',
+    thisWindowRole: 'main',
+    windows: []
   })
 }
 

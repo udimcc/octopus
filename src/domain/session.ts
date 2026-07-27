@@ -7,7 +7,8 @@
  * ("what is it doing?", V2+). In V1 `state` never leaves `Unknown`.
  */
 
-import type { TaskId, SessionId, TypeId } from './ids'
+import type { TaskId, SessionId, TypeId, WindowId } from './ids'
+import { MAIN_WINDOW_ID } from './ids'
 import { SessionState } from './state'
 import { SessionLifecycle, canTransitionSession, lifecycleToAggregationState } from './lifecycle'
 import type { SessionConfig } from './session-config'
@@ -36,6 +37,8 @@ export class Session {
   private _state: SessionState
   private _order: number
   private _exitedAt?: number
+  /** Which window renders this session (V1.5, §3.7). Opaque; defaults to main. */
+  private _windowId: WindowId
 
   private constructor(props: SessionCreateProps, lifecycle: SessionLifecycle) {
     this.id = props.id
@@ -47,6 +50,7 @@ export class Session {
     this._lifecycle = lifecycle
     this._state = SessionState.Unknown
     this._order = props.order
+    this._windowId = MAIN_WINDOW_ID
   }
 
   /** Create a session in `Created` (§3.6: `[None] → Created`). */
@@ -73,6 +77,8 @@ export class Session {
     )
     s._state = snap.state
     s._exitedAt = snap.exitedAt
+    // Pre-V1.5 snapshots have no windowId → default to the main window (I18).
+    s._windowId = snap.windowId ?? MAIN_WINDOW_ID
     return s
   }
 
@@ -88,6 +94,9 @@ export class Session {
   get order(): number {
     return this._order
   }
+  get windowId(): WindowId {
+    return this._windowId
+  }
 
   rename(title: string): void {
     this._title = title
@@ -95,6 +104,15 @@ export class Session {
 
   setOrder(order: number): void {
     this._order = order
+  }
+
+  /**
+   * Reassign the window that renders this session (V1.5, §3.7, I18). An opaque
+   * view move: `taskId` (I7) and lifecycle are untouched, so the PTY — keyed by
+   * `sessionId` in main — keeps running. Mirrors `rename`/`setOrder` (in-place).
+   */
+  assignToWindow(windowId: WindowId): void {
+    this._windowId = windowId
   }
 
   private transition(to: SessionLifecycle): void {
@@ -166,7 +184,8 @@ export class Session {
       state: this._state,
       order: this._order,
       createdAt: this.createdAt,
-      exitedAt: this._exitedAt
+      exitedAt: this._exitedAt,
+      windowId: this._windowId
     }
   }
 }

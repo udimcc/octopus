@@ -6,7 +6,14 @@
 
 import { randomUUID } from 'node:crypto'
 import type { IdGenerator } from '../../ports/id-generator'
-import { asTaskId, asSessionId, type TaskId, type SessionId } from '../../domain/ids'
+import {
+  asTaskId,
+  asSessionId,
+  asWindowId,
+  type TaskId,
+  type SessionId,
+  type WindowId
+} from '../../domain/ids'
 
 export class UuidIdGenerator implements IdGenerator {
   newTaskId(): TaskId {
@@ -15,5 +22,9 @@ export class UuidIdGenerator implements IdGenerator {
 
   newSessionId(): SessionId {
     return asSessionId(randomUUID())
+  }
+
+  newWindowId(): WindowId {
+    return asWindowId(randomUUID())
   }
 }

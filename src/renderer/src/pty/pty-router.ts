@@ -19,6 +19,11 @@
  * "don't-send-to-inactive" optimization stays a deferred V2 perf item (not
  * user-visible). The byte cap mirrors the backend `RingBuffer` default (§6.2) so
  * the bounded-memory behavior is the same on both sides.
+ *
+ * MULTI-WINDOW (V1.5, §6.7): this module and its `sinks`/buffer maps are module-level
+ * state, so each secondary window's renderer process gets its OWN independent router
+ * — no change needed. The backend `WindowRegistry` routes `ptyData` only to the window
+ * currently hosting the session, so a moved session's output follows it here.
  */
 
 import type { EventDTO } from '../../../shared/events'

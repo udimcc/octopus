@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { createTask } from './create-task'
 import { openSession } from './open-session'
 import { makeDeps, taskInput, type FakeDeps } from './test-fakes'
-import { asTaskId, asSessionId } from '../../domain/ids'
+import { asTaskId, asSessionId, asWindowId, MAIN_WINDOW_ID } from '../../domain/ids'
 import { SessionLifecycle } from '../../domain/lifecycle'
 import { InvariantViolationError } from '../../domain/errors'
 
@@ -99,6 +99,29 @@ describe('openSession runtime start failure (§3.6)', () => {
     // start-session-runtime emits an error event on failure.
     expect(fd.bus.ofType('error')).toHaveLength(1)
     expect(fd.bus.ofType('sessionCreated')).toEqual([])
+  })
+})
+
+describe('openSession window hosting (V1.5, §6.7)', () => {
+  it('hosts the session in the requested window — persisted and on sessionCreated', async () => {
+    const fd = await seedReadyTask()
+
+    await openSession(fd.deps, { taskId: fd.taskId, windowId: asWindowId('win-2') })
+
+    const session = fd.workspace.task(fd.taskId)!.sessions()[0]
+    expect(session.windowId).toBe('win-2')
+    // The assignment is stamped BEFORE persist + emit, so both carry it.
+    expect(fd.persistence.upsertedSessions.map((s) => s.windowId)).toEqual(['win-2'])
+    expect(fd.bus.ofType('sessionCreated').map((e) => e.session.windowId)).toEqual(['win-2'])
+  })
+
+  it('defaults to the main window when no windowId is given', async () => {
+    const fd = await seedReadyTask()
+
+    await openSession(fd.deps, { taskId: fd.taskId })
+
+    const session = fd.workspace.task(fd.taskId)!.sessions()[0]
+    expect(session.windowId).toBe(MAIN_WINDOW_ID)
   })
 })
 

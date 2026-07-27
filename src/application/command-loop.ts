@@ -33,6 +33,10 @@ import { writeToPty, resizePty } from './use-cases/pty-io'
 import { updateSettings } from './use-cases/update-settings'
 import { handleRuntimeExit } from './use-cases/handle-runtime-exit'
 import { ingestSessionState } from './use-cases/ingest-session-state'
+import { createWindow } from './use-cases/create-window'
+import { closeWindow } from './use-cases/close-window'
+import { moveSessionToWindow } from './use-cases/move-session-to-window'
+import { createWindowWithSession } from './use-cases/create-window-with-session'
 
 const OK: CommandResult = { ok: true }
 
@@ -124,6 +128,16 @@ export class CommandLoop {
         // §10 V1 seam: dispatched by nobody in V1. Recomputes TaskState in V2.
         ingestSessionState(this.deps, command.input)
         return OK
+      case 'createWindow':
+        return { ok: true, windowId: createWindow(this.deps, command.input) }
+      case 'closeWindow':
+        await closeWindow(this.deps, command.input)
+        return OK
+      case 'moveSessionToWindow':
+        moveSessionToWindow(this.deps, command.input)
+        return OK
+      case 'createWindowWithSession':
+        return { ok: true, windowId: createWindowWithSession(this.deps, command.input) }
       default: {
         // Exhaustiveness: a new command kind must be handled here.
         const _never: never = command

@@ -63,6 +63,10 @@ Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session t
 > (dependency-rule boundary enforced) and `test` (393 tests, 56 files) are all green. What's left before ship is
 > **live `npm run dev` verification on a display** (M7 acceptance walk-through, DESIGN §11 step 5) — not exercised
 > in this headless environment.
+>
+> **V1.5 (multi-window) builds strictly additively on this feature-complete V1** — new domain fields, new
+> commands/events, and one schema migration; no existing signature changes. See the `V1.5 — Multi-Window`
+> section below.
 
 ### Domain (pure, no dependencies) — DESIGN §3
 
@@ -282,6 +286,115 @@ Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session t
   real `existsDir` + real PTY stack.
 - [x] E2E smoke: create task → open terminal → run command → switch task (buffer preserved) → delete task —
   headless over the real `CommandLoop`/PTY stack in `test/integration/smoke.integration.test.ts`.
+
+---
+
+## V1.5 — Multi-Window
+
+Goal: run Octopus across **multiple OS windows** (one per monitor). The **main** window owns the progress
+panel; **secondary** windows are session-only. All windows sync on the single `activeTaskId` (switch a task →
+sessions switch everywhere). A window may hold zero sessions; a session can be dragged into another window;
+windows + assignments are restored on relaunch. **Strictly additive on V1** — no existing signature changes
+(DESIGN §3.7, §5.6, §6.7, §10 V1.5, I18). User decisions: cross-window DnD = *detach + drop-on-window*;
+secondary-window close with live sessions = *ask* (move-to-main vs kill); main-window close = *quit app*.
+
+### Domain (pure) — DESIGN §3.7, §10 V1.5
+
+- [x] `WindowId` branded id + `MAIN_WINDOW_ID` constant in `src/domain/ids.ts` (mirrors `TaskId`/`SessionId`).
+- [x] `Session.windowId: WindowId` field (default `MAIN_WINDOW_ID`) + `assignToWindow(windowId)` mutation in
+  `src/domain/session.ts`; `fromSnapshot` reads `snap.windowId ?? MAIN_WINDOW_ID`, `toSnapshot` emits it.
+  **`taskId` never changes** on a move (I7, I18); no invariant/lifecycle change.
+- [x] `windowId: WindowId` added to `SessionSnapshot` in `src/domain/snapshots.ts`.
+
+### Application — DESIGN §6.7, §10 V1.5
+
+- [x] New commands in `src/application/commands.ts` + `CommandLoop` cases (`src/application/command-loop.ts`):
+  `createWindow{role:'secondary',bounds?}`, `closeWindow{windowId,disposition}`,
+  `moveSessionToWindow{sessionId,targetWindowId}`, `createWindowWithSession{sessionId,bounds?}` (atomic
+  create+move). Extend `CommandResult` with optional `windowId?`.
+- [x] Use case `create-window.ts` — generate `WindowId`, persist `WindowRecord` (secondary), emit `windowCreated`.
+- [x] Use case `close-window.ts` — `move-to-main` bulk-moves the window's sessions to main / `kill-sessions`
+  closes each; delete the window record; emit `windowClosed`.
+- [x] Use case `move-session-to-window.ts` — `session.assignToWindow`, `upsertSession`, emit
+  `sessionMovedToWindow{sessionId,taskId,fromWindowId,toWindowId}`. **No** `startTaskSessions` re-trigger
+  (session is `Running`, not `Created` — PTY untouched, §6.7).
+- [x] Use case `create-window-with-session.ts` — atomic: create secondary window then move the session;
+  emit `windowCreated` then `sessionMovedToWindow` from one dispatch (avoids the two-round-trip drop race).
+- [x] `src/application/queries/get-state.ts` — add `windows` + `thisWindowId` to `AppStateView`; sessions
+  returned **unfiltered** (the renderer filters by `windowId`).
+
+### Ports & Adapters — DESIGN §3.7, §6.3
+
+- [x] `WorkspacePersistence` port (`src/ports/workspace-persistence.ts`) gains `loadWindows()` /
+  `upsertWindow(record)` / `deleteWindow(id)` and a `WindowRecord {id, role, bounds, createdAt}` type.
+- [x] `SqliteStore` (`src/adapters/persistence/sqlite-store.ts`) implements the three window methods; adds
+  `window_id` to the `sessions` upsert.
+- [x] Row mappers (`src/adapters/persistence/mappers.ts`) — `windowId` in session row mappers; add
+  `windowToRow`/`rowToWindowRecord`.
+- [x] **Schema v3→4 migration** (`src/adapters/persistence/schema.ts`) — bump `SCHEMA_VERSION` to 4; add
+  `windows` table + `window_id` column to `SCHEMA_STATEMENTS`; `MIGRATIONS` entry `{toVersion:4}` with a
+  guarded `ALTER TABLE sessions ADD COLUMN window_id TEXT NOT NULL DEFAULT 'main'`, `CREATE TABLE IF NOT
+  EXISTS windows`, and `INSERT OR IGNORE` seeding the `main` window (same proven fresh-`CREATE`-plus-guarded-
+  upgrade pattern as v2/v3).
+
+### Infra / IPC (shared + main) — DESIGN §5.6, §6.7
+
+- [x] `src/shared/ipc.ts` — CHANNELS `windowCreate`/`windowClose`/`sessionMove`/`windowAtPoint`; `windows`
+  group on `OctopusAPI` (`create`/`close`/`windowAtPoint`), `sessions.move`, and synchronous
+  `app.getWindowId()` (reads the `?windowId=` URL param — no IPC).
+- [x] `src/shared/dto.ts` — `WindowDTO`, `WindowedWorkspaceStateDTO` (adds `thisWindowId`/`thisWindowRole`/
+  `windows`), `MoveSessionInput`/`CreateWindowInput`/`CloseWindowInput`; `windowId` on `SessionDTO`.
+- [x] `src/shared/events.ts` — `windowCreated`, `windowClosed`, `sessionMovedToWindow`; add to `EventDTO` union.
+- [x] `src/preload/index.ts` — implement the `windows` group, `sessions.move`, and `app.getWindowId()`.
+- [x] **`src/main/window-registry.ts`** (new, replaces `event-forwarder.ts`) — `Map<WindowId,{webContents,
+  ready,pending[]}>`, one bus subscription; routing rules (§6.7): `ptyData`/session-scoped → hosting window;
+  `sessionMovedToWindow` → both source & target; task-level/broadcast → all windows. Per-window `markReady`.
+- [x] `src/main/window.ts` — `createWindow` gains `windowId`/`bounds`/`role`; inject `?windowId=` URL param;
+  register/deregister with the registry; debounced bounds-save on move/resize; secondary `close` → dialog
+  (move-to-main / kill / cancel) unless `isQuitting`; main `close` → `app.quit()`.
+- [x] `src/main/ipc-handlers.ts` — handlers for `windowCreate`/`windowClose`/`sessionMove`/
+  `createWindowWithSession`; `windowAtPoint` hit-test over `BrowserWindow.getAllWindows()` bounds (query,
+  bypasses the loop); `appGetState` returns `WindowedWorkspaceStateDTO` and marks the calling window ready.
+- [x] `src/main/composition-root.ts` — `loadWindows()` on startup; seed main window record; build the
+  `WindowRegistry`; create secondary `BrowserWindow`s at persisted bounds with **off-screen clamping**;
+  update `AppContext`.
+- [x] `src/main/index.ts` — drop `window-all-closed → quit`; create all persisted windows on `whenReady`
+  (main first); `isQuitting` flag set in `before-quit`.
+
+### UI (Renderer) — DESIGN §5.6
+
+- [x] `src/renderer/src/store/store.ts` — add `windowId`/`windowRole`/`windows` to `StoreData`; hydrate from
+  `WindowedWorkspaceStateDTO`; `reduceEvent` cases for `windowCreated`/`windowClosed`/`sessionMovedToWindow`;
+  update `initialData()`.
+- [x] `src/renderer/src/App.tsx` — branch on `windowRole`: `MainWindowApp` (existing layout) vs
+  `SecondaryWindowApp` (no `ProgressPanel`).
+- [x] `src/renderer/src/components/SecondaryWorkspace.tsx` (new) — render sessions of the active task where
+  `session.windowId === thisWindowId`; identical keep-alive/visibility logic to `TaskView` (§5.3).
+- [x] `src/renderer/src/components/ProgressPanel.tsx` — add a **New Window** button (→ `windows.create`).
+- [x] `src/renderer/src/components/SessionTabBar.tsx` — cross-window **detach** gesture: pointer leaves the
+  bar by ~20 px → cancel dnd-kit → on `pointerup` read `screenX/screenY` → `windows.windowAtPoint` →
+  `sessions.move` (hit a window) or `createWindowWithSession` (empty desktop).
+- [x] No change needed: `src/renderer/src/pty/pty-router.ts` and `src/renderer/src/terminal/webgl-budget.ts`
+  — their module-level singletons are already per-renderer-process, so correct per window (§5.6). Confirmed.
+
+### V1.5 Testing — DESIGN §11
+
+- [x] Unit: schema **v3→4** migration (`sqlite-store.test.ts`, `FakeDb`) — `window_id` ALTER, `windows` table
+  created, main window seeded; guarded so it fires only from a v3 DB. *(Real better-sqlite3 can't load under
+  host Node — built for Electron's ABI — so the migration wiring is exercised via the scriptable `FakeDb`,
+  the same substitute the rest of the store suite uses.)*
+- [x] Unit: use cases — `create-window`, `close-window` (both dispositions), `move-session-to-window`
+  (asserts `taskId`/lifecycle unchanged, I18), `create-window-with-session`.
+- [x] Unit: `WindowRegistry` routing — `ptyData`/session events → hosting window only; `sessionMovedToWindow`
+  → both windows; task-level/broadcast → all windows.
+- [x] Unit: store `reduceEvent` for the three new events + `sessionIdsInWindow`/`activeSessionInWindow`
+  projection; `SecondaryWorkspace` window filtering + empty-state; off-screen clamping (`window-bounds.test.ts`).
+  *(`windowAtPoint` hit-test is inline in the Electron handler over `BrowserWindow.getAllWindows()` — not a
+  pure helper, so it is left to manual verification with the rest of the multi-window UI.)*
+- [ ] Integration: secondary-window close dispositions (move-to-main keeps PTYs alive; kill closes them);
+  `isQuitting` suppresses the dialog during app quit. *(Needs a real Electron display — manual for now.)*
+- [ ] Integration: restart restores windows + session→window assignments; a session whose window is gone
+  falls back to `MAIN_WINDOW_ID` (I18). *(Needs a real Electron display — manual for now.)*
 
 ---
 

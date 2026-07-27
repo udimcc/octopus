@@ -3,9 +3,9 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { SettingsModal } from './SettingsModal'
 import { useStore, initialData } from '../store/store'
 import { installStubBridge } from '../test-support/stub-bridge'
-import type { WorkspaceStateDTO } from '../../../shared/dto'
+import type { WindowedWorkspaceStateDTO } from '../../../shared/dto'
 
-const seededState: WorkspaceStateDTO = {
+const seededState: WindowedWorkspaceStateDTO = {
   tasks: [],
   activeTaskId: undefined,
   sessionTypes: [],
@@ -14,7 +14,10 @@ const seededState: WorkspaceStateDTO = {
     terminal: { shell: '/bin/bash' },
     defaultSessionTypeId: 'terminal'
   },
-  version: 1
+  version: 1,
+  thisWindowId: 'main',
+  thisWindowRole: 'main',
+  windows: []
 }
 
 describe('<SettingsModal>', () => {

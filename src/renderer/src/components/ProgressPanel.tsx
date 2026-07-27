@@ -107,6 +107,18 @@ export function ProgressPanel({ onNewTask }: ProgressPanelProps): React.JSX.Elem
         </button>
       </div>
 
+      {/* Open an empty secondary session-only window (V1.5, §6.7); the backend emits
+          `windowCreated` and the main process opens the OS window. */}
+      <div style={{ display: 'flex', padding: '0 12px 12px' }}>
+        <button
+          type="button"
+          onClick={() => void window.octopusAPI.windows.create({})}
+          style={{ flex: 1 }}
+        >
+          + New Window
+        </button>
+      </div>
+
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
         <SortableContext items={[...taskOrder]} strategy={verticalListSortingStrategy}>
           <ul style={{ margin: 0, padding: 0, overflowY: 'auto', flex: 1 }}>

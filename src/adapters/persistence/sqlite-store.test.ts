@@ -128,7 +128,7 @@ describe('SqliteStore.create (§6.3)', () => {
     const db = new FakeDb()
     SqliteStore.create(db)
     expect(db.execed.some((s) => s.includes('ADD COLUMN base_ref'))).toBe(false)
-    expect(db.pragmas).toContain('user_version = 3')
+    expect(db.pragmas).toContain('user_version = 4')
   })
 
   it('runs the pending migrations on a pre-existing older DB (base_ref + session_scrollback)', () => {
@@ -138,7 +138,7 @@ describe('SqliteStore.create (§6.3)', () => {
     db.stub('sqlite_master', [{ name: 'tasks' }])
     SqliteStore.create(db)
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN base_ref'))).toBe(true)
-    expect(db.pragmas).toContain('user_version = 3')
+    expect(db.pragmas).toContain('user_version = 4')
   })
 
   it('runs ONLY the v3 migration on a v2 DB (skips the already-applied v2 ALTER)', () => {
@@ -155,7 +155,22 @@ describe('SqliteStore.create (§6.3)', () => {
     expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS session_scrollback'))).toBe(
       true
     )
-    expect(db.pragmas).toContain('user_version = 3')
+    expect(db.pragmas).toContain('user_version = 4')
+  })
+
+  it('runs ONLY the v4 migration on a v3 DB (adds window_id + windows, seeds main)', () => {
+    // A pre-existing DB stamped at user_version 3 (pre-V1.5): only the v4 migration
+    // fires — the sessions.window_id ALTER, the windows CREATE, and the main-row
+    // seed. The earlier v2/v3 statements are skipped by the fromVersion guard.
+    const db = new FakeDb()
+    db.stub('sqlite_master', [{ name: 'tasks' }])
+    db.stubPragma('user_version', [{ user_version: 3 }])
+    SqliteStore.create(db)
+    expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN base_ref'))).toBe(false)
+    expect(db.execed.some((s) => s.includes('ALTER TABLE sessions ADD COLUMN window_id'))).toBe(true)
+    expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS windows'))).toBe(true)
+    expect(db.execed.some((s) => s.includes('INSERT OR IGNORE INTO windows'))).toBe(true)
+    expect(db.pragmas).toContain('user_version = 4')
   })
 })
 
@@ -184,7 +199,8 @@ describe('SqliteStore.load (§6.3)', () => {
       position: 0,
       state: 'unknown',
       created_at: 10,
-      exited_at: null
+      exited_at: null,
+      window_id: 'main'
     }
     db.stub('FROM tasks', [taskRow])
     db.stub('FROM sessions', [sessionRow])

@@ -22,10 +22,12 @@
  * Schema version, stamped into `PRAGMA user_version` (§10). Bumped 1 → 2 to add
  * the nullable `base_ref` column (the worktree's source branch); 2 → 3 to add the
  * `session_scrollback` table (persisted terminal output, replayed on restart —
- * the realized §6.6 backend ring-buffer seam). `SqliteStore` runs the guarded
- * migrations when an older DB opens (see {@link MIGRATIONS}).
+ * the realized §6.6 backend ring-buffer seam); 3 → 4 (V1.5, §6.3) to add the
+ * `sessions.window_id` column and the `windows` table (multi-window placement).
+ * `SqliteStore` runs the guarded migrations when an older DB opens (see
+ * {@link MIGRATIONS}).
  */
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 4
 
 /**
  * Connection pragmas applied on every open. `foreign_keys` is per-connection
@@ -63,11 +65,24 @@ export const SCHEMA_STATEMENTS: readonly string[] = Object.freeze([
      position INTEGER NOT NULL,
      state TEXT NOT NULL DEFAULT 'unknown',
      created_at INTEGER NOT NULL,
-     exited_at INTEGER
+     exited_at INTEGER,
+     window_id TEXT NOT NULL DEFAULT 'main'
    )`,
   `CREATE TABLE IF NOT EXISTS app_state (
      key TEXT PRIMARY KEY,
      value TEXT NOT NULL
+   )`,
+  // V1.5 (§3.7, §6.7): one row per OS window. `role` distinguishes the single
+  // main window (progress panel) from session-only secondary windows. Bounds are
+  // saved debounced on move/resize and restored (with off-screen clamping) at boot.
+  `CREATE TABLE IF NOT EXISTS windows (
+     id TEXT PRIMARY KEY,
+     role TEXT NOT NULL CHECK(role IN ('main','secondary')),
+     x INTEGER NOT NULL DEFAULT 0,
+     y INTEGER NOT NULL DEFAULT 0,
+     width INTEGER NOT NULL DEFAULT 1280,
+     height INTEGER NOT NULL DEFAULT 800,
+     created_at INTEGER NOT NULL
    )`,
   // Persisted terminal output per session, replayed into a fresh PTY on restart
   // (§6.6 backend ring buffer). A separate table (not a `sessions` column) keeps
@@ -113,6 +128,28 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
          session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
          data TEXT NOT NULL
        )`
+    ])
+  },
+  // V1.5 (§6.3): multi-window. The NOT NULL DEFAULT migrates every existing
+  // session to the main window with no UPDATE pass; the CREATE mirrors the
+  // fresh-DB DDL above; the INSERT OR IGNORE seeds the single main window row so
+  // an upgraded DB always has a `main` record to fall back to (I18). All three are
+  // safe to re-run under the `user_version` guard.
+  {
+    toVersion: 4,
+    statements: Object.freeze([
+      `ALTER TABLE sessions ADD COLUMN window_id TEXT NOT NULL DEFAULT 'main'`,
+      `CREATE TABLE IF NOT EXISTS windows (
+         id TEXT PRIMARY KEY,
+         role TEXT NOT NULL CHECK(role IN ('main','secondary')),
+         x INTEGER NOT NULL DEFAULT 0,
+         y INTEGER NOT NULL DEFAULT 0,
+         width INTEGER NOT NULL DEFAULT 1280,
+         height INTEGER NOT NULL DEFAULT 800,
+         created_at INTEGER NOT NULL
+       )`,
+      `INSERT OR IGNORE INTO windows (id, role, x, y, width, height, created_at)
+         VALUES ('main', 'main', 0, 0, 1280, 800, CAST(strftime('%s','now') AS INTEGER) * 1000)`
     ])
   }
 ])

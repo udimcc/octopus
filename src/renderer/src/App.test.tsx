@@ -9,7 +9,13 @@ function stubOctopusAPI(activeTaskId: string | undefined = undefined): OctopusAP
   return {
     ping: vi.fn().mockResolvedValue('pong'),
     tasks: { create: ack, delete: ack, rename: ack, reorder: ack, switch: ack },
-    sessions: { create: ack, close: ack, rename: ack, reorder: ack },
+    sessions: { create: ack, close: ack, rename: ack, reorder: ack, move: ack },
+    windows: {
+      create: ack,
+      close: ack,
+      createWithSession: ack,
+      windowAtPoint: vi.fn().mockResolvedValue(null)
+    },
     pty: { write: vi.fn(), resize: vi.fn() },
     app: {
       getState: vi.fn().mockResolvedValue({
@@ -21,9 +27,13 @@ function stubOctopusAPI(activeTaskId: string | undefined = undefined): OctopusAP
           terminal: {},
           defaultSessionTypeId: 'terminal'
         },
-        version: 1
+        version: 1,
+        thisWindowId: 'main',
+        thisWindowRole: 'main',
+        windows: []
       }),
-      updateSettings: ack
+      updateSettings: ack,
+      getWindowId: vi.fn(() => 'main')
     },
     dialog: { pickDirectory: vi.fn().mockResolvedValue(undefined) },
     onEvent: vi.fn().mockReturnValue(() => undefined)

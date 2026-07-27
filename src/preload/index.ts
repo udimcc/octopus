@@ -22,8 +22,13 @@ import type {
   CloseSessionInput,
   RenameSessionInput,
   ReorderSessionInput,
+  CreateWindowInput,
+  CloseWindowInput,
+  MoveSessionInput,
+  CreateWindowWithSessionInput,
+  WindowAtPointInput,
   SettingsPatchDTO,
-  WorkspaceStateDTO
+  WindowedWorkspaceStateDTO
 } from '../shared/dto'
 import type { EventDTO } from '../shared/events'
 
@@ -51,7 +56,20 @@ const octopusAPI: OctopusAPI = {
     rename: (input: RenameSessionInput): Promise<CommandAck> =>
       ipcRenderer.invoke(CHANNELS.sessionRename, input),
     reorder: (input: ReorderSessionInput): Promise<CommandAck> =>
-      ipcRenderer.invoke(CHANNELS.sessionReorder, input)
+      ipcRenderer.invoke(CHANNELS.sessionReorder, input),
+    move: (input: MoveSessionInput): Promise<CommandAck> =>
+      ipcRenderer.invoke(CHANNELS.sessionMove, input)
+  },
+
+  windows: {
+    create: (input: CreateWindowInput): Promise<CommandAck> =>
+      ipcRenderer.invoke(CHANNELS.windowCreate, input),
+    close: (input: CloseWindowInput): Promise<CommandAck> =>
+      ipcRenderer.invoke(CHANNELS.windowClose, input),
+    createWithSession: (input: CreateWindowWithSessionInput): Promise<CommandAck> =>
+      ipcRenderer.invoke(CHANNELS.windowCreateWithSession, input),
+    windowAtPoint: (input: WindowAtPointInput): Promise<string | null> =>
+      ipcRenderer.invoke(CHANNELS.windowAtPoint, input)
   },
 
   pty: {
@@ -60,9 +78,16 @@ const octopusAPI: OctopusAPI = {
   },
 
   app: {
-    getState: (): Promise<WorkspaceStateDTO> => ipcRenderer.invoke(CHANNELS.appGetState),
+    getState: (): Promise<WindowedWorkspaceStateDTO> => ipcRenderer.invoke(CHANNELS.appGetState),
     updateSettings: (patch: SettingsPatchDTO): Promise<CommandAck> =>
-      ipcRenderer.invoke(CHANNELS.appUpdateSettings, patch)
+      ipcRenderer.invoke(CHANNELS.appUpdateSettings, patch),
+    // Synchronous, no IPC (V1.5, §5.6): each window is loaded with a `?windowId=`
+    // query param (see `main/window.ts`); the sandboxed preload can read
+    // `window.location` directly. Absent param → the main window's id.
+    getWindowId: (): string =>
+      new URLSearchParams(
+        (globalThis as unknown as { location: { search: string } }).location.search
+      ).get('windowId') ?? 'main'
   },
 
   dialog: {

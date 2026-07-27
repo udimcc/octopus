@@ -15,14 +15,22 @@
 
 import { Workspace } from '../../domain/workspace'
 import { worstStatusWins } from '../../domain/task-state-aggregator'
-import { asTaskId, asSessionId, asTypeId, type TaskId, type SessionId } from '../../domain/ids'
+import {
+  asTaskId,
+  asSessionId,
+  asTypeId,
+  asWindowId,
+  type TaskId,
+  type SessionId,
+  type WindowId
+} from '../../domain/ids'
 import type { SessionConfig } from '../../domain/session-config'
 import type { WorkspaceSnapshot, TaskSnapshot, SessionSnapshot } from '../../domain/snapshots'
 import type { DomainEvent, EventBus, EventHandler, Unsubscribe } from '../../ports/event-bus'
 import type { IdGenerator } from '../../ports/id-generator'
 import type { Clock } from '../../ports/clock'
 import type { Settings, SettingsStore, SettingsPatch } from '../../ports/settings-store'
-import type { WorkspacePersistence } from '../../ports/workspace-persistence'
+import type { WorkspacePersistence, WindowRecord } from '../../ports/workspace-persistence'
 import type {
   WorktreeProvider,
   CreateWorktreeRequest,
@@ -176,6 +184,8 @@ export class FakePersistence implements WorkspacePersistence {
   readonly activeTaskSet: Array<TaskId | undefined> = []
   /** Persisted scrollback keyed by session id (mirrors the `session_scrollback` table). */
   readonly savedScrollback = new Map<SessionId, string>()
+  /** Persisted window records keyed by id (V1.5, mirrors the `windows` table). */
+  readonly windows = new Map<WindowId, WindowRecord>()
   transactions = 0
   checkpointed = false
   private readonly initial: WorkspaceSnapshot
@@ -208,6 +218,15 @@ export class FakePersistence implements WorkspacePersistence {
   }
   setActiveTask(taskId: TaskId | undefined): void {
     this.activeTaskSet.push(taskId)
+  }
+  loadWindows(): WindowRecord[] {
+    return [...this.windows.values()]
+  }
+  upsertWindow(record: WindowRecord): void {
+    this.windows.set(record.id, record)
+  }
+  deleteWindow(id: WindowId): void {
+    this.windows.delete(id)
   }
   transaction<T>(fn: () => T): T {
     this.transactions++
@@ -343,6 +362,7 @@ export class RecordingBus implements EventBus {
 export class SeqIdGenerator implements IdGenerator {
   private t = 0
   private s = 0
+  private w = 0
   newTaskId(): TaskId {
     this.t++
     return asTaskId(`task-${this.t}`)
@@ -350,6 +370,10 @@ export class SeqIdGenerator implements IdGenerator {
   newSessionId(): SessionId {
     this.s++
     return asSessionId(`session-${this.s}`)
+  }
+  newWindowId(): WindowId {
+    this.w++
+    return asWindowId(`window-${this.w}`)
   }
 }
 

@@ -21,7 +21,19 @@ export interface TaskViewProps {
 export function TaskView({ taskId, active }: TaskViewProps): React.JSX.Element {
   const task = useStore((s) => s.tasks[taskId])
   const sessions = useStore((s) => s.sessions)
-  const activeSessionId = useStore((s) => s.activeSessionByTask[taskId])
+  const windowId = useStore((s) => s.windowId)
+  const activeByTask = useStore((s) => s.activeSessionByTask[taskId])
+
+  // Only this window's sessions render here (V1.5, §5.6): a session moved to another
+  // window unmounts its pane so its terminal stops rendering in this one. Derived in
+  // the render body from stable slices (not a selector) so the fresh array doesn't
+  // defeat zustand's Object.is bail-out. The global active tab may point at a session
+  // living in another window, so fall back to this window's first session.
+  const windowSessionIds = task
+    ? task.sessionIds.filter((id) => sessions[id]?.windowId === windowId)
+    : []
+  const activeSessionId =
+    activeByTask && windowSessionIds.includes(activeByTask) ? activeByTask : windowSessionIds[0]
 
   // Hidden tasks stay mounted but out of layout so their terminals keep running.
   const style: React.CSSProperties = active
@@ -44,7 +56,7 @@ export function TaskView({ taskId, active }: TaskViewProps): React.JSX.Element {
         className="pane-area"
         style={{ position: 'relative', flex: 1, minHeight: 0, height: '100%' }}
       >
-        {task.sessionIds.map((sid) => {
+        {windowSessionIds.map((sid) => {
           const s = sessions[sid]
           if (!s) return null
           return <SessionPane key={sid} session={s} active={active && sid === activeSessionId} />

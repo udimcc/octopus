@@ -55,5 +55,9 @@ export class WebglBudget {
   }
 }
 
-/** The single app-wide budget shared by every `TerminalPane`. */
+/**
+ * The single budget shared by every `TerminalPane`. MULTI-WINDOW (V1.5, §6.7): this
+ * is module-level, so each window's renderer process has its OWN budget — correct,
+ * since WebGL contexts are a per-process (per-window) browser resource. No change.
+ */
 export const webglBudget = new WebglBudget()

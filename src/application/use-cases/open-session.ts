@@ -20,7 +20,7 @@ import type { CreateSessionInput } from '../commands'
 import type { SessionConfig } from '../../domain/session-config'
 import { Session } from '../../domain/session'
 import { InvariantViolationError } from '../../domain/errors'
-import { asTypeId, type TypeId } from '../../domain/ids'
+import { asTypeId, MAIN_WINDOW_ID, type TypeId } from '../../domain/ids'
 import { startSessionRuntime } from './start-session-runtime'
 
 export async function openSession(deps: AppDependencies, input: CreateSessionInput): Promise<void> {
@@ -68,6 +68,10 @@ export async function openSession(deps: AppDependencies, input: CreateSessionInp
     order,
     createdAt: now
   })
+
+  // Host the session in the window that requested it (V1.5, §6.7). Stamped before
+  // toSnapshot() so the assignment is persisted and carried on `sessionCreated`.
+  session.assignToWindow(input.windowId ?? MAIN_WINDOW_ID)
 
   // Start the runtime (Created → Starting → Running). On failure this throws after
   // marking StartFailed + disposing; the session is never added or persisted.

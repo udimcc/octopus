@@ -30,29 +30,53 @@ import type {
   CloseSessionInput,
   RenameSessionInput,
   ReorderSessionInput,
+  CreateWindowInput,
+  CloseWindowInput,
+  MoveSessionInput,
+  CreateWindowWithSessionInput,
+  WindowAtPointInput,
   SettingsPatchDTO,
-  WorkspaceStateDTO
+  WindowedWorkspaceStateDTO
 } from '../shared/dto'
 import type { CommandLoop } from '../application/command-loop'
 import type { AppDependencies } from '../application/dependencies'
 import type { CommandResult } from '../application/commands'
 import type { SettingsPatch } from '../application/commands'
 import { getState } from '../application/queries/get-state'
-import { asTaskId, asSessionId, asTypeId } from '../domain/ids'
-import { toWorkspaceStateDTO, toSessionConfig } from './dto-mappers'
+import { asTaskId, asSessionId, asTypeId, asWindowId, MAIN_WINDOW_ID, type WindowId } from '../domain/ids'
+import { toWindowedWorkspaceStateDTO, toSessionConfig } from './dto-mappers'
 
 function ack(result: CommandResult): CommandAck {
-  return { ok: result.ok, needsDirtyConfirm: result.needsDirtyConfirm, error: result.error }
+  return {
+    ok: result.ok,
+    needsDirtyConfirm: result.needsDirtyConfirm,
+    error: result.error,
+    windowId: result.windowId
+  }
 }
 
 export interface IpcHandlerHooks {
   /**
-   * Called each time the renderer requests `getState` — its hydration call, made
-   * AFTER it has registered its `onEvent` listener. `window.ts` wires this to the
-   * event-forwarder's `markReady` so buffered startup events (e.g. reconciliation
-   * `taskStale`) flush exactly when the renderer can receive them (§6.5).
+   * webContents.id → WindowId (V1.5, §6.7). Shared with the composition root and
+   * filled as windows open; lets `getState`/`windowAtPoint` resolve the calling or
+   * pointed-at window from `e.sender` / the OS window list.
    */
-  readonly onHydrate?: () => void
+  readonly windowIds: Map<number, WindowId>
+  /**
+   * Called when a window requests `getState` — its hydration call, made AFTER it
+   * registered its `onEvent` listener. Wired to the registry's per-window
+   * `markReady` so THAT window's buffered startup events flush exactly when it can
+   * receive them (§6.7, generalizes the §6.5 single-window hydrate).
+   */
+  readonly onHydrate?: (windowId: WindowId) => void
+}
+
+/** Resolve the WindowId of the calling renderer (`e.sender`), defaulting to main. */
+function senderWindowId(
+  windowIds: Map<number, WindowId>,
+  sender: Electron.WebContents
+): WindowId {
+  return windowIds.get(sender.id) ?? MAIN_WINDOW_ID
 }
 
 /**
@@ -62,7 +86,7 @@ export interface IpcHandlerHooks {
 export function registerIpcHandlers(
   loop: CommandLoop,
   deps: AppDependencies,
-  hooks: IpcHandlerHooks = {}
+  hooks: IpcHandlerHooks
 ): void {
   // Health check (kept from V0).
   ipcMain.handle(CHANNELS.ping, () => 'pong')
@@ -120,14 +144,19 @@ export function registerIpcHandlers(
   // ── Session commands ──────────────────────────────────────────────────────
   ipcMain.handle(
     CHANNELS.sessionCreate,
-    async (_e, input: CreateSessionInput): Promise<CommandAck> => {
+    async (e, input: CreateSessionInput): Promise<CommandAck> => {
+      // Host the new session in the window that asked for it (V1.5, §6.7). Resolve
+      // the calling renderer the same way getState/windowAtPoint do — the renderer
+      // needn't pass its own id over the wire.
+      const windowId = senderWindowId(hooks.windowIds, e.sender)
       const result = await loop.dispatch({
         kind: 'createSession',
         input: {
           taskId: asTaskId(input.taskId),
           typeId: input.typeId !== undefined ? asTypeId(input.typeId) : undefined,
           title: input.title,
-          config: input.config !== undefined ? toSessionConfig(input.config) : undefined
+          config: input.config !== undefined ? toSessionConfig(input.config) : undefined,
+          windowId
         }
       })
       return ack(result)
@@ -171,12 +200,75 @@ export function registerIpcHandlers(
     }
   )
 
+  // ── Session move (V1.5, §3.7) ───────────────────────────────────────────────
+  ipcMain.handle(CHANNELS.sessionMove, async (_e, input: MoveSessionInput): Promise<CommandAck> => {
+    const result = await loop.dispatch({
+      kind: 'moveSessionToWindow',
+      input: {
+        sessionId: asSessionId(input.sessionId),
+        targetWindowId: asWindowId(input.targetWindowId)
+      }
+    })
+    return ack(result)
+  })
+
+  // ── Window commands (V1.5, §6.7) ────────────────────────────────────────────
+  ipcMain.handle(CHANNELS.windowCreate, async (_e, input: CreateWindowInput): Promise<CommandAck> => {
+    const result = await loop.dispatch({
+      kind: 'createWindow',
+      input: { role: 'secondary', bounds: input.bounds }
+    })
+    return ack(result)
+  })
+
+  ipcMain.handle(CHANNELS.windowClose, async (_e, input: CloseWindowInput): Promise<CommandAck> => {
+    const result = await loop.dispatch({
+      kind: 'closeWindow',
+      input: { windowId: asWindowId(input.windowId), disposition: input.disposition }
+    })
+    return ack(result)
+  })
+
+  ipcMain.handle(
+    CHANNELS.windowCreateWithSession,
+    async (_e, input: CreateWindowWithSessionInput): Promise<CommandAck> => {
+      const result = await loop.dispatch({
+        kind: 'createWindowWithSession',
+        input: { sessionId: asSessionId(input.sessionId), bounds: input.bounds }
+      })
+      return ack(result)
+    }
+  )
+
+  // Hit-test a screen point against open windows (query, bypasses the loop, §6.7).
+  // Returns the WindowId whose OS bounds contain the point, or null (empty desktop).
+  ipcMain.handle(CHANNELS.windowAtPoint, (_e, input: WindowAtPointInput): string | null => {
+    const point = { x: Math.round(input.x), y: Math.round(input.y) }
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed() || !win.isVisible()) {
+        continue
+      }
+      const b = win.getBounds()
+      const inside =
+        point.x >= b.x && point.x < b.x + b.width && point.y >= b.y && point.y < b.y + b.height
+      if (inside) {
+        return hooks.windowIds.get(win.webContents.id) ?? null
+      }
+    }
+    return null
+  })
+
   // ── App-level ─────────────────────────────────────────────────────────────
-  ipcMain.handle(CHANNELS.appGetState, (): WorkspaceStateDTO => {
-    const dto = toWorkspaceStateDTO(getState(deps))
-    // The renderer has registered onEvent before this call; let the forwarder
-    // start flushing buffered startup events now (§6.5).
-    hooks.onHydrate?.()
+  ipcMain.handle(CHANNELS.appGetState, (e): WindowedWorkspaceStateDTO => {
+    // Resolve WHICH window is hydrating so we can stamp its identity + mark only it
+    // ready (§6.7). Its role comes from the persisted window record (main by default).
+    const windowId = senderWindowId(hooks.windowIds, e.sender)
+    const view = getState(deps)
+    const record = view.windows.find((w) => w.id === windowId)
+    const role: 'main' | 'secondary' = record?.role ?? 'main'
+    const dto = toWindowedWorkspaceStateDTO(view, windowId, role)
+    // This window registered onEvent before the call; flush its buffered events.
+    hooks.onHydrate?.(windowId)
     return dto
   })
 

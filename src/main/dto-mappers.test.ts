@@ -116,7 +116,8 @@ describe('snapshot → DTO mappers (§5.2)', () => {
         terminal: {},
         defaultSessionTypeId: 'terminal'
       },
-      version: 1
+      version: 1,
+      windows: []
     }
     const dto = toWorkspaceStateDTO(view)
     expect(dto.tasks).toHaveLength(1)

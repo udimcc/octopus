@@ -16,12 +16,13 @@
 
 import { create } from 'zustand'
 import type {
-  WorkspaceStateDTO,
+  WindowedWorkspaceStateDTO,
   TaskDTO,
   SessionDTO,
   SessionTypeDTO,
   SettingsDTO,
-  WorktreeRefDTO
+  WorktreeRefDTO,
+  WindowDTO
 } from '../../../shared/dto'
 import type { EventDTO } from '../../../shared/events'
 
@@ -60,10 +61,16 @@ export interface StoreData {
   readonly toasts: readonly Toast[]
   /** Monotonic toast id source (kept in state so it survives without Date/random). */
   readonly nextToastId: number
+  /** Which window this renderer is (V1.5, §5.6); filters the session view. */
+  readonly windowId: string
+  /** `main` → owns the progress panel; `secondary` → session-only. */
+  readonly windowRole: 'main' | 'secondary'
+  /** All open windows (V1.5, §6.7); patched by window lifecycle events. */
+  readonly windows: readonly WindowDTO[]
 }
 
 export interface StoreActions {
-  hydrate(state: WorkspaceStateDTO): void
+  hydrate(state: WindowedWorkspaceStateDTO): void
   applyEvent(event: EventDTO): void
   setActiveTask(taskId: string): void
   setActiveSession(taskId: string, sessionId: string): void
@@ -91,7 +98,12 @@ export function initialData(): StoreData {
     settings: DEFAULT_SETTINGS,
     version: 1,
     toasts: [],
-    nextToastId: 1
+    nextToastId: 1,
+    // Default to the main window until hydration stamps this renderer's identity
+    // (V1.5, §5.6). A pre-hydration render shows the main-window layout.
+    windowId: 'main',
+    windowRole: 'main',
+    windows: []
   }
 }
 
@@ -112,7 +124,7 @@ function normalizeTask(dto: TaskDTO): { entry: TaskEntry; sessions: SessionDTO[]
   return { entry, sessions }
 }
 
-function hydrateData(state: WorkspaceStateDTO): StoreData {
+function hydrateData(state: WindowedWorkspaceStateDTO): StoreData {
   const base = initialData()
   const tasks: Record<string, TaskEntry> = {}
   const sessions: Record<string, SessionDTO> = {}
@@ -136,8 +148,44 @@ function hydrateData(state: WorkspaceStateDTO): StoreData {
     activeSessionByTask,
     sessionTypes: state.sessionTypes,
     settings: state.settings,
-    version: state.version
+    version: state.version,
+    windowId: state.thisWindowId,
+    windowRole: state.thisWindowRole,
+    windows: state.windows
   }
+}
+
+/**
+ * The task's session ids that belong to a given window (V1.5, §5.6), in tab order.
+ * A window renders only `session.windowId === windowId`; this is the per-window
+ * projection both `TaskView` (panes) and `SessionTabBar` (tabs) filter through so a
+ * session moved out unmounts here and one moved in mounts.
+ */
+export function sessionIdsInWindow(
+  data: StoreData,
+  taskId: string,
+  windowId: string
+): readonly string[] {
+  const task = data.tasks[taskId]
+  if (!task) return []
+  return task.sessionIds.filter((id) => data.sessions[id]?.windowId === windowId)
+}
+
+/**
+ * The session to show for a task IN this window: the window-scoped active tab if it
+ * still lives here, else the first windowed session (the global `activeSessionByTask`
+ * may point at a session that lives in another window). `undefined` → this window
+ * hosts none of the task's sessions (renders an empty pane area).
+ */
+export function activeSessionInWindow(
+  data: StoreData,
+  taskId: string,
+  windowId: string
+): string | undefined {
+  const ids = sessionIdsInWindow(data, taskId, windowId)
+  const active = data.activeSessionByTask[taskId]
+  if (active && ids.includes(active)) return active
+  return ids[0]
 }
 
 /** Immutably patch one task entry; no-op if the task is unknown. */
@@ -316,6 +364,35 @@ export function reduceEvent(data: StoreData, event: EventDTO): StoreData {
     case 'taskStateChanged':
       // Dormant seam (§10): patch the task's derived state. Unused in V1.
       return patchTask(data, event.taskId, { state: event.state })
+
+    case 'sessionMovedToWindow': {
+      // A pure view re-assignment (§6.7, I18): only `windowId` changes — never
+      // `taskId` or lifecycle. Each window renders sessions where
+      // `windowId === thisWindowId`, so patching the flat record makes the source
+      // window's filter drop the pane and the target window's filter mount it. The
+      // session may be unknown to a window that never held it (harmless no-op).
+      const s = data.sessions[event.sessionId]
+      if (!s) return data
+      return {
+        ...data,
+        sessions: { ...data.sessions, [event.sessionId]: { ...s, windowId: event.toWindowId } }
+      }
+    }
+
+    case 'windowCreated': {
+      // Track the new window (§6.7). Upsert-safe: ignore a duplicate id.
+      if (data.windows.some((w) => w.id === event.windowId)) return data
+      const win: WindowDTO = {
+        id: event.windowId,
+        role: event.role,
+        bounds: event.bounds,
+        createdAt: 0
+      }
+      return { ...data, windows: [...data.windows, win] }
+    }
+
+    case 'windowClosed':
+      return { ...data, windows: data.windows.filter((w) => w.id !== event.windowId) }
 
     default: {
       // Exhaustiveness guard: a new EventDTO member must be handled above.

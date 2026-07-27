@@ -19,6 +19,8 @@
 
 import type {
   WorkspaceStateDTO,
+  WindowedWorkspaceStateDTO,
+  WindowDTO,
   TaskDTO,
   SessionDTO,
   WorktreeRefDTO,
@@ -30,6 +32,7 @@ import type { EventDTO } from '../shared/events'
 import type { TaskSnapshot, SessionSnapshot, WorktreeRefSnapshot } from '../domain/snapshots'
 import type { DomainEvent } from '../ports/event-bus'
 import type { Settings } from '../ports/settings-store'
+import type { WindowRecord } from '../ports/workspace-persistence'
 import type { AppStateView, SessionTypeView } from '../application/queries/get-state'
 import type { SessionConfig } from '../domain/session-config'
 
@@ -61,7 +64,9 @@ export function toSessionDTO(s: SessionSnapshot): SessionDTO {
     state: s.state,
     order: s.order,
     createdAt: s.createdAt,
-    exitedAt: s.exitedAt
+    exitedAt: s.exitedAt,
+    // V1.5: which window renders the session (§3.7). `toSnapshot` always emits it.
+    windowId: s.windowId ?? 'main'
   }
 }
 
@@ -105,6 +110,34 @@ export function toWorkspaceStateDTO(view: AppStateView): WorkspaceStateDTO {
     sessionTypes: view.sessionTypes.map(toSessionTypeDTO),
     settings: toSettingsDTO(view.settings),
     version: view.version
+  }
+}
+
+export function toWindowDTO(w: WindowRecord): WindowDTO {
+  return {
+    id: w.id,
+    role: w.role,
+    bounds: { x: w.bounds.x, y: w.bounds.y, width: w.bounds.width, height: w.bounds.height },
+    createdAt: w.createdAt
+  }
+}
+
+/**
+ * Build the per-window hydration payload (V1.5, §5.6, §6.7): the base workspace
+ * state widened with the CALLING window's identity (`thisWindowId`/role, resolved
+ * by `main` from `e.sender`) and the full window list. Sessions stay unfiltered;
+ * each renderer shows only those whose `windowId` matches its own.
+ */
+export function toWindowedWorkspaceStateDTO(
+  view: AppStateView,
+  thisWindowId: string,
+  thisWindowRole: 'main' | 'secondary'
+): WindowedWorkspaceStateDTO {
+  return {
+    ...toWorkspaceStateDTO(view),
+    thisWindowId,
+    thisWindowRole,
+    windows: view.windows.map(toWindowDTO)
   }
 }
 
@@ -165,6 +198,23 @@ export function toEventDTO(e: DomainEvent): EventDTO {
       }
     case 'error':
       return { type: 'error', message: e.message, taskId: e.taskId, sessionId: e.sessionId }
+    case 'windowCreated':
+      return {
+        type: 'windowCreated',
+        windowId: e.windowId,
+        role: e.role,
+        bounds: { x: e.bounds.x, y: e.bounds.y, width: e.bounds.width, height: e.bounds.height }
+      }
+    case 'windowClosed':
+      return { type: 'windowClosed', windowId: e.windowId }
+    case 'sessionMovedToWindow':
+      return {
+        type: 'sessionMovedToWindow',
+        sessionId: e.sessionId,
+        taskId: e.taskId,
+        fromWindowId: e.fromWindowId,
+        toWindowId: e.toWindowId
+      }
     case 'sessionStateChanged':
       return { type: 'sessionStateChanged', sessionId: e.sessionId, state: e.state }
     case 'taskStateChanged':

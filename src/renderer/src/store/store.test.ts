@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { reduceEvent, initialData, useStore, type StoreData } from './store'
-import type { TaskDTO, SessionDTO, WorkspaceStateDTO } from '../../../shared/dto'
+import {
+  reduceEvent,
+  initialData,
+  useStore,
+  sessionIdsInWindow,
+  activeSessionInWindow,
+  type StoreData
+} from './store'
+import type { TaskDTO, SessionDTO, WindowedWorkspaceStateDTO } from '../../../shared/dto'
 
 function session(id: string, taskId: string, over: Partial<SessionDTO> = {}): SessionDTO {
   return {
@@ -13,6 +20,7 @@ function session(id: string, taskId: string, over: Partial<SessionDTO> = {}): Se
     state: 'unknown',
     order: 0,
     createdAt: 1000,
+    windowId: 'main',
     ...over
   }
 }
@@ -214,6 +222,101 @@ describe('reduceEvent (§5.2)', () => {
     d = reduceEvent(d, { type: 'sessionStateChanged', sessionId: 's1', state: 'blocked' })
     expect(d.sessions.s1.state).toBe('blocked')
   })
+
+  it('sessionMovedToWindow patches only the session windowId (taskId untouched, I18)', () => {
+    let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s1', 't1') })
+    expect(d.sessions.s1.windowId).toBe('main')
+    d = reduceEvent(d, {
+      type: 'sessionMovedToWindow',
+      sessionId: 's1',
+      taskId: 't1',
+      fromWindowId: 'main',
+      toWindowId: 'win-2'
+    })
+    expect(d.sessions.s1.windowId).toBe('win-2')
+    expect(d.sessions.s1.taskId).toBe('t1') // never changes
+    // The session stays in the task's tab list — a move is not a close.
+    expect(d.tasks.t1.sessionIds).toEqual(['s1'])
+  })
+
+  it('sessionMovedToWindow for an unknown session is a no-op (same reference)', () => {
+    const d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
+    const next = reduceEvent(d, {
+      type: 'sessionMovedToWindow',
+      sessionId: 'ghost',
+      taskId: 't1',
+      fromWindowId: 'main',
+      toWindowId: 'win-2'
+    })
+    expect(next).toBe(d)
+  })
+
+  it('windowCreated appends a window; a duplicate id is idempotent', () => {
+    const bounds = { x: 0, y: 0, width: 900, height: 640 }
+    let d = reduceEvent(initialData(), {
+      type: 'windowCreated',
+      windowId: 'win-2',
+      role: 'secondary',
+      bounds
+    })
+    expect(d.windows.map((w) => w.id)).toEqual(['win-2'])
+    expect(d.windows[0]).toMatchObject({ id: 'win-2', role: 'secondary', bounds })
+    // Re-emit the same id → no duplicate.
+    d = reduceEvent(d, { type: 'windowCreated', windowId: 'win-2', role: 'secondary', bounds })
+    expect(d.windows.map((w) => w.id)).toEqual(['win-2'])
+  })
+
+  it('windowClosed removes the window from the list', () => {
+    const bounds = { x: 0, y: 0, width: 900, height: 640 }
+    let d = reduceEvent(initialData(), {
+      type: 'windowCreated',
+      windowId: 'win-2',
+      role: 'secondary',
+      bounds
+    })
+    d = reduceEvent(d, { type: 'windowClosed', windowId: 'win-2' })
+    expect(d.windows).toEqual([])
+  })
+})
+
+describe('sessionIdsInWindow / activeSessionInWindow (§5.6 per-window projection)', () => {
+  it('filters a task’s sessions to those hosted by the given window, in tab order', () => {
+    let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s1', 't1') })
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s2', 't1') })
+    // Move s2 out to a secondary window.
+    d = reduceEvent(d, {
+      type: 'sessionMovedToWindow',
+      sessionId: 's2',
+      taskId: 't1',
+      fromWindowId: 'main',
+      toWindowId: 'win-2'
+    })
+    expect(sessionIdsInWindow(d, 't1', 'main')).toEqual(['s1'])
+    expect(sessionIdsInWindow(d, 't1', 'win-2')).toEqual(['s2'])
+    expect(sessionIdsInWindow(d, 'ghost', 'main')).toEqual([])
+  })
+
+  it('activeSessionInWindow prefers the window-scoped active tab, else the first windowed session', () => {
+    let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s1', 't1') })
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s2', 't1') })
+    // Global active tab is s2 (most recently created), but it lives in win-2.
+    d = reduceEvent(d, {
+      type: 'sessionMovedToWindow',
+      sessionId: 's2',
+      taskId: 't1',
+      fromWindowId: 'main',
+      toWindowId: 'win-2'
+    })
+    // In the main window the global active (s2) is not present → falls back to s1.
+    expect(activeSessionInWindow(d, 't1', 'main')).toBe('s1')
+    // In win-2 the global active tab still resolves (it lives there).
+    expect(activeSessionInWindow(d, 't1', 'win-2')).toBe('s2')
+    // A window hosting none of the task's sessions → undefined.
+    expect(activeSessionInWindow(d, 't1', 'win-9')).toBeUndefined()
+  })
 })
 
 describe('useStore hydrate + actions', () => {
@@ -221,7 +324,7 @@ describe('useStore hydrate + actions', () => {
     useStore.setState(initialData())
   })
 
-  const state: WorkspaceStateDTO = {
+  const state: WindowedWorkspaceStateDTO = {
     tasks: [
       task('t2', { position: 1 }),
       task('t1', {
@@ -245,7 +348,10 @@ describe('useStore hydrate + actions', () => {
       terminal: {},
       defaultSessionTypeId: 'terminal'
     },
-    version: 1
+    version: 1,
+    thisWindowId: 'main',
+    thisWindowRole: 'main',
+    windows: []
   }
 
   it('hydrate projects the snapshot in position order and derives active tabs', () => {

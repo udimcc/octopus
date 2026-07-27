@@ -20,6 +20,7 @@ import {
   useSensor,
   useSensors,
   closestCenter,
+  type DragStartEvent,
   type DragEndEvent
 } from '@dnd-kit/core'
 import { SortableContext, horizontalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
@@ -38,6 +39,7 @@ const OVERFLOW_MENU_THRESHOLD = 8
 export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element {
   const task = useStore((s) => s.tasks[taskId])
   const sessions = useStore((s) => s.sessions)
+  const windowId = useStore((s) => s.windowId)
   const activeSessionId = useStore((s) => s.activeSessionByTask[taskId])
   const setActiveSession = useStore((s) => s.setActiveSession)
 
@@ -45,7 +47,11 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
   const [overflowing, setOverflowing] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
 
-  const sessionIds = task ? task.sessionIds : []
+  // Only this window's tabs (V1.5, §5.6). Reorder indices below are computed within
+  // this filtered list, but the reorder command carries the session id, and the
+  // backend reorders the task's full list — moving a windowed tab past a tab that
+  // lives in another window is not expressible, which is the intended UX.
+  const sessionIds = task ? task.sessionIds.filter((id) => sessions[id]?.windowId === windowId) : []
 
   // Track whether the strip overflows so the chevrons only show when useful.
   useEffect(() => {
@@ -61,17 +67,83 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }))
 
+  // Cross-window detach (V1.5, §5.6): track the pointer's SCREEN coords during a tab
+  // drag. dnd-kit's drag events don't carry screenX/screenY, so we sample them from a
+  // window-level `pointermove` active only while dragging. On release we hit-test:
+  // dropped inside this bar → reorder (below); dropped elsewhere → detach.
+  const lastScreen = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
+
+  useEffect(() => {
+    const onMove = (e: PointerEvent): void => {
+      lastScreen.current = { x: e.screenX, y: e.screenY }
+    }
+    window.addEventListener('pointermove', onMove)
+    return () => window.removeEventListener('pointermove', onMove)
+  }, [])
+
+  const onDragStart = (e: DragStartEvent): void => {
+    // Seed the screen position from the activator so a drop with no intervening
+    // pointermove still has coords (defensive; a real drag always moves).
+    const activator = e.activatorEvent
+    if (activator instanceof PointerEvent) {
+      lastScreen.current = { x: activator.screenX, y: activator.screenY }
+    }
+  }
+
+  /** Is the drop point inside this tab bar's own client rectangle? */
+  const droppedInsideBar = (): boolean => {
+    const bar = scrollRef.current
+    if (!bar) return true
+    const r = bar.getBoundingClientRect()
+    // Client coords: screen minus the window's screen origin (window.screenX/Y).
+    const cx = lastScreen.current.x - window.screenX
+    const cy = lastScreen.current.y - window.screenY
+    const margin = 20 // §5.6: leaving the bar by ~20px reads as a detach intent.
+    return (
+      cx >= r.left - margin &&
+      cx <= r.right + margin &&
+      cy >= r.top - margin &&
+      cy <= r.bottom + margin
+    )
+  }
+
+  const detach = (sessionId: string): void => {
+    const { x, y } = lastScreen.current
+    void window.octopusAPI.windows.windowAtPoint({ x, y }).then((targetWindowId) => {
+      if (targetWindowId === windowId) return // dropped back on our own window: no-op.
+      if (targetWindowId) {
+        void window.octopusAPI.sessions.move({ sessionId, targetWindowId })
+      } else {
+        // Empty desktop → open a new secondary window hosting this session, placed
+        // near the drop point (atomic create-then-move, §6.7).
+        void window.octopusAPI.windows.createWithSession({
+          sessionId,
+          bounds: { x, y, width: 900, height: 640 }
+        })
+      }
+    })
+  }
+
   const onDragEnd = (e: DragEndEvent): void => {
     const { active, over } = e
+    const sessionId = String(active.id)
+
+    // Dropped outside the tab bar → detach to another window / new window (§5.6).
+    if (!droppedInsideBar()) {
+      detach(sessionId)
+      return
+    }
+
+    // Inside the bar → reorder (unchanged). No-op if dropped on itself/no target.
     if (!over || active.id === over.id) return
-    const from = sessionIds.indexOf(String(active.id))
+    const from = sessionIds.indexOf(sessionId)
     const to = sessionIds.indexOf(String(over.id))
     if (from < 0 || to < 0) return
     // arrayMove only to compute the destination index for the command; the store
     // updates when `sessionReordered` comes back.
     const reordered = arrayMove([...sessionIds], from, to)
-    const toIndex = reordered.indexOf(String(active.id))
-    void window.octopusAPI.sessions.reorder({ taskId, sessionId: String(active.id), toIndex })
+    const toIndex = reordered.indexOf(sessionId)
+    void window.octopusAPI.sessions.reorder({ taskId, sessionId, toIndex })
   }
 
   const scrollBy = (dx: number): void => {
@@ -120,7 +192,12 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
           scrollbarWidth: 'none'
         }}
       >
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragStart={onDragStart}
+          onDragEnd={onDragEnd}
+        >
           <SortableContext items={[...sessionIds]} strategy={horizontalListSortingStrategy}>
             {sessionIds.map((sid) => {
               const s = sessions[sid]
