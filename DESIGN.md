@@ -281,8 +281,13 @@ Status(V2): evaluator → send('session:status') → store.updateSessionStatus �
 `visibility:hidden; position:absolute; width/height:0` — **not `display:none`** (which drops the WebGL
 context). `terminal.write(data)` keeps running for hidden sessions so their buffer stays current.
 
-- **On show:** `fitAddon.fit()` → `pty:resize` → `terminal.refresh(0, rows-1)`.
-- **On hide:** nothing; PTY and buffer remain live.
+- **On show:** `fitAddon.fit()` → `pty:resize` → `terminal.refresh(0, rows-1)` → **restore scroll**. The
+  restore is required because the `width/height:0` hide (above) makes a re-shown xterm viewport fire a spurious
+  `scrollTop=0` DOM event, which xterm's `_handleScroll` maps to `ydisp=0` (scrolled to top); xterm's own guard
+  only fires for `display:none`, not our hide. So the pane captures its pre-hide scroll position on hide and
+  re-pins on show (to the bottom if it was at the bottom — following new output — else to the exact line).
+- **On hide:** capture the terminal's scroll position (`viewportY`/`baseY`) for the on-show restore; PTY and
+  buffer remain live.
 - **Scale mitigation:** browsers cap simultaneous WebGL contexts (~16). Above ~15 concurrent sessions, demote
   hidden terminals from the WebGL renderer to the Canvas renderer (still hardware-accelerated, fine for
   background buffering). Bound `scrollback` to ~10 000 lines/terminal.

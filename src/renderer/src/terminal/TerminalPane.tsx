@@ -14,7 +14,10 @@
  *
  * `active` drives the on-show refit: when a hidden pane becomes visible its
  * container finally has real dimensions, so we fit → resize → refresh to avoid the
- * "reflow pop" a stale grid would show.
+ * "reflow pop" a stale grid would show. Conversely, while hidden the pane collapses
+ * to 0×0 and `fitAndResize` must NOT fit — a 0×0 fit shrinks xterm to its 2×1 floor
+ * and reflows the scrollback, which leaves a NORMAL-buffer TUI (Claude Code) scrolled
+ * to the top on the way back; `fitAndResize` guards on the host's layout box.
  *
  * `active` ALSO drives the renderer tier (§5.3): with every pane kept mounted, we
  * can't hold a live WebGL context per terminal (browsers cap ~16). So a pane leases
@@ -31,7 +34,7 @@
  * detects this once and `applyRendererTier` then leaves xterm on its DOM renderer.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
@@ -68,12 +71,23 @@ interface LoadedRenderer {
   kind: RendererKind
 }
 
-/** Fit to the container and tell the backend the new grid size. Best-effort. */
-function fitAndResize(sessionId: string, term: Terminal, fit: FitAddon): void {
+/**
+ * Fit to the container and tell the backend the new grid size. Best-effort.
+ *
+ * No-op while the host has no layout box (`offsetWidth`/`offsetHeight` 0). A hidden
+ * task collapses its pane to 0×0 (`TaskView` sets `width/height:0` on the inactive
+ * task), and `fit()` does NOT throw there — the FitAddon reads the 0-sized parent and
+ * proposes the 2×1 floor. Fitting then would shrink xterm to 2×1 and destructively
+ * reflow the NORMAL-buffer scrollback (e.g. Claude Code's Ink TUI). `visibility:hidden`
+ * alone keeps a real box, so the non-active session tab of the *active* task (only
+ * hidden, not 0×0) still fits.
+ */
+function fitAndResize(sessionId: string, term: Terminal, fit: FitAddon, host: HTMLElement): void {
+  if (host.offsetWidth === 0 || host.offsetHeight === 0) return
   try {
     fit.fit()
   } catch {
-    // Container not laid out yet (e.g. hidden pane, jsdom) — nothing to fit.
+    // Host detached mid-teardown — nothing to fit.
     return
   }
   window.octopusAPI.pty.resize({ sessionId, cols: term.cols, rows: term.rows })
@@ -153,6 +167,14 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
   const fitRef = useRef<FitAddon | null>(null)
   const searchRef = useRef<SearchAddon | null>(null)
   const rendererRef = useRef<LoadedRenderer | null>(null)
+  // Scroll position captured the instant this pane goes inactive, so the on-show path can
+  // restore it after the browser fires a spurious scrollTop=0 on the re-shown 0×0 viewport
+  // (the top-scroll bug — see the on-show effect).
+  const scrollIntentRef = useRef<{ atBottom: boolean; viewportY: number }>({
+    atBottom: true,
+    viewportY: 0
+  })
+  const rafRef = useRef<number | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -213,7 +235,7 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
     // Keystrokes → backend PTY (fire-and-forget, §6.5).
     const dataSub = term.onData((data) => window.octopusAPI.pty.write({ sessionId, data }))
 
-    fitAndResize(sessionId, term, fit)
+    fitAndResize(sessionId, term, fit, host)
 
     // Refit on container resize, debounced so a drag doesn't spam pty:resize.
     let debounce: ReturnType<typeof setTimeout> | undefined
@@ -221,7 +243,7 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
     if (typeof ResizeObserver !== 'undefined') {
       observer = new ResizeObserver(() => {
         if (debounce) clearTimeout(debounce)
-        debounce = setTimeout(() => fitAndResize(sessionId, term, fit), RESIZE_DEBOUNCE_MS)
+        debounce = setTimeout(() => fitAndResize(sessionId, term, fit, host), RESIZE_DEBOUNCE_MS)
       })
       observer.observe(host)
     }
@@ -245,18 +267,66 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
     // initial renderer tier at mount.
   }, [sessionId])
 
+  // Capture scroll intent the instant this pane goes inactive. `useLayoutEffect` runs
+  // synchronously in the commit phase — BEFORE the browser's render step dispatches the
+  // scrollTop=0 event that corrupts xterm's `ydisp` (see the on-show effect) — so
+  // `viewportY`/`baseY` are still truthful here. The `active` guard snapshots only the
+  // state we're leaving (active→hidden); it never overwrites the saved intent during a
+  // show commit. Declared ABOVE the on-show effect so it commits first.
+  useLayoutEffect(() => {
+    const term = termRef.current
+    if (!term || active) return
+    const buf = term.buffer.active
+    scrollIntentRef.current = {
+      atBottom: buf.viewportY >= buf.baseY,
+      viewportY: buf.viewportY
+    }
+  }, [active, sessionId])
+
   // On becoming visible, the container gains real dimensions: refit and repaint so
   // there's no stale-grid "pop" (§5.3). Also re-sync the renderer tier so the newly
   // visible pane claims WebGL and the newly hidden one gives it back.
-  useEffect(() => {
+  //
+  // Restore scroll: a task's pane is hidden via `visibility:hidden; width:0; height:0`
+  // (TaskView §5.3), NOT `display:none`. xterm's Viewport listens for DOM `scroll` on
+  // `.xterm-viewport` and maps `scrollTop`→`ydisp` in `_handleScroll`; on re-show the
+  // 0×0-collapsed element fires a spurious `scrollTop=0`, driving `ydisp`→0 (top). Its
+  // only guard is `offsetParent`, which is null only for `display:none`, so our hide
+  // slips past it (xterm #4066). We restore the pre-hide position: if we were pinned to
+  // the bottom, follow new output (baseY grew while hidden); else return to the exact
+  // line so a user reading history isn't yanked. Done synchronously now (commit phase,
+  // pre-paint — no top-flash) AND in a rAF: Chromium dispatches the bogus scroll event
+  // before rAF callbacks in the same frame, so the rAF re-apply lands after it and wins.
+  useLayoutEffect(() => {
     const term = termRef.current
     const fit = fitRef.current
-    if (!term || !fit) return
+    const host = hostRef.current
+    if (!term || !fit || !host) return
     applyRendererTier(sessionId, term, rendererRef, active)
     if (!active) return
-    fitAndResize(sessionId, term, fit)
+    fitAndResize(sessionId, term, fit, host) // reflow first — this moves baseY
     term.refresh(0, term.rows - 1)
+    const restore = (): void => {
+      const t = termRef.current
+      if (!t) return
+      if (scrollIntentRef.current.atBottom) t.scrollToBottom()
+      else t.scrollToLine(scrollIntentRef.current.viewportY)
+    }
+    restore()
     term.focus()
+
+    if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null
+      restore()
+    })
+
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current)
+        rafRef.current = null
+      }
+    }
   }, [active, sessionId])
 
   const runSearch = (backwards: boolean): void => {

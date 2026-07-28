@@ -27,12 +27,19 @@ const h = vi.hoisted(() => {
     open: ReturnType<typeof vi.fn>
     write: ReturnType<typeof vi.fn>
     refresh: ReturnType<typeof vi.fn>
+    scrollToBottom: ReturnType<typeof vi.fn>
+    scrollToLine: ReturnType<typeof vi.fn>
+    buffer: { active: { viewportY: number; baseY: number } }
     focus: ReturnType<typeof vi.fn>
     dispose: ReturnType<typeof vi.fn>
     onData(cb: (d: string) => void): { dispose: () => void }
   }
   const instances: FakeTerm[] = []
-  return { onDataDispose, instances, gpuTier }
+  // When set, the FitAddon mock's `fit()` applies these dims to the newest terminal,
+  // simulating a reflow so the on-show `scrollToBottom` branch can be exercised. Null
+  // (the default) makes `fit()` a no-op, so mount/resize assertions see 80×24.
+  const fitDims: { value: { cols: number; rows: number } | null } = { value: null }
+  return { onDataDispose, instances, gpuTier, fitDims }
 })
 
 vi.mock('@xterm/xterm', () => ({
@@ -46,6 +53,9 @@ vi.mock('@xterm/xterm', () => ({
     open = vi.fn()
     write = vi.fn()
     refresh = vi.fn()
+    scrollToBottom = vi.fn()
+    scrollToLine = vi.fn()
+    buffer = { active: { viewportY: 0, baseY: 0 } }
     focus = vi.fn()
     dispose = vi.fn()
     attachCustomKeyEventHandler(cb: (e: KeyboardEvent) => boolean): void {
@@ -63,7 +73,14 @@ vi.mock('@xterm/xterm', () => ({
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}))
 vi.mock('@xterm/addon-fit', () => ({
   FitAddon: class {
-    fit = vi.fn()
+    fit = vi.fn(() => {
+      const dims = h.fitDims.value
+      const term = h.instances.at(-1)
+      if (dims && term) {
+        term.cols = dims.cols
+        term.rows = dims.rows
+      }
+    })
   }
 }))
 vi.mock('@xterm/addon-search', () => ({ SearchAddon: class {} }))
@@ -127,6 +144,17 @@ describe('<TerminalPane> wiring (§5.3/§6.1)', () => {
     window.octopusAPI = {
       pty: { write: vi.fn(), resize: vi.fn() }
     } as unknown as typeof window.octopusAPI
+    // jsdom has no layout: every element reports offsetWidth/Height === 0, which
+    // TerminalPane's "is the host laid out?" guard would read as hidden and skip the
+    // fit. Force a non-zero box so the mount/on-show fit runs (the 0×0 hidden case is
+    // covered explicitly by overriding these back to 0 in its own test).
+    Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, value: 800 })
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      value: 600
+    })
+    // Default `fit()` to a no-op (keeps 80×24); reflow-sensitive tests opt in.
+    h.fitDims.value = null
   })
 
   it('creates one Terminal, opens it, registers the sink, and fits → resizes', () => {
@@ -255,5 +283,60 @@ describe('<TerminalPane> wiring (§5.3/§6.1)', () => {
     expect(window.octopusAPI.pty.resize).toHaveBeenCalled()
     expect(h.instances[0].refresh).toHaveBeenCalled()
     expect(h.instances[0].focus).toHaveBeenCalled()
+  })
+
+  it('never fits while the host has no layout box (the hidden 0×0 pane — bug guard)', () => {
+    cleanup()
+    // Simulate the hidden task: TaskView collapses the pane to 0×0.
+    Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, value: 0 })
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, value: 0 })
+    // Even mounted "active", a 0×0 host must NOT resize — fitting there shrinks xterm
+    // to 2×1 and reflows the scrollback, the top-scroll bug.
+    render(<TerminalPane sessionId="s1" active={true} />)
+    expect(window.octopusAPI.pty.resize).not.toHaveBeenCalled()
+  })
+
+  it('re-pins to the bottom on show when the pane was at the bottom before hiding', () => {
+    cleanup()
+    // Start active, at the bottom (viewportY === baseY). The mount fit re-pins once.
+    const { rerender } = render(<TerminalPane sessionId="s2" active={true} />)
+    const term = h.instances[0]
+    term.buffer.active = { viewportY: 500, baseY: 500 }
+    term.scrollToBottom.mockClear()
+    // Hide (captures atBottom=true), then show again.
+    rerender(<TerminalPane sessionId="s2" active={false} />)
+    rerender(<TerminalPane sessionId="s2" active={true} />)
+    // Following output, not a restore to an exact line.
+    expect(term.scrollToBottom).toHaveBeenCalled()
+    expect(term.scrollToLine).not.toHaveBeenCalled()
+  })
+
+  it('restores the exact scrolled-up line on show, without yanking to the bottom', () => {
+    cleanup()
+    // Active but scrolled UP reading history (viewportY < baseY).
+    const { rerender } = render(<TerminalPane sessionId="s2" active={true} />)
+    const term = h.instances[0]
+    term.buffer.active = { viewportY: 10, baseY: 500 }
+    term.scrollToBottom.mockClear()
+    term.scrollToLine.mockClear()
+    // Hide (captures atBottom=false, viewportY=10), then show again.
+    rerender(<TerminalPane sessionId="s2" active={false} />)
+    rerender(<TerminalPane sessionId="s2" active={true} />)
+    expect(term.scrollToLine).toHaveBeenCalledWith(10)
+    expect(term.scrollToBottom).not.toHaveBeenCalled()
+  })
+
+  it('re-applies the scroll restore in a rAF, to win the spurious late scroll event', async () => {
+    cleanup()
+    const { rerender } = render(<TerminalPane sessionId="s2" active={true} />)
+    const term = h.instances[0]
+    term.buffer.active = { viewportY: 500, baseY: 500 }
+    rerender(<TerminalPane sessionId="s2" active={false} />)
+    rerender(<TerminalPane sessionId="s2" active={true} />)
+    term.scrollToBottom.mockClear()
+    // Flush the scheduled rAF: the restore runs a second time, overriding any bogus
+    // scrollTop=0 the browser fired between the sync restore and this frame.
+    await new Promise((r) => requestAnimationFrame(r))
+    expect(term.scrollToBottom).toHaveBeenCalled()
   })
 })
