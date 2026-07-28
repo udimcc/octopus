@@ -4,6 +4,26 @@ All notable changes to Octopus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0]
+
+### Added
+
+- **Durable terminal sessions that survive an app restart (`octopusd`).** Terminal PTYs are
+  now hosted by a long-lived, detached `octopusd` daemon instead of the Electron main
+  process. Restarting the app **re-attaches** to the still-running shells rather than
+  respawning them, so the working directory, any live foreground program (Claude Code, vim,
+  emacsclient), and scrollback are all preserved across the restart. Fixes the two reported
+  bugs: cwd lost and live programs killed on restart.
+
+### Changed
+
+- **The daemon backend is now the default.** `terminal.backend` defaults to `'daemon'`; set
+  it to `'in-process'` in `settings.json` to opt out. If the daemon can be neither reached
+  nor launched, the app degrades to in-process (fresh shells at the last-known cwd), so
+  rollback is a one-line setting flip.
+- **DB schema v6.** Adds a `last_cwd` column to `sessions` (forward-only migration) so a
+  fresh spawn can reopen at the terminal's last-known directory.
+
 ## [1.1.0]
 
 ### Added
