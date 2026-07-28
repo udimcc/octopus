@@ -6,7 +6,7 @@ import {
   type PtySpawnOptions,
   type PtyDisposable
 } from './pty-terminal-runtime'
-import type { BatcherTimers } from './output-batcher'
+import type { BatcherTimers } from '../../shared/node/output-batcher'
 import type { SessionRuntimeContext } from '../../ports/session-runtime'
 import { asTaskId, asSessionId } from '../../domain/ids'
 

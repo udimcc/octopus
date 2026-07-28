@@ -190,6 +190,8 @@ export class FakePersistence implements WorkspacePersistence {
   readonly activeTaskSet: Array<TaskId | undefined> = []
   /** Persisted scrollback keyed by session id (mirrors the `session_scrollback` table). */
   readonly savedScrollback = new Map<SessionId, string>()
+  /** Persisted last-known cwd keyed by session id (mirrors the `sessions.last_cwd` column). */
+  readonly savedLastCwd = new Map<SessionId, string>()
   /** Persisted window records keyed by id (V1.5, mirrors the `windows` table). */
   readonly windows = new Map<WindowId, WindowRecord>()
   transactions = 0
@@ -215,12 +217,19 @@ export class FakePersistence implements WorkspacePersistence {
     this.deletedSessions.push(sessionId)
     // Mirror the real ON DELETE CASCADE: dropping the session drops its scrollback.
     this.savedScrollback.delete(sessionId)
+    this.savedLastCwd.delete(sessionId)
   }
   saveScrollback(sessionId: SessionId, data: string): void {
     this.savedScrollback.set(sessionId, data)
   }
   loadScrollback(sessionId: SessionId): string | undefined {
     return this.savedScrollback.get(sessionId)
+  }
+  saveLastCwd(sessionId: SessionId, cwd: string): void {
+    this.savedLastCwd.set(sessionId, cwd)
+  }
+  loadLastCwd(sessionId: SessionId): string | undefined {
+    return this.savedLastCwd.get(sessionId)
   }
   setActiveTask(taskId: TaskId | undefined): void {
     this.activeTaskSet.push(taskId)
@@ -423,7 +432,9 @@ export interface FakeDeps {
  * Assemble a full {@link AppDependencies} out of fakes. Pass an initial workspace
  * snapshot to hydrate restored state; otherwise the workspace starts empty.
  */
-export function makeDeps(opts: { snapshot?: WorkspaceSnapshot } = {}): FakeDeps {
+export function makeDeps(
+  opts: { snapshot?: WorkspaceSnapshot; liveDaemonSessions?: ReadonlySet<SessionId> } = {}
+): FakeDeps {
   const bus = new RecordingBus()
   const persistence = new FakePersistence(opts.snapshot)
   const settings = new FakeSettingsStore()
@@ -455,7 +466,8 @@ export function makeDeps(opts: { snapshot?: WorkspaceSnapshot } = {}): FakeDeps 
     configValidator: createAjvConfigValidator(),
     socketProvisioner,
     scrollbacks,
-    currentVersion: 1
+    currentVersion: 1,
+    liveDaemonSessions: opts.liveDaemonSessions
   }
 
   return {

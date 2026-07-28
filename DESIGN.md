@@ -404,19 +404,31 @@ node-pty.spawn(shell, ["-l"], {
   group also kills descendants — compilers, agents.)
 - **FD limits:** raise `RLIMIT_NOFILE` to 65536 at startup (default 1024 is exhausted by dozens of PTYs).
 
-### 6.2 In-process vs daemon vs tmux
+### 6.2 In-process vs daemon
 
-**V1: in-process** (PTYs owned by the Electron main process). Simplest, no extra infrastructure, and the core
-V1 value is task/session organization — not crash resilience. **Trade-off accepted:** an app/main-process
-crash orphans running processes; on restart Octopus recreates *fresh* shells at the correct worktree cwd
-(metadata persists; live process state does not).
+**Two coexisting backends behind one `SessionManager` port, selected by the `terminal.backend` setting
+(`'in-process' | 'daemon'`, default `'daemon'` — only an explicit `'in-process'` opts out).** The **renderer talks only to the `SessionManager`
+interface and never changes** regardless of which backend is active — swapping the backend is a composition-root
+concern (`SwitchableSessionManager`), invisible above the port.
 
-**Migration path (V2+): durable session backend without a renderer rewrite.** Define a **`SessionManager`
-port**; V1 uses `ElectronSessionManager` (in-process node-pty over Electron IPC). A later
-`DaemonSessionManager` runs PTYs in a long-lived `octopusd` (or attaches to **tmux** windows) over a Unix
-socket, with a server-side ring buffer (~5 MB/session) replayed on re-attach. The **renderer talks only to
-the `SessionManager` interface and never changes.** tmux is the recommended durable backend if/when
-process-survival-across-restart becomes a requirement, since it gives persistence and multi-attach for free.
+**In-process** (`PtySessionManager`, PTYs owned by the Electron main process). Simplest, no extra
+infrastructure. **Trade-off accepted:** an app/main-process crash orphans running processes; on restart Octopus
+recreates *fresh* shells at the last-known cwd (metadata persists; live process state does not — I13).
+
+**Daemon** (`DaemonSessionManager` + `octopusd`, implemented). PTYs are owned by a long-lived, **detached**
+`octopusd` process that outlives the app, so an app restart **re-attaches** to still-running shells instead of
+respawning them — carrying cwd, live foreground programs (vim/Claude/emacs), and scrollback across the restart.
+The daemon keeps a server-side ring buffer (~5 MB/session) replayed on attach, and speaks the same
+transport-agnostic protocol (`src/shared/node/daemon-protocol.ts`, length-prefixed frames over a per-uid Unix
+socket in `/tmp/octopus-<uid>/` at mode 0700). It hosts **node-pty only** (N-API/ABI-stable → loads under
+Electron-as-node via `ELECTRON_RUN_AS_NODE=1`); the SQLite DB stays in Electron main (Electron-ABI-only
+prebuilt). **Durability is against APP restart, not daemon crash:** a daemon crash kills its child PTYs, and the
+app then falls into the fresh-spawn path.
+
+**Fallback (the chosen daemon-down policy).** With `backend='daemon'` but the daemon unreachable, the app
+(re)launches a fresh daemon and spawns fresh at `last_cwd`; only if the daemon *launch itself* fails does it
+degrade to in-process for that run. This is why both backends coexist and rollback is trivial — flip the setting
+back. tmux remains a possible alternative durable backend but is not implemented.
 
 ### 6.3 Persistence
 
@@ -442,13 +454,22 @@ CREATE TABLE windows (  -- V1.5: window records incl. monitor placement (§3.7, 
 ```
 
 **Persist:** task list/name/worktree/branch/base_ref/repo_root/order/active-session; session definitions
-(id, type, label, shell, order); active task; global settings. **Cannot persist:** live PTY/TTY state and the
-foreground process. **Restore:** verify each worktree path exists (else mark task `Stale` with a warning,
-don't start sessions); for each terminal session, open a fresh PTY in the worktree (V1) or re-attach (durable
-backend). Persisted scrollback is metadata, independent of the live PTY (I13): it is loaded and published
-(as a `ptyData` event) **ahead of** the fresh PTY spawn, so restored history paints immediately without
-waiting on the shell fork. The `repo_root` column round-trips the per-task repo directory so
-delete-after-restart re-invokes the correct repo-local script / git repo (§6.4).
+(id, type, label, shell, order, `last_cwd`); active task; global settings. **Cannot persist (in the Electron
+process):** live PTY/TTY state and the foreground process. **Restore — attach vs fresh:** verify each worktree
+path exists (else mark task `Stale` with a warning, don't start sessions); then for each terminal session the
+backend decides:
+- **Fresh spawn** (in-process always; daemon when the session's PTY is gone) — open a new PTY at the session's
+  `last_cwd` if present (captured daemon-side on quit / roster refresh), else the config `cwdOverride`, else the
+  worktree root. Persisted scrollback is metadata, independent of the live PTY (I13): it is loaded and published
+  (as a `ptyData` event) **ahead of** the spawn, so restored history paints immediately without waiting on the
+  shell fork. The configured `initialCommand` runs on a fresh spawn.
+- **Re-attach** (daemon backend, when the session id is still in the daemon's live roster — `liveDaemonSessions`)
+  — the daemon replays its own richer live ring buffer, so the persisted DB scrollback is **not** re-published
+  (that would double-print history) and the `initialCommand` is **suppressed** (I15 — the process already exists
+  and likely already ran it). The live cwd and foreground program come back with the process.
+
+The `repo_root` column round-trips the per-task repo directory so delete-after-restart re-invokes the correct
+repo-local script / git repo (§6.4).
 
 **Schema version:** `PRAGMA user_version` is stamped with the current version. Adding `base_ref` bumped it
 to **2**; `SqliteStore` runs a guarded, idempotent `ALTER TABLE tasks ADD COLUMN base_ref TEXT` when it
@@ -631,10 +652,15 @@ A quit-in-progress (`before-quit`) sets an `isQuitting` flag that suppresses the
   ingested `sessionStateChanged` (pure `max` → cannot drift).
 - **I12.** An `Exited`/`StartFailed` session maps to `Blocked` for aggregation; a session without the
   `EvaluatesState` capability is `Unknown` and transparent unless it is the only signal.
-- **I13.** On quit: persist metadata + gracefully terminate processes; do **not** resurrect live process
-  state. **I14.** Worktrees persist on disk; on startup reconcile each task's worktree path (missing →
-  `Stale`/degraded with re-provision or force-forget). **I15.** On restart, sessions are recreated from
-  serialized `SessionConfig` (fresh terminal / fresh Jenkins viewer).
+- **I13.** On quit the Electron process persists metadata only and never persists live *process* state; how
+  runtimes are released depends on the backend. **In-process:** gracefully terminate (SIGHUP) — a fresh PTY is
+  spawned on restart. **Daemon:** *detach* (do not kill) — the PTYs keep running in `octopusd`, which is a
+  separate process, not persisted state; so a durable backend **may** retain live processes across an app
+  restart and re-attach to them (§6.2). Absent a durable backend, restore opens a fresh PTY. **I14.** Worktrees
+  persist on disk; on startup reconcile each task's worktree path (missing → `Stale`/degraded with re-provision
+  or force-forget). **I15.** On restart, sessions are recreated from serialized `SessionConfig` (fresh terminal
+  / fresh Jenkins viewer) — **except** when a durable backend re-attaches a still-live session, in which case
+  the config is not re-applied (the process already exists; `initialCommand` is not re-run).
 - **I16.** Never persist secrets. Jenkins config stores a `credentialsRef`; a `CredentialsProvider` port
   resolves it from the OS keychain (libsecret) at runtime. Define this port's shape in V1's persistence
   design so V3 doesn't retrofit secret handling.
@@ -645,7 +671,8 @@ A quit-in-progress (`before-quit`) sets an `isQuitting` flag that suppresses the
   between windows changes only `windowId`, never `taskId` (I7) or lifecycle (I9). A session whose persisted
   `window_id` names a window that no longer exists falls back to `MAIN_WINDOW_ID` on restore (never orphaned).
   On restore, windows and their session assignments are reconstructed alongside tasks/sessions (extends
-  I13/I14/I15) — live process state is still not resurrected (fresh PTYs, I13).
+  I13/I14/I15) — the Electron process still resurrects no live process state (fresh PTYs on the in-process
+  backend; the daemon backend re-attaches to PTYs it kept running, I13).
 
 ---
 
@@ -795,8 +822,10 @@ is untouched: a `JenkinsPane` carries a `windowId` like any session and moves be
 - Wire the existing `sessionStateChanged` → ingest → `TaskStateAggregator` → view-model → icons in the
   progress window and on tabs. Debounce/hysteresis (§9.3). Add the state transition log + debug overlay.
 - **No new ports, no domain signature changes.** Optionally expose the alternate aggregation precedence as a
-  setting. *(Optional V2 infra:* migrate `SessionManager` to a durable backend — daemon/tmux — if
-  process-survival is prioritized; renderer unaffected.)*
+  setting. *(Durable-session infra — **done ahead of V2**:* `SessionManager` has a durable `octopusd` daemon
+  backend, the default `terminal.backend` (opt out with `'in-process'`), that survives an app restart and
+  re-attaches live PTYs — cwd + foreground program + scrollback intact (§6.2). Renderer unaffected, exactly as
+  the port boundary reserved.)*
 
 ### V3 — Jenkins Pipeline Viewer
 

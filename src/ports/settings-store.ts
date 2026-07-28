@@ -20,6 +20,14 @@ export interface WorktreeSettings {
 export interface TerminalSettings {
   /** Preferred shell; else $SHELL, else /bin/bash (§6.1). */
   readonly shell?: string
+  /**
+   * Which session backend hosts PTYs (§6.2). `'daemon'` (default when unset) hosts
+   * them in the out-of-process `octopusd`, so they survive an app restart and a
+   * restart RE-ATTACHES (carrying cwd, live programs, scrollback). `'in-process'`
+   * spawns them inside the Electron main process (V1 behavior — killed on app quit),
+   * an explicit opt-out for anyone who needs it. Rollback is a one-line setting flip.
+   */
+  readonly backend?: 'in-process' | 'daemon'
 }
 
 export interface Settings {

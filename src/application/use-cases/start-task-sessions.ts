@@ -37,6 +37,13 @@ export async function startTaskSessions(deps: AppDependencies, taskId: TaskId): 
     if (session.lifecycle !== SessionLifecycle.Created) {
       continue // already Running/Exited/etc — nothing to start
     }
+    // Durable backend re-attach (§6.2): if the daemon still holds this session's
+    // live PTY, do NOT replay the persisted DB scrollback — the daemon replays its
+    // own richer, more-current live buffer on attach, and prepending the stale DB
+    // copy would double-print history. The DB scrollback is the fresh-spawn path's
+    // fallback only. The in-process backend has an empty roster, so this is false
+    // for every session and the replay below runs exactly as in V1.
+    const willResume = deps.liveDaemonSessions?.has(session.id) ?? false
     // Replay any persisted scrollback (§6.6) BEFORE the PTY spawn, so history
     // paints without waiting on the shell fork (which is the slow step on restore).
     // History is metadata (I13), independent of a live PTY: published as an ordinary
@@ -53,7 +60,7 @@ export async function startTaskSessions(deps: AppDependencies, taskId: TaskId): 
     // `?1004`, mouse, bracketed paste) so a mode left enabled by the old bytes can't
     // emit input into the fresh PTY (the `^[[I` focus-report symptom). The raw bytes
     // still go to the live buffer.
-    const history = deps.persistence.loadScrollback(session.id)
+    const history = willResume ? undefined : deps.persistence.loadScrollback(session.id)
     if (history) {
       deps.scrollbacks.append(session.id, history)
       deps.bus.publish({

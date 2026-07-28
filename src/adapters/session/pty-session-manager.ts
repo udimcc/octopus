@@ -14,7 +14,7 @@ import * as pty from 'node-pty'
 import type { SessionManager, SessionRuntime, SessionRuntimeContext } from '../../ports/session-runtime'
 import type { Settings } from '../../ports/settings-store'
 import { PtyTerminalRuntime, type PtySpawn } from './pty-terminal-runtime'
-import { resolveShell } from './pty-env'
+import { resolveShell } from '../../shared/pty-env'
 
 export interface PtySessionManagerDeps {
   /** Live settings accessor (for `terminal.shell`). */

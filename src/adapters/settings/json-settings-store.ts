@@ -60,7 +60,8 @@ export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
       location: pickString(patch.worktree?.location, base.worktree.location)
     },
     terminal: {
-      shell: pickString(patch.terminal?.shell, base.terminal.shell)
+      shell: pickString(patch.terminal?.shell, base.terminal.shell),
+      backend: pickBackend(patch.terminal?.backend, base.terminal.backend)
     },
     defaultSessionTypeId: pickString(patch.defaultSessionTypeId, base.defaultSessionTypeId),
     worktreeCreateTimeoutMs: pickNumber(
@@ -80,6 +81,14 @@ function pickString(value: unknown, fallback: string | undefined): string | unde
 
 function pickNumber(value: unknown, fallback: number | undefined): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+/** Only the two known backends survive; anything else falls back (tolerant parse). */
+function pickBackend(
+  value: unknown,
+  fallback: 'in-process' | 'daemon' | undefined
+): 'in-process' | 'daemon' | undefined {
+  return value === 'in-process' || value === 'daemon' ? value : fallback
 }
 
 export class JsonSettingsStore implements SettingsStore {

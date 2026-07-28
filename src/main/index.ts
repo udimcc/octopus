@@ -67,10 +67,17 @@ function restoreWindow(opts: CreateWindowOptions): void {
   openWindow({ ...opts, bounds: clamped })
 }
 
-void app.whenReady().then(() => {
+void app.whenReady().then(async () => {
   // Remove Electron's default application menu bar (File/Edit/View/Window/Help).
   // Octopus has no use for it; the app is driven entirely through the renderer UI.
   Menu.setApplicationMenu(null)
+
+  // Daemon warmup BEFORE any window opens (§6.2): if the durable backend is enabled
+  // and reachable, this swaps `deps.sessions` to it and seeds the re-attach roster,
+  // so the first `switchTask`-driven `startTaskSessions` already sees the settled
+  // backend and re-attaches live shells instead of spawning fresh. A no-op on the
+  // in-process path or if the daemon is unavailable (degrade-to-in-process).
+  await ctx.warmupSessions()
 
   const records = ctx.deps.persistence.loadWindows()
 

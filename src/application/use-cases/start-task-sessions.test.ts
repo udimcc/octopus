@@ -132,4 +132,26 @@ describe('startTaskSessions restore ordering (§6.3)', () => {
     expect(f.bus.ofType('ptyData')).toHaveLength(0)
     expect(f.bus.ofType('sessionCreated')).toHaveLength(1)
   })
+
+  it('does NOT replay persisted history when re-attaching a live daemon session (§6.2)', async () => {
+    const taskId = asTaskId('task-1')
+    const sessionId = asSessionId('session-1')
+    // The daemon still holds this session's live PTY → re-attach, not fresh spawn.
+    const f = makeDeps({
+      snapshot: restoredSnapshot('task-1', 'session-1'),
+      liveDaemonSessions: new Set([sessionId])
+    })
+    // Even with persisted scrollback present, the daemon replays its own richer live
+    // buffer on attach; publishing the stale DB copy too would double-print history.
+    f.persistence.saveScrollback(sessionId, 'PRIOR_OUTPUT')
+
+    await startTaskSessions(f.deps, taskId)
+
+    // No history ptyData was published (the daemon owns replay); the session started
+    // and the resume flag reached the runtime.
+    expect(f.bus.ofType('ptyData')).toHaveLength(0)
+    expect(f.bus.ofType('sessionCreated')).toHaveLength(1)
+    expect(f.sessions.last()!.ctx.resume).toBe(true)
+    expect(f.workspace.task(taskId)!.session(sessionId)!.lifecycle).toBe(SessionLifecycle.Running)
+  })
 })

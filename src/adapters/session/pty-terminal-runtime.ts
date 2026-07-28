@@ -15,8 +15,12 @@
  */
 
 import type { SessionRuntime, SessionRuntimeContext, StateEvaluator } from '../../ports/session-runtime'
-import { OutputBatcher, type BatcherTimers, type OutputBatcherOptions } from './output-batcher'
-import { buildPtyEnv } from './pty-env'
+import {
+  OutputBatcher,
+  type BatcherTimers,
+  type OutputBatcherOptions
+} from '../../shared/node/output-batcher'
+import { buildPtyEnv } from '../../shared/pty-env'
 
 /** A disposable listener registration (node-pty's IDisposable shape). */
 export interface PtyDisposable {

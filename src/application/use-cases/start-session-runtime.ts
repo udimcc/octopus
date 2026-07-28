@@ -13,11 +13,18 @@
  * `StartFailed` tab (restored session). The session must already be in `Created`
  * (its transition table only allows `Created → Starting`, §3.6).
  *
- * Builds the `SessionRuntimeContext`: cwd = config override or the worktree; env
- * = the process env the adapter sanitizes + augments with OCTOPUS_* (and the
- * dormant OCTOPUS_STATE_SOCKET, §9.2 seam); onData → `ptyData` event; onExit →
- * the late-bound `deps.onRuntimeExit` which re-enters the single-writer loop as a
- * `handleRuntimeExit` command (never mutates inline, §6.6).
+ * Builds the `SessionRuntimeContext`: cwd = last-known cwd (durable backend, §6.2)
+ * or config override or the worktree; env = the process env the adapter sanitizes +
+ * augments with OCTOPUS_* (and the dormant OCTOPUS_STATE_SOCKET, §9.2 seam); onData
+ * → `ptyData` event; onExit → the late-bound `deps.onRuntimeExit` which re-enters
+ * the single-writer loop as a `handleRuntimeExit` command (never mutates inline,
+ * §6.6).
+ *
+ * Spawn-vs-attach seam (§6.2, §10): `ctx.resume` is set when the durable backend's
+ * live roster (`deps.liveDaemonSessions`) still holds this id — the runtime then
+ * RE-ATTACHES to the surviving PTY rather than spawning fresh, and the initial
+ * command is suppressed (the shell already exists). On the in-process backend the
+ * roster is empty, so this reduces to today's always-fresh-spawn behavior exactly.
  *
  * Throws (after `markStartFailed` + dispose + an `error` event) if `start()`
  * rejects, so the caller's try/catch runs.
@@ -47,7 +54,20 @@ export async function startSessionRuntime(
   }
 
   const id = session.id
-  const cwd = configCwd(session.config) ?? worktree.path
+
+  // Durable backend (§6.2): if the daemon still holds a LIVE PTY for this session,
+  // RE-ATTACH (carrying its real cwd, running program, and scrollback) instead of
+  // spawning fresh. Absent/empty on the in-process backend → always a fresh spawn
+  // (V1 behavior). `PtyTerminalRuntime` ignores `resume`; `DaemonSessionRuntime`
+  // branches on it.
+  const resume = deps.liveDaemonSessions?.has(id) ?? false
+
+  // Placement for a FRESH spawn only: prefer the session's last-known cwd (§6.2 —
+  // captured daemon-side on quit) so a daemon-less restart lands where the user
+  // left off, else the config override, else the worktree root. On re-attach the
+  // live process already owns its cwd, so this is skipped.
+  const lastCwd = resume ? undefined : deps.persistence.loadLastCwd(id)
+  const cwd = lastCwd ?? configCwd(session.config) ?? worktree.path
   const ctx: SessionRuntimeContext = {
     taskId: task.id,
     sessionId: id,
@@ -56,6 +76,7 @@ export async function startSessionRuntime(
     rows: DEFAULT_ROWS,
     env: process.env,
     shell: configShell(session.config),
+    resume,
     // Dormant §9.2 seam: exported to the child, never bound in V1.
     stateSocketPath: deps.socketProvisioner.socketPathFor(id),
     onData: (data) => {
@@ -85,9 +106,11 @@ export async function startSessionRuntime(
   session.markRunning()
   deps.runtimes.set(id, runtime)
 
-  // Deliver an initial command to the fresh shell, if configured (§3.2).
+  // Deliver an initial command to the fresh shell, if configured (§3.2). Skipped on
+  // a re-attach: the shell already exists (and likely already ran it), so re-running
+  // would inject a spurious command into a live session (§6.2).
   const initial = configInitialCommand(session.config)
-  if (initial) {
+  if (initial && !resume) {
     runtime.write(initial.endsWith('\n') ? initial : initial + '\n')
   }
 }

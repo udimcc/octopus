@@ -28,6 +28,11 @@
  * Pure and timer-injectable so the timing is deterministic in tests: the default
  * timers are the globals, but tests pass a fake scheduler. Byte accounting uses
  * UTF-8 length (the cap is a burst safety-valve; approximate is fine).
+ *
+ * Lives under `src/shared/node/` (uses `Buffer`) because BOTH the in-process
+ * `PtyTerminalRuntime` and the out-of-process `octopusd` daemon (§6.2) batch
+ * output with it — the daemon runs it server-side so coalescing happens BEFORE the
+ * socket hop. The daemon may import only `shared`, never `adapters` (boundary rule).
  */
 
 /** Injectable timer surface (defaults to the globals). */

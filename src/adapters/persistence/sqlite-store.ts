@@ -190,6 +190,20 @@ export class SqliteStore implements WorkspacePersistence {
     return row ? row.data : undefined
   }
 
+  saveLastCwd(sessionId: SessionId, cwd: string): void {
+    // A column on `sessions` (not a side table): `upsertSession` never lists it, so
+    // a session-definition upsert preserves the cwd, and this UPDATE is the only
+    // writer. No-op if the session row is gone (closed/deleted) — nothing to place.
+    this.db.prepare('UPDATE sessions SET last_cwd = ? WHERE id = ?').run(cwd, sessionId)
+  }
+
+  loadLastCwd(sessionId: SessionId): string | undefined {
+    const row = this.db
+      .prepare('SELECT last_cwd FROM sessions WHERE id = ?')
+      .get(sessionId) as { last_cwd: string | null } | undefined
+    return row && row.last_cwd !== null ? row.last_cwd : undefined
+  }
+
   setActiveTask(taskId: TaskId | undefined): void {
     if (taskId === undefined) {
       this.db.prepare('DELETE FROM app_state WHERE key = ?').run(ACTIVE_TASK_KEY)

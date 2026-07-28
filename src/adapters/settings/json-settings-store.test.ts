@@ -47,6 +47,20 @@ describe('parseSettings (§6.3)', () => {
     expect(s.sessionPrevKey).toBe('ArrowDown')
   })
 
+  it('reads terminal.backend and tolerates an invalid value (§6.2)', () => {
+    expect(parseSettings(JSON.stringify({ terminal: { backend: 'daemon' } })).terminal.backend).toBe(
+      'daemon'
+    )
+    expect(
+      parseSettings(JSON.stringify({ terminal: { backend: 'in-process' } })).terminal.backend
+    ).toBe('in-process')
+    // Unknown backend → undefined (tolerant parse), so the composition root's
+    // default (daemon) applies — only an explicit 'in-process' opts out. Absent by
+    // default (no key in DEFAULT_SETTINGS).
+    expect(parseSettings(JSON.stringify({ terminal: { backend: 'bogus' } })).terminal.backend).toBeUndefined()
+    expect(parseSettings('{}').terminal.backend).toBeUndefined()
+  })
+
   it('defaults session next/prev keys to the Ctrl+Shift arrow chords', () => {
     expect(DEFAULT_SETTINGS.sessionNextKey).toBe('Ctrl+Shift+ArrowRight')
     expect(DEFAULT_SETTINGS.sessionPrevKey).toBe('Ctrl+Shift+ArrowLeft')

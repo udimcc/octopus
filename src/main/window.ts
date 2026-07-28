@@ -244,15 +244,35 @@ async function promptCloseDisposition(
 
 /**
  * Register the app-level quit sequence exactly once (§6.3, I13). `before-quit`
- * fires before windows close, giving `shutdown` a chance to SIGHUP runtimes and
+ * fires before windows close, giving `shutdown` a chance to release runtimes and
  * checkpoint the store, and sets `isQuitting` so secondary windows skip their
  * close dialog. Guarded so a re-entrant quit runs teardown only once.
+ *
+ * Daemon backend (§6.2): before the synchronous `shutdown` detaches and drops the
+ * socket we must first query the live roster to persist each session's `last_cwd` —
+ * an async round-trip. `before-quit` can't await, so we `preventDefault()` the
+ * first quit, run the flush, then re-issue `app.quit()`; the second pass (flush
+ * already done) proceeds straight to teardown. The in-process path has nothing
+ * async to do and tears down inline on the first pass (unchanged).
  */
 export function registerQuitHandler(ctx: AppContext): void {
   let didShutdown = false
-  app.on('before-quit', () => {
+  let didFlushCwds = false
+  app.on('before-quit', (event) => {
     ctx.isQuitting = true
     if (didShutdown) {
+      return
+    }
+    // Daemon path: defer once to persist cwds while the socket is still up.
+    if (ctx.daemonActive() && !didFlushCwds) {
+      event.preventDefault()
+      didFlushCwds = true
+      void ctx
+        .persistDaemonCwds()
+        .catch(() => {
+          // Best-effort — a failed flush just falls back to worktree cwd on respawn.
+        })
+        .finally(() => app.quit())
       return
     }
     didShutdown = true

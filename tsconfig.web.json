@@ -1,6 +1,10 @@
 {
   // Browser/renderer side: React UI plus shared contracts it may import.
+  // `src/shared/node/**` is node-only shared code (uses `Buffer`: ring buffer,
+  // daemon-protocol framing) consumed by main/adapters/daemon but NEVER the
+  // renderer — excluded so it isn't typechecked against the DOM lib / no node types.
   "include": ["src/renderer/**/*", "src/shared/**/*"],
+  "exclude": ["src/shared/node/**"],
   "compilerOptions": {
     "composite": true,
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.web.tsbuildinfo",

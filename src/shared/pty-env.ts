@@ -1,24 +1,27 @@
 /**
- * Pure PTY environment + shell resolution (DESIGN §6.1). Extracted from the
- * runtime so the exact env a shell is spawned with — and the multiplexer-var
- * stripping that keeps nested sessions sane — is unit-testable without spawning
- * anything.
+ * Pure PTY environment + shell resolution (DESIGN §6.1). Lives in `shared` (not
+ * `adapters`) so BOTH the in-process PTY runtime and the out-of-process `octopusd`
+ * daemon (§6.2) build the child env from the same code — the daemon may import
+ * only `shared`, never `adapters` (boundary rule). Ids are plain `string`s here
+ * (the `shared` convention: it must not import `domain`); the branded `TaskId`/
+ * `SessionId` the callers hold are assignable to `string`.
  *
  * §6.1 env recipe:
  *   { ...inherited (sanitized), TERM: 'xterm-256color', COLORTERM: 'truecolor',
  *     OCTOPUS_TASK_ID, OCTOPUS_SESSION_ID, OCTOPUS_WORKTREE,
  *     OCTOPUS_STATE_SOCKET (§9.2, provisioned-not-bound in V1) }
- *   stripped: TMUX, STY, WINDOWID.
+ *   stripped: TMUX, TMUX_PANE, STY, WINDOWID.
+ *
+ * Pure, no I/O — fully unit-testable and safe under both TS projects (no `Buffer`
+ * or node types, so it compiles under `tsconfig.web` too).
  */
-
-import type { TaskId, SessionId } from '../../domain/ids'
 
 /** Multiplexer/terminal identity vars that must not leak into a fresh PTY (§6.1). */
 const STRIPPED_VARS = ['TMUX', 'TMUX_PANE', 'STY', 'WINDOWID'] as const
 
 export interface PtyEnvContext {
-  readonly taskId: TaskId
-  readonly sessionId: SessionId
+  readonly taskId: string
+  readonly sessionId: string
   readonly worktreePath: string
   /** Provisioned-not-bound state socket path (§9.2, §10 V1 seam). Optional. */
   readonly stateSocketPath?: string

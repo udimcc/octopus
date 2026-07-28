@@ -25,11 +25,14 @@
  * the realized §6.6 backend ring-buffer seam); 3 → 4 (V1.5, §6.3) to add the
  * `sessions.window_id` column and the `windows` table (multi-window placement);
  * 4 → 5 to add the `tasks.managed` column (Octopus-provisioned vs. adopted-repo
- * worktree — the latter is left on disk when the task is deleted, §6.4).
+ * worktree — the latter is left on disk when the task is deleted, §6.4); 5 → 6 to
+ * add the nullable `sessions.last_cwd` column (the session's last-known working
+ * directory, captured from the daemon's `/proc/<pid>/cwd` on quit/roster-refresh so
+ * a fresh spawn after a daemon-less restart lands where the user left off, §6.2).
  * `SqliteStore` runs the guarded migrations when an older DB opens (see
  * {@link MIGRATIONS}).
  */
-export const SCHEMA_VERSION = 5
+export const SCHEMA_VERSION = 6
 
 /**
  * Connection pragmas applied on every open. `foreign_keys` is per-connection
@@ -69,7 +72,8 @@ export const SCHEMA_STATEMENTS: readonly string[] = Object.freeze([
      state TEXT NOT NULL DEFAULT 'unknown',
      created_at INTEGER NOT NULL,
      exited_at INTEGER,
-     window_id TEXT NOT NULL DEFAULT 'main'
+     window_id TEXT NOT NULL DEFAULT 'main',
+     last_cwd TEXT
    )`,
   `CREATE TABLE IF NOT EXISTS app_state (
      key TEXT PRIMARY KEY,
@@ -169,5 +173,13 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       'ALTER TABLE tasks ADD COLUMN managed INTEGER NOT NULL DEFAULT 1',
       'UPDATE tasks SET managed = 0 WHERE base_ref IS NULL'
     ])
+  },
+  // v6 (§6.2): the session's last-known cwd, so a fresh spawn (daemon absent or the
+  // PTY gone) can land where the user left off instead of at the worktree root. The
+  // column is nullable — a pre-v6 session (or one never persisted a cwd) reads NULL
+  // and falls back to the worktree, exactly as today.
+  {
+    toVersion: 6,
+    statements: Object.freeze(['ALTER TABLE sessions ADD COLUMN last_cwd TEXT'])
   }
 ])

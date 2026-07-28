@@ -18,6 +18,14 @@ files:
 # ABI-stable) and better-sqlite3 as its official prebuilt electron-v130 binary.
 npmRebuild: false
 
+# The `octopusd` daemon (§6.2) ships as `out/main/daemon.js` (part of `out/**`
+# above) and is launched detached on the bundled Electron binary via
+# ELECTRON_RUN_AS_NODE=1. It require()s node-pty from the packed prod node_modules
+# at runtime, exactly as the main process does. No asar is used today (dir target).
+# IMPORTANT: if asar is ever enabled, node-pty's .node cannot be loaded from inside
+# the archive — add `asarUnpack: ['**/node_modules/node-pty/**']` (and the same for
+# better-sqlite3) or the daemon will fail to spawn PTYs.
+
 # Air-gapped: Electron's own binary comes from the internal Artifactory mirror,
 # not GitHub. @electron/get appends "v<ver>/electron-v<ver>-<platform>-<arch>.zip".
 electronDownload:

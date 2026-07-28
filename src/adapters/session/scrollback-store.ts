@@ -16,7 +16,7 @@
  */
 
 import type { SessionId } from '../../domain/ids'
-import { RingBuffer } from './ring-buffer'
+import { RingBuffer } from '../../shared/node/ring-buffer'
 
 /** Structural mirror of the application's `ScrollbackBuffers` (see the docblock). */
 export interface ScrollbackBuffers {

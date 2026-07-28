@@ -55,6 +55,10 @@ export default tseslint.config(
         { type: 'main', pattern: 'src/main/**' },
         { type: 'preload', pattern: 'src/preload/**' },
         { type: 'renderer', pattern: 'src/renderer/**' },
+        // The out-of-process `octopusd` daemon (§6.2): a separate process that owns
+        // PTYs. It may import ONLY `shared` (wire types + pure node helpers) — never
+        // application/domain/adapters — so the two processes share contracts, not code.
+        { type: 'daemon', pattern: 'src/daemon/**' },
         { type: 'shared', pattern: 'src/shared/**' }
       ],
       'import/resolver': {
@@ -80,6 +84,8 @@ export default tseslint.config(
             layerPolicy('main', ['main', 'application', 'ports', 'domain', 'adapters', 'shared']),
             layerPolicy('preload', ['preload', 'shared']),
             layerPolicy('renderer', ['renderer', 'application', 'shared']),
+            // Daemon is its own process; it shares only the transport-agnostic `shared` layer.
+            layerPolicy('daemon', ['daemon', 'shared']),
             layerPolicy('shared', ['shared'])
           ]
         }

@@ -54,6 +54,14 @@ export interface SessionRow {
   exited_at: number | null
   /** V1.5 (§3.7): which window renders the session; NOT NULL DEFAULT 'main'. */
   window_id: string
+  /**
+   * Last-known cwd (§6.2), daemon-derived METADATA — NOT part of the session
+   * definition. Written only by `SqliteStore.saveLastCwd` (never `sessionToRow`),
+   * so it survives a definition upsert; read only by the fresh-spawn placement
+   * fallback. Optional here because `sessionToRow` does not produce it. Nullable in
+   * the DB (pre-v6 rows / never-persisted → null → worktree-root fallback).
+   */
+  last_cwd?: string | null
 }
 
 /** A `windows` row (V1.5, §3.7, §6.3). */
@@ -163,8 +171,16 @@ export function rowToTaskSnapshot(row: TaskRow, sessionRows: readonly SessionRow
 /**
  * Reconstruct a session snapshot as a fresh definition (I13, §6.3). Lifecycle
  * resets to `Created`, state to `Unknown`, and exit time is cleared regardless of
- * what the row recorded — restore opens a fresh PTY, never resurrects the dead
- * process.
+ * what the row recorded.
+ *
+ * On the in-process backend `Created` means "restore opens a fresh PTY". On the
+ * durable daemon backend (§6.2) it means "no live session to attach *yet*" — the
+ * decision is deferred to `startSessionRuntime`, which sets `ctx.resume` when the
+ * daemon's live roster still holds this id and RE-ATTACHES instead of spawning.
+ * Either way the row reloads identically here; the backend chooses spawn-vs-attach
+ * at start time, so no lifecycle column and no mapper change is needed (§10).
+ * `last_cwd` is intentionally NOT read into the snapshot — it is placement metadata
+ * consumed directly by the fresh-spawn path, not part of the session definition.
  */
 export function rowToSessionSnapshot(row: SessionRow): SessionSnapshot {
   return {

@@ -1,10 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import { buildPtyEnv, resolveShell } from './pty-env'
-import { asTaskId, asSessionId } from '../../domain/ids'
 
 const ctx = {
-  taskId: asTaskId('t1'),
-  sessionId: asSessionId('s1'),
+  taskId: 't1',
+  sessionId: 's1',
   worktreePath: '/wt/t1'
 }
 

@@ -22,6 +22,7 @@
  */
 
 import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { raiseFileLimit } from '../adapters/env/raise-file-limit'
 import {
   ensureAppDirs,
@@ -40,6 +41,10 @@ import { NativeGitWorktreeProvider } from '../adapters/worktree/native-git-workt
 import { SelectingWorktreeProvider } from '../adapters/worktree/selecting-worktree-provider'
 import { createSocketProvisioner } from '../adapters/state-socket/socket-provisioner'
 import { PtySessionManager } from '../adapters/session/pty-session-manager'
+import { DaemonClient } from '../adapters/session/daemon-client'
+import { DaemonSessionManager } from '../adapters/session/daemon-session-manager'
+import { SwitchableSessionManager } from '../adapters/session/switchable-session-manager'
+import { controlSocketPath, currentUid } from '../shared/node/daemon-paths'
 import { RingBufferScrollbackStore } from '../adapters/session/scrollback-store'
 import { InMemorySessionTypeRegistry } from '../adapters/session-types/session-type-registry'
 import { TerminalSessionTypeProvider } from '../adapters/session-types/terminal-session-type-provider'
@@ -54,7 +59,7 @@ import { worstStatusWins } from '../domain/task-state-aggregator'
 import { Workspace } from '../domain/workspace'
 import type { Settings } from '../ports/settings-store'
 import type { EventBus } from '../ports/event-bus'
-import { MAIN_WINDOW_ID, asSessionId, type WindowId } from '../domain/ids'
+import { MAIN_WINDOW_ID, asSessionId, type SessionId, type WindowId } from '../domain/ids'
 import { locateSession } from '../application/use-cases/locate-session'
 import { CURRENT_VERSION } from '../shared/version'
 import { registerIpcHandlers } from './ipc-handlers'
@@ -77,7 +82,31 @@ export interface AppContext {
    * their close dialog during a graceful quit. Mutable by design.
    */
   isQuitting: boolean
-  /** Graceful teardown: SIGHUP runtimes + checkpoint/close the store (I13, §6.3). */
+  /**
+   * Async daemon warmup (§6.2). Called at the very start of `app.whenReady()`,
+   * BEFORE any window opens and thus before the first `switchTask` triggers
+   * `startTaskSessions`. When `terminal.backend === 'daemon'` it connects-or-launches
+   * `octopusd`, fills `liveDaemonSessions` from its roster, closes orphaned daemon
+   * PTYs (ids absent from the hydrated workspace), and swaps `deps.sessions` to the
+   * daemon backend. On the in-process path (or if the daemon can be neither reached
+   * nor launched) it is a no-op and the in-process backend stays — today's behavior.
+   */
+  readonly warmupSessions: () => Promise<void>
+  /** True once the durable daemon backend is confirmed reachable AND adopted (§6.2). */
+  readonly daemonActive: () => boolean
+  /**
+   * Daemon path only (§6.2, §6.3): query the live roster and persist each session's
+   * current `last_cwd` while the socket is still up, so a later fresh spawn (daemon
+   * gone / session died) reopens at where the user left off. Awaited by the quit
+   * handler BEFORE the synchronous `shutdown` drops the socket. No-op in-process.
+   */
+  readonly persistDaemonCwds: () => Promise<void>
+  /**
+   * Graceful teardown (§6.3): release runtimes — SIGHUP (in-process) or DETACH
+   * (daemon, PTYs survive for re-attach) — flush scrollback, and checkpoint/close
+   * the store (I13). Synchronous; the daemon-cwd flush runs before it via the quit
+   * handler.
+   */
   readonly shutdown: () => void
 }
 
@@ -128,7 +157,29 @@ export function bootstrap(): AppContext {
   })
 
   const socketProvisioner = createSocketProvisioner(getUid())
-  const sessions = new PtySessionManager({ getSettings })
+
+  // Session backend (§6.2). We ALWAYS start on the in-process PTY manager and,
+  // unless `terminal.backend === 'in-process'`, swap to the durable daemon backend
+  // during the async `warmupSessions()` below — but only once a reachable `octopusd`
+  // is confirmed. The daemon is the DEFAULT: only an explicit `'in-process'` opts out.
+  // This honors the chosen fallback: if the daemon can be neither reached nor launched,
+  // the switchable manager simply stays in-process for the run. Wiring the daemon
+  // client here (not connecting) keeps `bootstrap()` synchronous.
+  const inProcessSessions = new PtySessionManager({ getSettings })
+  const sessions = new SwitchableSessionManager(inProcessSessions)
+  const daemonClient = new DaemonClient({
+    socketPath: controlSocketPath(currentUid()),
+    daemonEntry: join(__dirname, 'daemon.js'),
+    daemonVersion: CURRENT_VERSION.toString()
+  })
+  const daemonSessions = new DaemonSessionManager({ client: daemonClient, getSettings })
+  // Filled by `warmupSessions()` from the daemon's live roster; empty on the
+  // in-process path (→ every restored session spawns fresh, V1 behavior).
+  const liveDaemonSessions = new Set<SessionId>()
+  // Flipped true by `warmupSessions()` only once the daemon is confirmed reachable
+  // AND adopted (`setDelegate`). The quit path reads it to choose detach-not-kill;
+  // it stays false when the setting is in-process OR the daemon degraded (§6.2).
+  let daemonActive = false
 
   const registry = new InMemorySessionTypeRegistry()
   registry.register(new TerminalSessionTypeProvider())
@@ -176,7 +227,10 @@ export function bootstrap(): AppContext {
     configValidator,
     socketProvisioner,
     scrollbacks,
-    currentVersion: CURRENT_VERSION
+    currentVersion: CURRENT_VERSION,
+    // Live at construction: the SAME Set instance the warmup fills before any
+    // session starts (use-cases read it lazily via `has`, §6.2).
+    liveDaemonSessions
   }
 
   reconcileOnStartup(deps, { existsDir })
@@ -211,6 +265,81 @@ export function bootstrap(): AppContext {
     onHydrate: (windowId) => windowRegistry.markReady(windowId)
   })
 
+  // Async daemon warmup (§6.2). Selects the durable backend when the setting asks
+  // for it AND a daemon is reachable/launchable; otherwise leaves the in-process
+  // delegate untouched (degrade-to-in-process — the user-chosen fallback). Kept out
+  // of `bootstrap()` (which must stay synchronous, running before `app.whenReady`);
+  // the entry point awaits this at the top of `whenReady`, before any window opens.
+  const warmupSessions = async (): Promise<void> => {
+    if (getSettings().terminal.backend === 'in-process') {
+      return // opted out → empty roster → every restored session spawns fresh.
+    }
+    try {
+      await daemonClient.ensureReady()
+    } catch (err) {
+      // Daemon could be neither reached nor launched → stay in-process for this run.
+      const message = err instanceof Error ? err.message : String(err)
+      console.warn(`[octopus] daemon backend unavailable, using in-process PTYs: ${message}`)
+      return
+    }
+    // Reachable: adopt the durable backend and seed the live roster from it.
+    try {
+      const roster = await daemonClient.listSessions()
+      // The set the use-cases read to choose attach-vs-fresh: only ids the daemon
+      // still holds ALIVE re-attach; a dead entry falls into the fresh-spawn path.
+      const known = new Set<string>()
+      for (const task of workspace.tasks()) {
+        for (const session of task.sessions()) {
+          known.add(session.id)
+        }
+      }
+      for (const info of roster) {
+        if (info.alive && known.has(info.sessionId)) {
+          liveDaemonSessions.add(asSessionId(info.sessionId))
+        } else if (!known.has(info.sessionId)) {
+          // Orphan: a daemon PTY with no workspace session (task deleted while the
+          // app was down, or a stale entry). Close it so its fd can't block a later
+          // `git worktree remove` and it doesn't leak (§6.2 orphan reconciliation).
+          void daemonClient.close(info.sessionId).catch(() => {})
+        }
+      }
+      sessions.setDelegate(daemonSessions)
+      daemonActive = true
+      console.log(
+        `[octopus] daemon backend active: ${liveDaemonSessions.size} live session(s) to re-attach`
+      )
+    } catch (err) {
+      // Connected but the roster query failed — safest is to spawn fresh in-process
+      // rather than half-adopt the daemon. Leave the delegate as-is.
+      const message = err instanceof Error ? err.message : String(err)
+      console.warn(`[octopus] daemon roster query failed, using in-process PTYs: ${message}`)
+    }
+  }
+
+  // Daemon path only: persist each live session's current cwd from the roster while
+  // the socket is still up (§6.3). Best-effort — a failure just means a later fresh
+  // spawn falls back to the worktree cwd, exactly as on the in-process path.
+  const persistDaemonCwds = async (): Promise<void> => {
+    if (!daemonActive) {
+      return
+    }
+    try {
+      const roster = await daemonClient.listSessions()
+      for (const info of roster) {
+        if (info.cwd) {
+          try {
+            deps.persistence.saveLastCwd(asSessionId(info.sessionId), info.cwd)
+          } catch {
+            // Best-effort per session — one bad write must not skip the rest.
+          }
+        }
+      }
+    } catch {
+      // Roster query failed (daemon already gone?) — nothing to persist; the fresh
+      // spawn falls back to the worktree cwd.
+    }
+  }
+
   return {
     paths,
     commandLoop,
@@ -219,9 +348,17 @@ export function bootstrap(): AppContext {
     registry: windowRegistry,
     windowIds,
     isQuitting: false,
+    warmupSessions,
+    daemonActive: () => daemonActive,
+    persistDaemonCwds,
     shutdown: () => {
       windowRegistry.dispose()
-      shutdown(deps)
+      shutdown(deps, {
+        daemonBackend: daemonActive,
+        // Drop the client socket AFTER runtimes detach; the daemon reads the
+        // disconnect as detach-all and keeps every PTY running (§6.2).
+        onReleased: daemonActive ? () => daemonClient.dispose() : undefined
+      })
     }
   }
 }

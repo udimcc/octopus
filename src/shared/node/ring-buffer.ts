@@ -4,11 +4,16 @@
  * activation, so a session the user hasn't looked at for a while still shows its
  * recent scrollback when switched to.
  *
- * This is load-bearing for the V2 durable backend (§6.2): the daemon keeps a
- * larger server-side buffer replayed on re-attach, but the shape — append,
- * byte-capped, snapshot — is the same. Kept as a simple FIFO of chunks trimmed
- * from the front once the total exceeds the cap; a single oversized chunk is
- * itself truncated to the cap's tail so one giant write can't blow the bound.
+ * This is load-bearing for the V2 durable backend (§6.2): the `octopusd` daemon
+ * keeps a larger server-side buffer replayed on re-attach, but the shape —
+ * append, byte-capped, snapshot — is the same. Kept as a simple FIFO of chunks
+ * trimmed from the front once the total exceeds the cap; a single oversized chunk
+ * is itself truncated to the cap's tail so one giant write can't blow the bound.
+ *
+ * Lives under `src/shared/node/` (not the browser-safe `src/shared/` root)
+ * because it uses `Buffer`: both the in-process adapter and the daemon import it,
+ * but the renderer must never pull it into a DOM bundle. `tsconfig.web.json`
+ * excludes `src/shared/node/**` for exactly this reason.
  *
  * Pure, no I/O — fully unit-testable.
  */

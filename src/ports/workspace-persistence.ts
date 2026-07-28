@@ -47,6 +47,18 @@ export interface WorkspacePersistence {
   /** Load a session's persisted scrollback, or undefined if none was stored. */
   loadScrollback(sessionId: SessionId): string | undefined
 
+  /**
+   * Persist a session's last-known working directory (§6.2). Like scrollback this
+   * is daemon-derived METADATA, not live process state (I13): it is captured from
+   * the daemon's `/proc/<pid>/cwd` on quit / roster refresh and used only to place
+   * a FRESH spawn after a daemon-less restart (a re-attach carries the real cwd
+   * with the live process, so this is the fallback). Nullable — absent means "use
+   * the worktree root", exactly as today.
+   */
+  saveLastCwd(sessionId: SessionId, cwd: string): void
+  /** Load a session's persisted last-known cwd, or undefined if none was stored. */
+  loadLastCwd(sessionId: SessionId): string | undefined
+
   /** Persist the single active-task pointer into app_state (§6.3). */
   setActiveTask(taskId: TaskId | undefined): void
 

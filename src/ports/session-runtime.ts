@@ -31,6 +31,15 @@ export interface SessionRuntimeContext {
    * exported to the child as OCTOPUS_STATE_SOCKET (§10 V1 seam).
    */
   readonly stateSocketPath?: string
+  /**
+   * Re-attach hint for a durable backend (§6.2). When true, a session already
+   * lives in the daemon and `start()` should RE-ATTACH (replaying its live buffer)
+   * rather than spawn a fresh process — this is what carries cwd, running programs,
+   * and scrollback across an app restart. The in-process `PtyTerminalRuntime`
+   * ignores it and always spawns fresh (the correct no-daemon fallback). Absent/
+   * false everywhere preserves V1 behavior exactly (§10 additive seam).
+   */
+  readonly resume?: boolean
   /** Called with each batch of terminal output (§6.5 batching happens in the adapter). */
   readonly onData: (data: string) => void
   /** Called once when the process exits (§6.1); drives markExited via the command loop. */

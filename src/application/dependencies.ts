@@ -87,6 +87,15 @@ export interface AppDependencies {
   /** The app feature version (§10); gates session-type availability. */
   readonly currentVersion: number
   /**
+   * Session ids the durable backend (§6.2) still holds a LIVE PTY for, captured
+   * from the daemon's roster at bootstrap. `startSessionRuntime` consults this to
+   * decide RE-ATTACH (`ctx.resume`) vs fresh spawn, and `startTaskSessions` gates
+   * history-replay on it (a re-attach replays the daemon's own richer live buffer).
+   * Undefined/empty on the in-process backend — which preserves V1 behavior
+   * exactly: every restored session spawns fresh (§10 additive seam).
+   */
+  readonly liveDaemonSessions?: ReadonlySet<SessionId>
+  /**
    * Late-bound sink for a runtime's SPONTANEOUS exit (§6.1). Set by the
    * composition root AFTER the command loop exists, to
    * `(sessionId, …) => loop.dispatch({ kind: 'handleRuntimeExit', … })` — so the
