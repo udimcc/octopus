@@ -26,6 +26,7 @@ function restoredSnapshot(): WorkspaceSnapshot {
     name: id,
     worktree: {
       path: `/wt/${id}`,
+      managed: true,
       provisionedBy: { script: '/c', args: [id], repoRoot: '/repo', provisionedAt: 1 }
     },
     lifecycle: TaskLifecycle.Ready,

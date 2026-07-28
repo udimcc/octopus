@@ -24,6 +24,7 @@ function restoredSnapshot(taskId: string, sessionId: string, path = '/wt/task'):
         name: taskId,
         worktree: {
           path,
+          managed: true,
           provisionedBy: { script: 'git', args: [taskId], repoRoot: '/repo', provisionedAt: 1 }
         },
         lifecycle: TaskLifecycle.Ready,

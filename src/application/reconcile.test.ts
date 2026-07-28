@@ -12,6 +12,7 @@ function snapshotWithWorktrees(paths: Record<string, string>): WorkspaceSnapshot
     name: id,
     worktree: {
       path,
+      managed: true,
       provisionedBy: { script: '/c', args: [id], repoRoot: '/repo', provisionedAt: 1 }
     },
     lifecycle: TaskLifecycle.Ready,

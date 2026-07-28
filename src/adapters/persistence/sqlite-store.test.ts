@@ -80,6 +80,7 @@ function taskSnapshot(over: Partial<TaskSnapshot> = {}): TaskSnapshot {
     worktree: {
       path: '/wt',
       branch: 'b',
+      managed: true,
       provisionedBy: { script: 's', args: [], repoRoot: '/repo', provisionedAt: 1 }
     },
     lifecycle: TaskLifecycle.Ready,
@@ -129,7 +130,7 @@ describe('SqliteStore.create (§6.3)', () => {
     const db = new FakeDb()
     SqliteStore.create(db)
     expect(db.execed.some((s) => s.includes('ADD COLUMN base_ref'))).toBe(false)
-    expect(db.pragmas).toContain('user_version = 4')
+    expect(db.pragmas).toContain('user_version = 5')
   })
 
   it('runs the pending migrations on a pre-existing older DB (base_ref + session_scrollback)', () => {
@@ -139,7 +140,7 @@ describe('SqliteStore.create (§6.3)', () => {
     db.stub('sqlite_master', [{ name: 'tasks' }])
     SqliteStore.create(db)
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN base_ref'))).toBe(true)
-    expect(db.pragmas).toContain('user_version = 4')
+    expect(db.pragmas).toContain('user_version = 5')
   })
 
   it('runs ONLY the v3 migration on a v2 DB (skips the already-applied v2 ALTER)', () => {
@@ -156,7 +157,7 @@ describe('SqliteStore.create (§6.3)', () => {
     expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS session_scrollback'))).toBe(
       true
     )
-    expect(db.pragmas).toContain('user_version = 4')
+    expect(db.pragmas).toContain('user_version = 5')
   })
 
   it('runs ONLY the v4 migration on a v3 DB (adds window_id + windows, seeds main)', () => {
@@ -173,7 +174,25 @@ describe('SqliteStore.create (§6.3)', () => {
     )
     expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS windows'))).toBe(true)
     expect(db.execed.some((s) => s.includes('INSERT OR IGNORE INTO windows'))).toBe(true)
-    expect(db.pragmas).toContain('user_version = 4')
+    expect(db.pragmas).toContain('user_version = 5')
+  })
+
+  it('runs ONLY the v5 migration on a v4 DB (adds managed + back-fills adopted rows)', () => {
+    // A pre-existing DB stamped at user_version 4 (pre-adopted-repo): only the v5
+    // migration fires — the tasks.managed ALTER and the base_ref-null back-fill.
+    // The earlier v2/v3/v4 statements are skipped by the fromVersion guard.
+    const db = new FakeDb()
+    db.stub('sqlite_master', [{ name: 'tasks' }])
+    db.stubPragma('user_version', [{ user_version: 4 }])
+    SqliteStore.create(db)
+    expect(db.execed.some((s) => s.includes('ALTER TABLE sessions ADD COLUMN window_id'))).toBe(
+      false
+    )
+    expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN managed'))).toBe(true)
+    expect(
+      db.execed.some((s) => s.includes('UPDATE tasks SET managed = 0 WHERE base_ref IS NULL'))
+    ).toBe(true)
+    expect(db.pragmas).toContain('user_version = 5')
   })
 
   it('throws IncompatibleDbError on a DB newer than this binary, without touching it', () => {
@@ -183,7 +202,7 @@ describe('SqliteStore.create (§6.3)', () => {
     // silently downgraded and the next upgrade would re-run an applied migration.
     const db = new FakeDb()
     db.stub('sqlite_master', [{ name: 'tasks' }])
-    db.stubPragma('user_version', [{ user_version: 5 }])
+    db.stubPragma('user_version', [{ user_version: 6 }])
     expect(() => SqliteStore.create(db)).toThrow(IncompatibleDbError)
     // No schema statements ran and the version was NOT lowered.
     expect(db.execed.some((s) => s.includes('CREATE TABLE'))).toBe(false)
@@ -195,7 +214,7 @@ describe('SqliteStore.create (§6.3)', () => {
     // though fromVersion (0) < SCHEMA_VERSION; it bootstraps and stamps to current.
     const db = new FakeDb()
     expect(() => SqliteStore.create(db)).not.toThrow()
-    expect(db.pragmas).toContain('user_version = 4')
+    expect(db.pragmas).toContain('user_version = 5')
   })
 
   it('invokes beforeMigrate with fromVersion on an upgrade, but not on fresh/current DBs', () => {
@@ -217,7 +236,7 @@ describe('SqliteStore.create (§6.3)', () => {
     // Already-current DB: nothing to migrate, so no backup.
     const current = new FakeDb()
     current.stub('sqlite_master', [{ name: 'tasks' }])
-    current.stubPragma('user_version', [{ user_version: 4 }])
+    current.stubPragma('user_version', [{ user_version: 5 }])
     const onCurrent = vi.fn()
     SqliteStore.create(current, onCurrent)
     expect(onCurrent).not.toHaveBeenCalled()
@@ -237,7 +256,8 @@ describe('SqliteStore.load (§6.3)', () => {
       repo_root: '/repo',
       created_at: 10,
       position: 0,
-      active_session_id: 's1'
+      active_session_id: 's1',
+      managed: 1
     }
     const sessionRow: SessionRow = {
       id: 's1',
@@ -280,7 +300,12 @@ describe('SqliteStore writes', () => {
     store.upsertTask(taskSnapshot())
     const call = db.runs.find((r) => r.sql.includes('INSERT INTO tasks'))
     expect(call).toBeDefined()
-    expect(call!.params).toMatchObject({ id: 't1', worktree: '/wt', active_session_id: 's1' })
+    expect(call!.params).toMatchObject({
+      id: 't1',
+      worktree: '/wt',
+      active_session_id: 's1',
+      managed: 1
+    })
   })
 
   it('upsertSession stores the serialized config', () => {

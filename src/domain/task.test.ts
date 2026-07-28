@@ -34,6 +34,7 @@ describe('Task lifecycle (§3.5)', () => {
     t.markProvisioning()
     const wt = WorktreeRef.create({
       path: '/wt',
+      managed: true,
       provisionedBy: { script: 's', args: [], repoRoot: '/r', provisionedAt: 1 }
     })
     t.markReady(wt)
@@ -130,6 +131,7 @@ describe('Task snapshot round-trip (I15)', () => {
       WorktreeRef.create({
         path: '/wt',
         branch: 'b',
+        managed: true,
         provisionedBy: { script: 's', args: ['x'], repoRoot: '/r', provisionedAt: 9 }
       })
     )

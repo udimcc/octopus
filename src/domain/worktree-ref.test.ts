@@ -14,16 +14,18 @@ describe('WorktreeRef (DESIGN §3.2, I2 immutability)', () => {
       path: '/repo/../worktrees/my-task-abc',
       branch: 'feature/x',
       baseRef: 'origin/main',
+      managed: true,
       provisionedBy: meta
     })
     expect(ref.path).toBe('/repo/../worktrees/my-task-abc')
     expect(ref.branch).toBe('feature/x')
     expect(ref.baseRef).toBe('origin/main')
+    expect(ref.managed).toBe(true)
     expect(ref.provisionedBy.script).toBe('/scripts/create.sh')
   })
 
   it('is frozen — assigning a field throws in strict mode (I2)', () => {
-    const ref = WorktreeRef.create({ path: '/wt', provisionedBy: meta })
+    const ref = WorktreeRef.create({ path: '/wt', managed: true, provisionedBy: meta })
     expect(Object.isFrozen(ref)).toBe(true)
     expect(() => {
       // @ts-expect-error — path is readonly; this must also fail at runtime.
@@ -32,7 +34,7 @@ describe('WorktreeRef (DESIGN §3.2, I2 immutability)', () => {
   })
 
   it('freezes the provenance meta and its args array', () => {
-    const ref = WorktreeRef.create({ path: '/wt', provisionedBy: meta })
+    const ref = WorktreeRef.create({ path: '/wt', managed: true, provisionedBy: meta })
     expect(Object.isFrozen(ref.provisionedBy)).toBe(true)
     expect(Object.isFrozen(ref.provisionedBy.args)).toBe(true)
     expect(() => {
@@ -43,7 +45,7 @@ describe('WorktreeRef (DESIGN §3.2, I2 immutability)', () => {
 
   it('copies the args array so mutating the source does not leak in', () => {
     const args = ['a', 'b']
-    const ref = WorktreeRef.create({ path: '/wt', provisionedBy: { ...meta, args } })
+    const ref = WorktreeRef.create({ path: '/wt', managed: true, provisionedBy: { ...meta, args } })
     args.push('c')
     expect(ref.provisionedBy.args).toEqual(['a', 'b'])
   })

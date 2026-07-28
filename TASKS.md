@@ -243,9 +243,10 @@ Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session t
   name input in `App.tsx`.
 - [x] **New Session dropdown** — populated from registry; Terminal creates immediately (a lone type skips the
   menu); double-click a tab renames it (DESIGN §5.4).
-- [x] **Delete Task** — confirm dialog ("closes all sessions and removes the worktree"); extra "uncommitted
-  changes — delete anyway?" confirmation on dirty worktree; **Force-forget** for Stale/`provision_failed`/
-  `delete_failed` tasks (DESIGN §5.4).
+- [x] **Delete Task** — confirm dialog whose body reflects ownership (a managed worktree "closes all sessions
+  and removes the worktree"; an adopted "From Existing Repo" task closes sessions but leaves the directory on
+  disk, §6.4); extra "uncommitted changes — delete anyway?" confirmation on dirty worktree; **Force-forget**
+  for Stale/`provision_failed`/`delete_failed` tasks (DESIGN §5.4).
 - [x] **Tabs UX** — horizontal scroll + chevrons on overflow; "…" overflow menu beyond ~8 tabs; drag-reorder via
   `@dnd-kit/core` (tasks and tabs); per-tab `×` close (DESIGN §5.4).
 - [x] **Keyboard shortcuts** — `Ctrl+Shift+]`/`[` cycle tasks; `Ctrl+Shift+Tab` cycle sessions;

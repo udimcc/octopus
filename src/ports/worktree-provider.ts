@@ -8,7 +8,7 @@
  * The interface SHAPE is frozen across versions (§10); only the request payloads
  * gain fields (`repoDir`/`sourceBranch`/`newBranch`) as the modal supplies them.
  * `adopt` was added additively during V1 development (the modal grew a "From
- * Existing Worktree" mode) — the freeze protects the not-yet-built V2 daemon
+ * Existing Repo" mode) — the freeze protects the not-yet-built V2 daemon
  * protocol, so widening the port before that binding exists is safe.
  */
 
@@ -46,9 +46,10 @@ export interface AdoptWorktreeResult {
   /** The adopted worktree path (validated, absolute) — stored as the session cwd. */
   readonly path: string
   /**
-   * The MAIN worktree / repo root that owns this worktree. Stored as the task's
-   * `repoRoot` so a later delete points git (or `delete_worktree.sh`) at the repo,
-   * and so `assertSafeToDelete` sees a `path` distinct from `repoRoot` (§6.4).
+   * The MAIN worktree / repo root that owns this worktree — or the picked
+   * directory itself when the user adopts the repo's primary checkout. Stored as
+   * the task's `repoRoot` for provenance; an adopted task is `managed === false`,
+   * so `deleteTask` never removes it and `assertSafeToDelete` is never reached (§6.4).
    */
   readonly repoRoot: string
   /** Current branch of the worktree, if on one; `undefined` on detached HEAD. */
@@ -78,11 +79,11 @@ export interface WorktreeProvider {
   ): Promise<CreateWorktreeResult>
 
   /**
-   * Adopt an EXISTING worktree directory (§6.4). Detects the owning repo root and
-   * current branch via git; validates the directory the same way as a created
-   * path. Rejects if the directory is not a git worktree, or if it is the repo's
-   * MAIN working tree (adopting the primary checkout would make the task
-   * undeletable — delete would target the repo itself).
+   * Adopt an EXISTING repo directory ("From Existing Repo", §6.4). Detects the
+   * owning repo root and current branch via git; validates the directory the same
+   * way as a created path. Rejects if the directory is not a git worktree. The
+   * repo's MAIN working tree is allowed: the resulting task is unmanaged, so
+   * deleting it leaves the directory on disk rather than removing it.
    */
   adopt(req: AdoptWorktreeRequest): Promise<AdoptWorktreeResult>
 

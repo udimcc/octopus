@@ -34,6 +34,7 @@ function taskSnapshot(over: Partial<TaskSnapshot> = {}): TaskSnapshot {
       path: '/repo/.worktrees/t1',
       branch: 'feature/x',
       baseRef: 'main',
+      managed: true,
       provisionedBy: { script: '/s/create.sh', args: ['a'], repoRoot: '/repo', provisionedAt: 5 }
     },
     lifecycle: TaskLifecycle.Ready,
@@ -58,14 +59,29 @@ describe('taskToRow (§6.3)', () => {
       repo_root: '/repo',
       created_at: 100,
       position: 2,
-      active_session_id: 's1'
+      active_session_id: 's1',
+      managed: 1
     })
+  })
+
+  it('maps an adopted worktree (managed: false) to managed = 0', () => {
+    const row = taskToRow(
+      taskSnapshot({
+        worktree: {
+          path: '/home/u/project',
+          managed: false,
+          provisionedBy: { script: 'adopt', args: [], repoRoot: '/home/u/project', provisionedAt: 5 }
+        }
+      })
+    )
+    expect(row.managed).toBe(0)
   })
 
   it('nulls optional columns (branch, active session) rather than storing undefined', () => {
     const snap = taskSnapshot({
       worktree: {
         path: '/wt',
+        managed: true,
         provisionedBy: { script: '', args: [], repoRoot: '', provisionedAt: 0 }
       },
       activeSessionId: undefined
@@ -155,7 +171,8 @@ describe('rowToTaskSnapshot (I13/I14, §6.3)', () => {
       repo_root: '/repo',
       created_at: 100,
       position: 2,
-      active_session_id: 's1'
+      active_session_id: 's1',
+      managed: 1
     }
     const sessionRows: SessionRow[] = [
       {
@@ -178,6 +195,7 @@ describe('rowToTaskSnapshot (I13/I14, §6.3)', () => {
     expect(snap.worktree?.path).toBe('/wt')
     expect(snap.worktree?.branch).toBe('feature/x')
     expect(snap.worktree?.baseRef).toBe('main')
+    expect(snap.worktree?.managed).toBe(true)
     expect(snap.activeSessionId).toBe(asSessionId('s1'))
     expect(snap.sessions).toHaveLength(1)
     expect(snap.sessions[0].id).toBe(asSessionId('s1'))
@@ -194,7 +212,8 @@ describe('rowToTaskSnapshot (I13/I14, §6.3)', () => {
         repo_root: null,
         created_at: 1,
         position: 0,
-        active_session_id: null
+        active_session_id: null,
+        managed: 0
       },
       []
     )
@@ -202,6 +221,8 @@ describe('rowToTaskSnapshot (I13/I14, §6.3)', () => {
     expect(snap.worktree?.branch).toBeUndefined()
     expect(snap.worktree?.baseRef).toBeUndefined()
     expect(snap.worktree?.provisionedBy.repoRoot).toBe('')
+    // An adopted row (managed = 0) reloads as an unmanaged worktree.
+    expect(snap.worktree?.managed).toBe(false)
   })
 })
 
@@ -214,6 +235,7 @@ describe('round-trip (write then read, minus live state — I13)', () => {
         path: '/repo/.worktrees/t1',
         branch: 'feature/x',
         baseRef: 'main',
+        managed: true,
         provisionedBy: { script: 's', args: ['a'], repoRoot: '/repo', provisionedAt: 5 }
       }
     })
@@ -228,6 +250,7 @@ describe('round-trip (write then read, minus live state — I13)', () => {
     expect(restored.worktree?.branch).toBe(original.worktree!.branch)
     expect(restored.worktree?.baseRef).toBe(original.worktree!.baseRef)
     expect(restored.worktree?.provisionedBy.repoRoot).toBe(original.worktree!.provisionedBy.repoRoot)
+    expect(restored.worktree?.managed).toBe(original.worktree!.managed)
     expect(restored.sessions[0].config).toEqual(original.sessions[0].config)
     expect(restored.sessions[0].title).toBe(original.sessions[0].title)
     // Live state is intentionally NOT round-tripped.

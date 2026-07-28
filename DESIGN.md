@@ -122,10 +122,12 @@ persistence, event routing, and any future multi-window refactor clean.
   opaque assignment tag orthogonal to `taskId` — moving a session between windows never changes `taskId`
   (I7) or lifecycle (I9), so it is **not** a cross-aggregate object reference, just a presentation label.
 - **WorktreeRef** (immutable once set) — `path: AbsolutePath`, `branch?` (the new branch), `baseRef?`
-  (the source branch it was cut from), `provisionedBy: ScriptInvocationMeta` (whose `repoRoot` is the
-  per-task repo directory). `branch`/`baseRef` are populated from the create modal (§5.4); a repo-local
-  create script that ignores them may still leave them set to the requested values. Provisioning *status*
-  lives in `TaskLifecycle`, not here.
+  (the source branch it was cut from), `managed: boolean`, `provisionedBy: ScriptInvocationMeta` (whose
+  `repoRoot` is the per-task repo directory). `branch`/`baseRef` are populated from the create modal (§5.4);
+  a repo-local create script that ignores them may still leave them set to the requested values. `managed`
+  records ownership for the delete path (§6.4): `true` when Octopus provisioned the worktree ("From New
+  Worktree" → removed from disk on delete), `false` when the task merely adopted an existing directory
+  ("From Existing Repo" → left on disk on delete). Provisioning *status* lives in `TaskLifecycle`, not here.
 - **SessionType** (registry descriptor, behavior not data) — `typeId`, `displayName`, `icon`,
   `availableFromVersion`, `configSchema`, `capabilities: Set<Capability>`, runtime factory reference.
 - **SessionConfig** — per-type, validated against the type's `configSchema`. Must be fully serializable so a
@@ -301,15 +303,20 @@ restore complexity). The serialize-and-replay path is kept available for a futur
 
 - **Tabs:** horizontal scroll on overflow with chevrons; overflow "…" menu beyond ~8 tabs; drag-reorder via
   `@dnd-kit/core`; per-tab `×` close (fires `pty:destroy`).
-- **New Task:** modal with four fields — **name**, **repo directory** (a native OS directory picker via a
-  `dialog:pickDirectory` IPC), **source branch**, **new branch** (prefilled with a slug from the name,
-  editable). "Create Task" → spinner while the worktree is provisioned (repo-local script or native git,
-  §6.4) → on success new task becomes active with empty state; on failure show stderr in a red block +
-  Retry + toast.
+- **New Task:** modal with two tabs and an info button (top-right) whose hover/focus tooltip explains the
+  active tab's delete behavior. **From New Worktree** (default): four fields — **name**, **repo directory**
+  (a native OS directory picker via a `dialog:pickDirectory` IPC), **source branch**, **new branch**
+  (prefilled with a slug from the name, editable); Octopus provisions a fresh worktree (`managed: true`).
+  **From Existing Repo**: **name** + an existing **repository directory** Octopus adopts as-is (git detects
+  its owning repo + branch; the repo's main checkout is allowed), stored `managed: false`. "Create Task" →
+  spinner while the worktree is provisioned/adopted (repo-local script or native git, §6.4) → on success new
+  task becomes active with empty state; on failure show stderr in a red block + Retry + toast.
 - **New Session:** dropdown populated from the session-type registry (filtered by `availableFromVersion ≤
   currentVersion`). Terminal creates immediately; Jenkins (V3) opens a small config modal.
-- **Delete Task:** confirm dialog ("closes all sessions and removes the worktree"); on dirty worktree, an
-  extra "uncommitted changes — delete anyway?" confirmation.
+- **Delete Task:** confirm dialog whose body reflects ownership (§6.4) — a managed worktree "closes all
+  sessions and removes the worktree", an adopted repo (`managed: false`) "closes all sessions" but leaves
+  the directory on disk; on dirty worktree, an extra "uncommitted changes — delete anyway?" confirmation
+  (the dirty gate still fires for adopted repos, even though nothing is removed from disk).
 - **Status icons (V2):** shape **and** color (accessibility): Waiting = hollow/pause, gray; Working =
   spinner/filled, blue; Blocked = warning triangle, amber. Low-confidence heuristic states render dimmed or
   pulsing. Tooltips give plain-text descriptions.
@@ -408,7 +415,7 @@ settings in a sibling `settings.json` (small, human-editable). Schema (simplifie
 CREATE TABLE tasks (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, worktree TEXT NOT NULL, branch TEXT,
   base_ref TEXT, repo_root TEXT, created_at INTEGER NOT NULL, position INTEGER NOT NULL,
-  active_session_id TEXT);  -- branch=new branch, base_ref=source branch, repo_root=per-task repo dir; all nullable (§6.4)
+  active_session_id TEXT, managed INTEGER NOT NULL DEFAULT 1);  -- branch=new branch, base_ref=source branch, repo_root=per-task repo dir (all nullable); managed=1 provisioned / 0 adopted (§6.4)
 CREATE TABLE sessions (
   id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   type TEXT NOT NULL, label TEXT NOT NULL, shell TEXT, position INTEGER NOT NULL,
@@ -437,7 +444,11 @@ opens a `user_version < 2` database (§10 — this is the first use of the migra
 bumped it to **3**. **V1.5 (multi-window) bumps it to 4:** a guarded `ALTER TABLE sessions ADD COLUMN
 window_id TEXT NOT NULL DEFAULT 'main'` (the default migrates every existing session to the main window with
 no UPDATE pass), a `CREATE TABLE IF NOT EXISTS windows`, and an `INSERT OR IGNORE` seeding the `main` window
-record — the same fresh-DB-`CREATE`-plus-guarded-upgrade pattern proven at v2/v3.
+record — the same fresh-DB-`CREATE`-plus-guarded-upgrade pattern proven at v2/v3. **Adopted-repo ownership
+bumps it to 5:** a guarded `ALTER TABLE tasks ADD COLUMN managed INTEGER NOT NULL DEFAULT 1` plus a
+back-fill `UPDATE tasks SET managed = 0 WHERE base_ref IS NULL` — historically only adopted tasks left
+`base_ref` null, so this marks them unmanaged (left on disk on delete, §6.4) while every provisioned row
+keeps the `DEFAULT 1`.
 
 **Windows persistence (V1.5, §3.7, §6.7).** `WorkspacePersistence` gains `loadWindows/upsertWindow/
 deleteWindow`. Window **bounds** are saved (debounced) on OS move/resize; the session's `window_id` is
@@ -493,6 +504,15 @@ calling either path:** (1) path sanity — the path is exactly the one stored fo
 is neither `/` nor `repoDir` nor an ancestor of it; (2) uncommitted changes — `git -C <wt> status
 --porcelain` non-empty → confirm dialog; (3) all sessions killed first (SIGHUP, 2 s, SIGKILL) so nothing
 holds an fd inside the worktree. Stderr (≤64 KB) is shown in an error dialog with the command + exit code.
+
+**Adopt ("From Existing Repo") and managed ownership.** A task may instead **adopt** an existing directory
+(New-Task modal, §5.4). `NativeGitWorktreeProvider.adopt` runs read-only `git -C <dir> worktree list
+--porcelain` (first entry = repo root, stored for delete-safety) + `rev-parse` for the branch, and stores
+`managed: false`. The repo's **main working tree is allowed** here (`repoRoot === path`): because an adopted
+worktree is `managed: false`, `deleteTask` **skips the `remove` call entirely** — the containment check
+(step 1 above) is never reached, and the directory Octopus never created is left on disk. A provisioned
+worktree is `managed: true` and deletes exactly as before. The dirty gate (step 2) still runs for adopted
+repos so the user is warned about uncommitted changes, even though nothing is removed.
 
 ### 6.5 IPC protocol
 
