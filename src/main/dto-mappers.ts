@@ -102,7 +102,13 @@ export function toSettingsDTO(s: Settings): SettingsDTO {
     defaultSessionTypeId: s.defaultSessionTypeId,
     worktreeCreateTimeoutMs: s.worktreeCreateTimeoutMs,
     sessionNextKey: s.sessionNextKey,
-    sessionPrevKey: s.sessionPrevKey
+    sessionPrevKey: s.sessionPrevKey,
+    taskNextKey: s.taskNextKey,
+    taskPrevKey: s.taskPrevKey,
+    newSessionKey: s.newSessionKey,
+    newTaskKey: s.newTaskKey,
+    closeSessionKey: s.closeSessionKey,
+    searchKey: s.searchKey
   }
 }
 

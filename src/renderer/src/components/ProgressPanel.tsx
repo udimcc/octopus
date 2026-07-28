@@ -28,7 +28,7 @@ import { useStore } from '../store/store'
 import { color, fontSize } from '../style/tokens'
 
 export interface ProgressPanelProps {
-  /** Open the New-Task modal (owned by `App` so the Ctrl+Shift+N shortcut shares it). */
+  /** Open the New-Task modal (owned by `App` so the new-task shortcut shares it). */
   readonly onNewTask: () => void
 }
 

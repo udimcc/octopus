@@ -1,36 +1,29 @@
 /**
  * Global keyboard shortcuts (DESIGN §5.4). Mounted once in `App`.
  *
- * SAFETY RULE (§5.4): we only intercept **Shift-modified** chords. A terminal must
- * receive `Ctrl+C`, `Ctrl+V`, `Ctrl+D`, etc. untouched — stealing them would break
- * the very thing the app hosts. Requiring Shift on every global chord guarantees we
- * never shadow a bare terminal control key.
+ * SAFETY RULE (§5.4): a terminal must receive `Ctrl+C`, `Ctrl+V`, `Ctrl+D`, etc.
+ * untouched — stealing them would break the very thing the app hosts. Every global
+ * chord is user-configurable and the settings dialog enforces ≥1 modifier, so a
+ * binding can never shadow a bare terminal keystroke.
  *
- * Bindings:
- *   Ctrl+Shift+]   next task            Ctrl+Shift+[   previous task
- *   Ctrl+Shift+Tab cycle sessions       Ctrl+Shift+T   new terminal (active task)
- *   Ctrl+Shift+N   new task             Ctrl+Shift+W   close active session
- *   Ctrl+Shift+F   terminal search      Esc            (handled by open modals)
- *   next/prev session — two fully user-configurable chords (§5.4)
+ * CONFIGURABLE KEYS: all eight actions are FREE-FORM chords read from `settings` —
+ * `sessionNextKey` / `sessionPrevKey` (cycle sessions), `taskNextKey` / `taskPrevKey`
+ * (move between tasks), `newSessionKey` (new terminal in the active task), `newTaskKey`
+ * (open the New-Task modal), `closeSessionKey` (close the active session), and
+ * `searchKey` (terminal search). Each is a canonical chord string (see
+ * `keybindings/chords.ts`). Defaults: session next/prev `Ctrl+Shift+ArrowRight` /
+ * `Ctrl+Shift+ArrowLeft`; task next/prev `Ctrl+Shift+ArrowDown` / `Ctrl+Shift+ArrowUp`;
+ * new session `Ctrl+Shift+N`; new task `Ctrl+Shift+T`; close session `Ctrl+Shift+W`;
+ * search `Ctrl+Shift+F`. Each is bound independently (no "opposite" inference) and
+ * matched with `matchesChord`. The settings dialog blocks a collision between them
+ * (and against `RESERVED_CHORDS` in `chords.ts`, currently empty).
  *
- * SESSION-SWITCH KEYS: `settings.sessionNextKey` / `sessionPrevKey` are canonical
- * chord strings (see `keybindings/chords.ts`) that cycle to the next / previous
- * session (defaults `Ctrl+Shift+ArrowRight` / `Ctrl+Shift+ArrowLeft`). Unlike the
- * fixed shortcuts they are FREE-FORM — any key with ≥1 modifier — and bound
- * independently (no "opposite" inference). Because a custom chord may not be
- * Ctrl+Shift (e.g. `Alt+K`), these are matched with `matchesChord` BEFORE the
- * Ctrl+Shift gate below; the settings dialog enforces the ≥1-modifier rule so the
- * safety guarantee (never a bare terminal control key) still holds. The fixed set
- * (`RESERVED_CHORDS` in `chords.ts`) stays reserved; settings blocks a collision.
+ * DELIBERATE OMISSIONS: `DESIGN §5.4` also lists `Ctrl+Shift+C/V` (the terminal's own
+ * copy/paste — xterm/Chromium reserve them); they are intentionally NOT bound here.
  *
- * DELIBERATE OMISSIONS: `DESIGN §5.4` also lists `Ctrl+Tab` and `Ctrl+Shift+C/V`.
- * `Ctrl+Tab` violates the Shift-only-intercept safety rule (bare Ctrl chord), and
- * `Ctrl+Shift+C/V` are the terminal's own copy/paste (xterm/Chromium reserve them).
- * Both are intentionally NOT bound here; session cycling uses `Ctrl+Shift+Tab`.
- *
- * `Ctrl+Shift+N` (new task) and `Ctrl+Shift+F` (search) are surfaced via callbacks
- * because they drive React-local UI (the modal / the terminal search box) that the
- * store doesn't own; everything else dispatches straight to the backend.
+ * New task and search are surfaced via callbacks because they drive React-local UI
+ * (the modal / the terminal search box) that the store doesn't own; everything else
+ * dispatches straight to the backend.
  */
 
 import { useEffect } from 'react'
@@ -72,10 +65,33 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
         if (next) store.setActiveSession(activeTaskId, next)
       }
 
-      // Free-form session-switch chords come from settings and are bound
-      // independently. Matched BEFORE the Ctrl+Shift gate because a custom chord
-      // (e.g. `Alt+K`) need not be Ctrl+Shift; settings guarantees ≥1 modifier.
-      const { sessionNextKey, sessionPrevKey } = store.settings
+      // Create a new session (terminal) in the active task, if it is `ready`.
+      const newSession = (): void => {
+        if (activeTaskId && store.tasks[activeTaskId]?.lifecycle === 'ready') {
+          void window.octopusAPI.sessions.create({ taskId: activeTaskId })
+        }
+      }
+
+      // Close the active session of the active task, if there is one.
+      const closeSession = (): void => {
+        if (!activeTaskId) return
+        const sid = store.activeSessionByTask[activeTaskId]
+        if (sid) void window.octopusAPI.sessions.close({ sessionId: sid })
+      }
+
+      // Every configurable chord comes from settings and is bound independently. A
+      // custom chord (e.g. `Alt+K`) may not be Ctrl+Shift, so we match on the chord
+      // itself; settings guarantees ≥1 modifier so a binding never shadows a bare key.
+      const {
+        sessionNextKey,
+        sessionPrevKey,
+        taskNextKey,
+        taskPrevKey,
+        newSessionKey,
+        newTaskKey,
+        closeSessionKey,
+        searchKey
+      } = store.settings
       if (matchesChord(e, sessionNextKey)) {
         e.preventDefault()
         cycleSession(1)
@@ -86,46 +102,35 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
         cycleSession(-1)
         return
       }
-
-      // The fixed shortcuts below stay Ctrl+Shift-gated (never bare Ctrl — see the
-      // safety rule). `e.code` is layout-independent for brackets/letters; `Tab` too.
-      if (!e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return
-      switch (e.code) {
-        case 'BracketRight':
-          e.preventDefault()
-          cycleTask(1)
-          return
-        case 'BracketLeft':
-          e.preventDefault()
-          cycleTask(-1)
-          return
-        case 'Tab':
-          e.preventDefault()
-          cycleSession(1)
-          return
-        case 'KeyT':
-          e.preventDefault()
-          if (activeTaskId && store.tasks[activeTaskId]?.lifecycle === 'ready') {
-            void window.octopusAPI.sessions.create({ taskId: activeTaskId })
-          }
-          return
-        case 'KeyN':
-          e.preventDefault()
-          onNewTask()
-          return
-        case 'KeyW':
-          e.preventDefault()
-          if (activeTaskId) {
-            const sid = store.activeSessionByTask[activeTaskId]
-            if (sid) void window.octopusAPI.sessions.close({ sessionId: sid })
-          }
-          return
-        case 'KeyF':
-          e.preventDefault()
-          onSearch?.()
-          return
-        default:
-          return
+      if (matchesChord(e, taskNextKey)) {
+        e.preventDefault()
+        cycleTask(1)
+        return
+      }
+      if (matchesChord(e, taskPrevKey)) {
+        e.preventDefault()
+        cycleTask(-1)
+        return
+      }
+      if (matchesChord(e, newSessionKey)) {
+        e.preventDefault()
+        newSession()
+        return
+      }
+      if (matchesChord(e, newTaskKey)) {
+        e.preventDefault()
+        onNewTask()
+        return
+      }
+      if (matchesChord(e, closeSessionKey)) {
+        e.preventDefault()
+        closeSession()
+        return
+      }
+      if (matchesChord(e, searchKey)) {
+        e.preventDefault()
+        onSearch?.()
+        return
       }
     }
 

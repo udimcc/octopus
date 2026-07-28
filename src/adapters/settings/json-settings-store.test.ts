@@ -61,11 +61,24 @@ describe('parseSettings (§6.3)', () => {
     expect(parseSettings('{}').terminal.backend).toBeUndefined()
   })
 
-  it('defaults session next/prev keys to the Ctrl+Shift arrow chords', () => {
+  it('defaults the configurable chords to their Ctrl+Shift bindings', () => {
     expect(DEFAULT_SETTINGS.sessionNextKey).toBe('Ctrl+Shift+ArrowRight')
     expect(DEFAULT_SETTINGS.sessionPrevKey).toBe('Ctrl+Shift+ArrowLeft')
-    expect(parseSettings('{}').sessionNextKey).toBe('Ctrl+Shift+ArrowRight')
-    expect(parseSettings('{}').sessionPrevKey).toBe('Ctrl+Shift+ArrowLeft')
+    expect(DEFAULT_SETTINGS.taskNextKey).toBe('Ctrl+Shift+ArrowDown')
+    expect(DEFAULT_SETTINGS.taskPrevKey).toBe('Ctrl+Shift+ArrowUp')
+    expect(DEFAULT_SETTINGS.newSessionKey).toBe('Ctrl+Shift+KeyN')
+    expect(DEFAULT_SETTINGS.newTaskKey).toBe('Ctrl+Shift+KeyT')
+    expect(DEFAULT_SETTINGS.closeSessionKey).toBe('Ctrl+Shift+KeyW')
+    expect(DEFAULT_SETTINGS.searchKey).toBe('Ctrl+Shift+KeyF')
+    const s = parseSettings('{}')
+    expect(s.sessionNextKey).toBe('Ctrl+Shift+ArrowRight')
+    expect(s.sessionPrevKey).toBe('Ctrl+Shift+ArrowLeft')
+    expect(s.taskNextKey).toBe('Ctrl+Shift+ArrowDown')
+    expect(s.taskPrevKey).toBe('Ctrl+Shift+ArrowUp')
+    expect(s.newSessionKey).toBe('Ctrl+Shift+KeyN')
+    expect(s.newTaskKey).toBe('Ctrl+Shift+KeyT')
+    expect(s.closeSessionKey).toBe('Ctrl+Shift+KeyW')
+    expect(s.searchKey).toBe('Ctrl+Shift+KeyF')
   })
 })
 

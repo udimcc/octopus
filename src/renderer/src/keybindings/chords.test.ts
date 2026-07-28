@@ -115,10 +115,21 @@ describe('chordLabel', () => {
 })
 
 describe('RESERVED_CHORDS', () => {
-  it('lists the fixed shortcuts the hook owns', () => {
-    const newTerminal = RESERVED_CHORDS.find((r) => r.chord === 'Ctrl+Shift+KeyT')
-    expect(newTerminal?.label).toBe('New terminal')
-    const nextTask = RESERVED_CHORDS.find((r) => r.chord === 'Ctrl+Shift+BracketRight')
-    expect(nextTask?.label).toBe('Next task')
+  it('is empty — every shortcut is user-configurable', () => {
+    expect(RESERVED_CHORDS).toHaveLength(0)
+  })
+
+  it('reserves none of the now-configurable chords', () => {
+    for (const chord of [
+      'Ctrl+Shift+BracketRight',
+      'Ctrl+Shift+BracketLeft',
+      'Ctrl+Shift+KeyT',
+      'Ctrl+Shift+KeyN',
+      'Ctrl+Shift+KeyW',
+      'Ctrl+Shift+KeyF',
+      'Ctrl+Shift+Tab'
+    ]) {
+      expect(RESERVED_CHORDS.find((r) => r.chord === chord)).toBeUndefined()
+    }
   })
 })

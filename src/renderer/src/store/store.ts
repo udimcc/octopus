@@ -85,7 +85,13 @@ const DEFAULT_SETTINGS: SettingsDTO = {
   terminal: {},
   defaultSessionTypeId: 'terminal',
   sessionNextKey: 'Ctrl+Shift+ArrowRight',
-  sessionPrevKey: 'Ctrl+Shift+ArrowLeft'
+  sessionPrevKey: 'Ctrl+Shift+ArrowLeft',
+  taskNextKey: 'Ctrl+Shift+ArrowDown',
+  taskPrevKey: 'Ctrl+Shift+ArrowUp',
+  newSessionKey: 'Ctrl+Shift+KeyN',
+  newTaskKey: 'Ctrl+Shift+KeyT',
+  closeSessionKey: 'Ctrl+Shift+KeyW',
+  searchKey: 'Ctrl+Shift+KeyF'
 }
 
 /** The empty projection before hydration (also used to reset the store in tests). */

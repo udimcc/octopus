@@ -95,9 +95,19 @@ export interface SettingsDTO {
   }
   readonly defaultSessionTypeId: string
   readonly worktreeCreateTimeoutMs?: number
-  /** Keys that cycle to the next / previous session, bound independently (§5.4). */
+  /**
+   * Configurable chords, each bound independently (§5.4): cycle to the next /
+   * previous session, move to the next / previous task, create a new session,
+   * create a new task, close the active session, and open terminal search.
+   */
   readonly sessionNextKey?: string
   readonly sessionPrevKey?: string
+  readonly taskNextKey?: string
+  readonly taskPrevKey?: string
+  readonly newSessionKey?: string
+  readonly newTaskKey?: string
+  readonly closeSessionKey?: string
+  readonly searchKey?: string
 }
 
 /** A deep-partial settings patch (nested objects merged, not replaced). */
@@ -112,6 +122,12 @@ export interface SettingsPatchDTO {
   readonly worktreeCreateTimeoutMs?: number
   readonly sessionNextKey?: string
   readonly sessionPrevKey?: string
+  readonly taskNextKey?: string
+  readonly taskPrevKey?: string
+  readonly newSessionKey?: string
+  readonly newTaskKey?: string
+  readonly closeSessionKey?: string
+  readonly searchKey?: string
 }
 
 /** Full workspace snapshot for renderer hydration on startup (§5.2). */

@@ -38,14 +38,25 @@ export interface Settings {
   /** Worktree create timeout override (ms); default 30 000 — script AND git (§6.4). */
   readonly worktreeCreateTimeoutMs?: number
   /**
-   * Chords that cycle to the NEXT / PREVIOUS session (§5.4). Each is a canonical
+   * Chords for the user-configurable actions (§5.4): cycle to the NEXT / PREVIOUS
+   * session, move to the NEXT / PREVIOUS task, create a new session, create a new
+   * task, close the active session, and open terminal search. Each is a canonical
    * chord string (`parseChord` in `renderer/keybindings/chords.ts`), e.g.
    * `'Ctrl+Shift+ArrowRight'` — ANY key with at least one modifier is allowed, and
-   * the two directions are bound independently (no "opposite" inference). Defaults
-   * 'Ctrl+Shift+ArrowRight' / 'Ctrl+Shift+ArrowLeft'.
+   * every action is bound independently (no "opposite" inference). Defaults:
+   * session next/prev 'Ctrl+Shift+ArrowRight' / 'Ctrl+Shift+ArrowLeft';
+   * task next/prev 'Ctrl+Shift+ArrowDown' / 'Ctrl+Shift+ArrowUp';
+   * new session 'Ctrl+Shift+KeyN'; new task 'Ctrl+Shift+KeyT';
+   * close session 'Ctrl+Shift+KeyW'; terminal search 'Ctrl+Shift+KeyF'.
    */
   readonly sessionNextKey?: string
   readonly sessionPrevKey?: string
+  readonly taskNextKey?: string
+  readonly taskPrevKey?: string
+  readonly newSessionKey?: string
+  readonly newTaskKey?: string
+  readonly closeSessionKey?: string
+  readonly searchKey?: string
 }
 
 /** A deep-partial patch for `save` (nested objects merged, not replaced). */
@@ -56,6 +67,12 @@ export interface SettingsPatch {
   readonly worktreeCreateTimeoutMs?: number
   readonly sessionNextKey?: string
   readonly sessionPrevKey?: string
+  readonly taskNextKey?: string
+  readonly taskPrevKey?: string
+  readonly newSessionKey?: string
+  readonly newTaskKey?: string
+  readonly closeSessionKey?: string
+  readonly searchKey?: string
 }
 
 export interface SettingsStore {

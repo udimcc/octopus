@@ -49,7 +49,13 @@ function seed(tasks: TaskDTO[], activeTaskId?: string): void {
       terminal: {},
       defaultSessionTypeId: 'terminal',
       sessionNextKey: 'Ctrl+Shift+ArrowRight',
-      sessionPrevKey: 'Ctrl+Shift+ArrowLeft'
+      sessionPrevKey: 'Ctrl+Shift+ArrowLeft',
+      taskNextKey: 'Ctrl+Shift+ArrowDown',
+      taskPrevKey: 'Ctrl+Shift+ArrowUp',
+      newSessionKey: 'Ctrl+Shift+KeyN',
+      newTaskKey: 'Ctrl+Shift+KeyT',
+      closeSessionKey: 'Ctrl+Shift+KeyW',
+      searchKey: 'Ctrl+Shift+KeyF'
     },
     version: 1,
     thisWindowId: 'main',
@@ -73,27 +79,27 @@ describe('useKeyboardShortcuts (§5.4 — Shift-gated)', () => {
     seed([task('t1'), task('t2', { position: 1 })], 't1')
     render(<Host onNewTask={vi.fn()} />)
     // Ctrl (no Shift) must not switch tasks — the safety rule.
-    fireEvent.keyDown(window, { code: 'BracketRight', ctrlKey: true, shiftKey: false })
+    fireEvent.keyDown(window, { code: 'ArrowDown', ctrlKey: true, shiftKey: false })
     expect(useStore.getState().activeTaskId).toBe('t1')
     expect(window.octopusAPI.tasks.switch).not.toHaveBeenCalled()
   })
 
-  it('Ctrl+Shift+] cycles to the next task and switches', () => {
+  it('Ctrl+Shift+ArrowDown cycles to the next task and switches (default binding)', () => {
     seed([task('t1'), task('t2', { position: 1 })], 't1')
     render(<Host onNewTask={vi.fn()} />)
-    chord('BracketRight')
+    chord('ArrowDown')
     expect(useStore.getState().activeTaskId).toBe('t2')
     expect(window.octopusAPI.tasks.switch).toHaveBeenCalledWith({ taskId: 't2' })
   })
 
-  it('Ctrl+Shift+[ cycles to the previous task, wrapping', () => {
+  it('Ctrl+Shift+ArrowUp cycles to the previous task, wrapping (default binding)', () => {
     seed([task('t1'), task('t2', { position: 1 })], 't1')
     render(<Host onNewTask={vi.fn()} />)
-    chord('BracketLeft')
+    chord('ArrowUp')
     expect(useStore.getState().activeTaskId).toBe('t2') // wrapped backwards
   })
 
-  it('Ctrl+Shift+Tab cycles the active session within the active task', () => {
+  it('Ctrl+Shift+Tab no longer cycles sessions (binding removed)', () => {
     const t = task('t1', {
       sessions: [session('s1'), session('s2', { order: 1 })],
       activeSessionId: 's1'
@@ -101,7 +107,7 @@ describe('useKeyboardShortcuts (§5.4 — Shift-gated)', () => {
     seed([t], 't1')
     render(<Host onNewTask={vi.fn()} />)
     chord('Tab')
-    expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
   })
 
   it('Ctrl+Shift+ArrowRight cycles to the next session (default binding)', () => {
@@ -167,28 +173,28 @@ describe('useKeyboardShortcuts (§5.4 — Shift-gated)', () => {
     expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
   })
 
-  it('Ctrl+Shift+T opens a new terminal in the active (ready) task', () => {
+  it('Ctrl+Shift+N opens a new terminal in the active (ready) task (default binding)', () => {
     seed([task('t1', { lifecycle: 'ready' })], 't1')
     render(<Host onNewTask={vi.fn()} />)
-    chord('KeyT')
+    chord('KeyN')
     expect(window.octopusAPI.sessions.create).toHaveBeenCalledWith({ taskId: 't1' })
   })
 
-  it('Ctrl+Shift+T does nothing when the active task is not ready', () => {
+  it('Ctrl+Shift+N does nothing when the active task is not ready', () => {
     seed([task('t1', { lifecycle: 'provisioning' })], 't1')
     render(<Host onNewTask={vi.fn()} />)
-    chord('KeyT')
+    chord('KeyN')
     expect(window.octopusAPI.sessions.create).not.toHaveBeenCalled()
   })
 
-  it('Ctrl+Shift+N calls onNewTask', () => {
+  it('Ctrl+Shift+T calls onNewTask (default binding)', () => {
     const onNewTask = vi.fn()
     render(<Host onNewTask={onNewTask} />)
-    chord('KeyN')
+    chord('KeyT')
     expect(onNewTask).toHaveBeenCalled()
   })
 
-  it('Ctrl+Shift+W closes the active session', () => {
+  it('Ctrl+Shift+W closes the active session (default binding)', () => {
     const t = task('t1', { sessions: [session('s1')], activeSessionId: 's1' })
     seed([t], 't1')
     render(<Host onNewTask={vi.fn()} />)
@@ -196,7 +202,7 @@ describe('useKeyboardShortcuts (§5.4 — Shift-gated)', () => {
     expect(window.octopusAPI.sessions.close).toHaveBeenCalledWith({ sessionId: 's1' })
   })
 
-  it('Ctrl+Shift+F calls onSearch', () => {
+  it('Ctrl+Shift+F calls onSearch (default binding)', () => {
     const onSearch = vi.fn()
     seed([task('t1')], 't1')
     render(<Host onNewTask={vi.fn()} onSearch={onSearch} />)

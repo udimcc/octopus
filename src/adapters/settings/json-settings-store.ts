@@ -22,7 +22,13 @@ export const DEFAULT_SETTINGS: Settings = Object.freeze({
   terminal: Object.freeze({}),
   defaultSessionTypeId: 'terminal',
   sessionNextKey: 'Ctrl+Shift+ArrowRight',
-  sessionPrevKey: 'Ctrl+Shift+ArrowLeft'
+  sessionPrevKey: 'Ctrl+Shift+ArrowLeft',
+  taskNextKey: 'Ctrl+Shift+ArrowDown',
+  taskPrevKey: 'Ctrl+Shift+ArrowUp',
+  newSessionKey: 'Ctrl+Shift+KeyN',
+  newTaskKey: 'Ctrl+Shift+KeyT',
+  closeSessionKey: 'Ctrl+Shift+KeyW',
+  searchKey: 'Ctrl+Shift+KeyF'
 }) as Settings
 
 /**
@@ -69,7 +75,13 @@ export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
       base.worktreeCreateTimeoutMs
     ),
     sessionNextKey: pickString(patch.sessionNextKey, base.sessionNextKey),
-    sessionPrevKey: pickString(patch.sessionPrevKey, base.sessionPrevKey)
+    sessionPrevKey: pickString(patch.sessionPrevKey, base.sessionPrevKey),
+    taskNextKey: pickString(patch.taskNextKey, base.taskNextKey),
+    taskPrevKey: pickString(patch.taskPrevKey, base.taskPrevKey),
+    newSessionKey: pickString(patch.newSessionKey, base.newSessionKey),
+    newTaskKey: pickString(patch.newTaskKey, base.newTaskKey),
+    closeSessionKey: pickString(patch.closeSessionKey, base.closeSessionKey),
+    searchKey: pickString(patch.searchKey, base.searchKey)
   }
 }
 

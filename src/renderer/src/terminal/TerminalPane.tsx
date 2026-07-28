@@ -202,17 +202,38 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
 
     term.open(host)
 
-    // Chords owned by the global shortcut layer (§5.4) — the fixed Ctrl+Shift set
-    // plus the two free-form session-switch chords — must NOT reach the PTY.
-    // Returning false drops the key before xterm turns it into `onData` output; the
-    // window listener's preventDefault alone is unreliable (xterm's own textarea
-    // handler runs first). Settings live via `getState()` so a rebind takes effect
-    // without re-attaching. This mirrors `useKeyboardShortcuts` so the layers agree.
+    // Chords owned by the global shortcut layer (§5.4) — the eight free-form
+    // configurable chords — must NOT reach the PTY. The blanket Ctrl+Shift drop is a
+    // safety net covering the Ctrl+Shift defaults; the explicit list also catches a
+    // rebind to any other modifier (e.g. `Alt+/`). Returning false drops the key
+    // before xterm turns it into `onData` output; the window listener's preventDefault
+    // alone is unreliable (xterm's own textarea handler runs first). Settings live via
+    // `getState()` so a rebind takes effect without re-attaching. This mirrors
+    // `useKeyboardShortcuts` so the layers agree.
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true
       if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) return false
-      const { sessionNextKey, sessionPrevKey } = useStore.getState().settings
-      if (matchesChord(e, sessionNextKey) || matchesChord(e, sessionPrevKey)) return false
+      const {
+        sessionNextKey,
+        sessionPrevKey,
+        taskNextKey,
+        taskPrevKey,
+        newSessionKey,
+        newTaskKey,
+        closeSessionKey,
+        searchKey
+      } = useStore.getState().settings
+      const configurable = [
+        sessionNextKey,
+        sessionPrevKey,
+        taskNextKey,
+        taskPrevKey,
+        newSessionKey,
+        newTaskKey,
+        closeSessionKey,
+        searchKey
+      ]
+      if (configurable.some((chord) => matchesChord(e, chord))) return false
       return true
     })
 

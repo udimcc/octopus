@@ -14,7 +14,13 @@ const seededState: WindowedWorkspaceStateDTO = {
     terminal: { shell: '/bin/bash' },
     defaultSessionTypeId: 'terminal',
     sessionNextKey: 'Ctrl+Shift+ArrowRight',
-    sessionPrevKey: 'Ctrl+Shift+ArrowLeft'
+    sessionPrevKey: 'Ctrl+Shift+ArrowLeft',
+    taskNextKey: 'Ctrl+Shift+ArrowDown',
+    taskPrevKey: 'Ctrl+Shift+ArrowUp',
+    newSessionKey: 'Ctrl+Shift+KeyN',
+    newTaskKey: 'Ctrl+Shift+KeyT',
+    closeSessionKey: 'Ctrl+Shift+KeyW',
+    searchKey: 'Ctrl+Shift+KeyF'
   },
   version: 1,
   thisWindowId: 'main',
@@ -35,6 +41,12 @@ describe('<SettingsModal>', () => {
     expect(screen.getByLabelText('terminal shell')).toHaveValue('/bin/bash')
     expect(screen.getByLabelText('next session shortcut')).toHaveTextContent('Ctrl+Shift+→')
     expect(screen.getByLabelText('previous session shortcut')).toHaveTextContent('Ctrl+Shift+←')
+    expect(screen.getByLabelText('next task shortcut')).toHaveTextContent('Ctrl+Shift+↓')
+    expect(screen.getByLabelText('previous task shortcut')).toHaveTextContent('Ctrl+Shift+↑')
+    expect(screen.getByLabelText('new session shortcut')).toHaveTextContent('Ctrl+Shift+N')
+    expect(screen.getByLabelText('new task shortcut')).toHaveTextContent('Ctrl+Shift+T')
+    expect(screen.getByLabelText('close session shortcut')).toHaveTextContent('Ctrl+Shift+W')
+    expect(screen.getByLabelText('terminal search shortcut')).toHaveTextContent('Ctrl+Shift+F')
   })
 
   it('saves a patch and refetches state, then closes', async () => {
@@ -52,7 +64,13 @@ describe('<SettingsModal>', () => {
       worktree: { location: '/new/loc' },
       terminal: { shell: '/bin/zsh' },
       sessionNextKey: 'Ctrl+Shift+ArrowRight',
-      sessionPrevKey: 'Ctrl+Shift+ArrowLeft'
+      sessionPrevKey: 'Ctrl+Shift+ArrowLeft',
+      taskNextKey: 'Ctrl+Shift+ArrowDown',
+      taskPrevKey: 'Ctrl+Shift+ArrowUp',
+      newSessionKey: 'Ctrl+Shift+KeyN',
+      newTaskKey: 'Ctrl+Shift+KeyT',
+      closeSessionKey: 'Ctrl+Shift+KeyW',
+      searchKey: 'Ctrl+Shift+KeyF'
     })
     // updateSettings emits nothing → the modal must refetch getState to reflect it.
     await waitFor(() => expect(bridge.api.app.getState).toHaveBeenCalled())
@@ -68,7 +86,13 @@ describe('<SettingsModal>', () => {
       worktree: { location: '/repos' },
       terminal: { shell: undefined },
       sessionNextKey: 'Ctrl+Shift+ArrowRight',
-      sessionPrevKey: 'Ctrl+Shift+ArrowLeft'
+      sessionPrevKey: 'Ctrl+Shift+ArrowLeft',
+      taskNextKey: 'Ctrl+Shift+ArrowDown',
+      taskPrevKey: 'Ctrl+Shift+ArrowUp',
+      newSessionKey: 'Ctrl+Shift+KeyN',
+      newTaskKey: 'Ctrl+Shift+KeyT',
+      closeSessionKey: 'Ctrl+Shift+KeyW',
+      searchKey: 'Ctrl+Shift+KeyF'
     })
   })
 
@@ -159,14 +183,16 @@ describe('<SettingsModal>', () => {
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
   })
 
-  it('blocks saving a chord that collides with a fixed shortcut', () => {
+  it('blocks saving a chord that collides with another configurable action', () => {
     installStubBridge({ state: seededState })
     render(<SettingsModal onClose={vi.fn()} />)
     const nextBtn = screen.getByLabelText('next session shortcut')
     fireEvent.click(nextBtn)
-    // Ctrl+Shift+T is the fixed "New terminal" shortcut.
-    fireEvent.keyDown(nextBtn, { code: 'KeyT', ctrlKey: true, shiftKey: true })
-    expect(screen.getByRole('alert')).toHaveTextContent('Already used by New terminal')
+    // Bind next-session to the (default) next-task chord → cross-action collision.
+    fireEvent.keyDown(nextBtn, { code: 'ArrowDown', ctrlKey: true, shiftKey: true })
+    const alerts = screen.getAllByRole('alert')
+    expect(alerts.some((a) => a.textContent?.includes('Already used by Next task'))).toBe(true)
+    expect(alerts.some((a) => a.textContent?.includes('Already used by Next session'))).toBe(true)
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
   })
 

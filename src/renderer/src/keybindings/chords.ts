@@ -4,13 +4,16 @@
  * active modifiers (fixed order `Ctrl+Alt+Shift+Meta`) plus the layout-independent
  * `KeyboardEvent.code`, e.g. `"Ctrl+Shift+ArrowRight"` or `"Alt+KeyK"`.
  *
- * The two session-switch bindings are user-configurable to ANY chord (any key with
- * at least one modifier — see `hasModifier`). `parseChord` produces the stored form,
- * `matchesChord` compares a live event to it, and `chordLabel` renders it for the UI.
+ * Every shortcut is user-configurable to ANY chord (any key with at least one
+ * modifier — see `hasModifier`): next/previous session, next/previous task, new
+ * session, new task, close session, and terminal search. `parseChord` produces the
+ * stored form, `matchesChord` compares a live event to it, and `chordLabel` renders
+ * it for the UI.
  *
- * `RESERVED_CHORDS` lists the fixed shortcuts the hook owns; the settings dialog uses
- * it to block a user binding that collides with one. It MUST mirror the fixed `switch`
- * cases in `useKeyboardShortcuts.ts` — keep the two in sync.
+ * `RESERVED_CHORDS` lists any shortcuts the hook owns as FIXED (currently none); the
+ * settings dialog checks it to block a user binding that would collide with one. It
+ * is the seam where a future fixed shortcut would be declared and MUST mirror any
+ * fixed `switch` cases in `useKeyboardShortcuts.ts` — keep the two in sync.
  */
 
 /** True if the event carries at least one modifier — required for a bindable chord. */
@@ -89,15 +92,9 @@ export interface ReservedChord {
 }
 
 /**
- * The fixed Ctrl+Shift shortcuts (§5.4). MUST mirror the `switch (e.code)` cases in
- * `useKeyboardShortcuts.ts` — if a binding is added/changed there, update this list.
+ * Fixed shortcuts the hook owns (§5.4). Currently EMPTY — every action is
+ * user-configurable and collision-checked among the configured chords by the
+ * settings dialog. Kept as the seam for any future fixed binding; if one is added,
+ * it MUST mirror a `switch (e.code)` case in `useKeyboardShortcuts.ts`.
  */
-export const RESERVED_CHORDS: ReadonlyArray<ReservedChord> = [
-  { chord: 'Ctrl+Shift+BracketRight', label: 'Next task' },
-  { chord: 'Ctrl+Shift+BracketLeft', label: 'Previous task' },
-  { chord: 'Ctrl+Shift+Tab', label: 'Cycle sessions' },
-  { chord: 'Ctrl+Shift+KeyT', label: 'New terminal' },
-  { chord: 'Ctrl+Shift+KeyN', label: 'New task' },
-  { chord: 'Ctrl+Shift+KeyW', label: 'Close session' },
-  { chord: 'Ctrl+Shift+KeyF', label: 'Terminal search' }
-]
+export const RESERVED_CHORDS: ReadonlyArray<ReservedChord> = []
