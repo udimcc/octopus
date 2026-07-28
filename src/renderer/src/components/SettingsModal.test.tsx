@@ -28,10 +28,44 @@ const seededState: WindowedWorkspaceStateDTO = {
   windows: []
 }
 
+// The keybinding fields live under the "Key Bindings" category; open it first.
+const openKeyBindings = (): void => {
+  fireEvent.click(screen.getByRole('tab', { name: 'Key Bindings' }))
+}
+
 describe('<SettingsModal>', () => {
   beforeEach(() => {
     useStore.setState(initialData())
     useStore.getState().hydrate(seededState)
+  })
+
+  it('shows General fields by default and swaps to key bindings on category click', () => {
+    installStubBridge({ state: seededState })
+    render(<SettingsModal onClose={vi.fn()} />)
+    // General is the default category: its fields render, keybindings do not.
+    expect(screen.getByLabelText('worktree location')).toBeInTheDocument()
+    expect(screen.queryByLabelText('next session shortcut')).toBeNull()
+    // Switching category reveals the keybindings and hides the General fields.
+    openKeyBindings()
+    expect(screen.getByLabelText('next session shortcut')).toBeInTheDocument()
+    expect(screen.queryByLabelText('worktree location')).toBeNull()
+  })
+
+  it('retains edits made in one category after switching to another', () => {
+    const bridge = installStubBridge({ state: seededState })
+    render(<SettingsModal onClose={vi.fn()} />)
+    // Edit a General field, jump to Key Bindings and back — the edit survives.
+    fireEvent.change(screen.getByLabelText('worktree location'), {
+      target: { value: '/edited' }
+    })
+    openKeyBindings()
+    fireEvent.click(screen.getByRole('tab', { name: 'General' }))
+    expect(screen.getByLabelText('worktree location')).toHaveValue('/edited')
+    // Saving persists the retained edit regardless of the visible category.
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(bridge.api.app.updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ worktree: { location: '/edited' } })
+    )
   })
 
   it('prefills the current settings', () => {
@@ -39,6 +73,7 @@ describe('<SettingsModal>', () => {
     render(<SettingsModal onClose={vi.fn()} />)
     expect(screen.getByLabelText('worktree location')).toHaveValue('/repos')
     expect(screen.getByLabelText('terminal shell')).toHaveValue('/bin/bash')
+    openKeyBindings()
     expect(screen.getByLabelText('next session shortcut')).toHaveTextContent('Ctrl+Shift+→')
     expect(screen.getByLabelText('previous session shortcut')).toHaveTextContent('Ctrl+Shift+←')
     expect(screen.getByLabelText('next task shortcut')).toHaveTextContent('Ctrl+Shift+↓')
@@ -99,6 +134,7 @@ describe('<SettingsModal>', () => {
   it('captures an arbitrary modifier chord for each direction and saves both', () => {
     const bridge = installStubBridge({ state: seededState })
     render(<SettingsModal onClose={vi.fn()} />)
+    openKeyBindings()
 
     const nextBtn = screen.getByLabelText('next session shortcut')
     fireEvent.click(nextBtn)
@@ -121,6 +157,7 @@ describe('<SettingsModal>', () => {
   it('builds the chord live and commits only on the final non-modifier key', () => {
     const bridge = installStubBridge({ state: seededState })
     render(<SettingsModal onClose={vi.fn()} />)
+    openKeyBindings()
 
     const nextBtn = screen.getByLabelText('next session shortcut')
     fireEvent.click(nextBtn)
@@ -146,6 +183,7 @@ describe('<SettingsModal>', () => {
   it('shrinks the live preview as modifiers are released', () => {
     installStubBridge({ state: seededState })
     render(<SettingsModal onClose={vi.fn()} />)
+    openKeyBindings()
     const nextBtn = screen.getByLabelText('next session shortcut')
     fireEvent.click(nextBtn)
     fireEvent.keyDown(nextBtn, { code: 'ControlLeft', ctrlKey: true })
@@ -159,6 +197,7 @@ describe('<SettingsModal>', () => {
   it('does not change the binding when only a modifier is pressed then blurred', () => {
     installStubBridge({ state: seededState })
     render(<SettingsModal onClose={vi.fn()} />)
+    openKeyBindings()
     const nextBtn = screen.getByLabelText('next session shortcut')
     fireEvent.click(nextBtn)
     fireEvent.keyDown(nextBtn, { code: 'ControlLeft', ctrlKey: true })
@@ -171,6 +210,7 @@ describe('<SettingsModal>', () => {
   it('rejects a bare (modifier-less) key inline and keeps the previous binding', () => {
     installStubBridge({ state: seededState })
     render(<SettingsModal onClose={vi.fn()} />)
+    openKeyBindings()
     const nextBtn = screen.getByLabelText('next session shortcut')
     fireEvent.click(nextBtn)
     fireEvent.keyDown(nextBtn, { code: 'KeyA' })
@@ -186,6 +226,7 @@ describe('<SettingsModal>', () => {
   it('blocks saving a chord that collides with another configurable action', () => {
     installStubBridge({ state: seededState })
     render(<SettingsModal onClose={vi.fn()} />)
+    openKeyBindings()
     const nextBtn = screen.getByLabelText('next session shortcut')
     fireEvent.click(nextBtn)
     // Bind next-session to the (default) next-task chord → cross-action collision.
@@ -199,6 +240,7 @@ describe('<SettingsModal>', () => {
   it('blocks saving when next and prev are bound to the same chord', () => {
     installStubBridge({ state: seededState })
     render(<SettingsModal onClose={vi.fn()} />)
+    openKeyBindings()
     const prevBtn = screen.getByLabelText('previous session shortcut')
     fireEvent.click(prevBtn)
     // Bind prev to the (default) next chord → collision with the other direction.

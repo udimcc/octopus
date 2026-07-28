@@ -256,6 +256,12 @@ button:focus-visible {
   color: var(--text-primary);
 }
 
+/* Settings category tabs (left sidebar) — hover tint; selected state stays inline. */
+.settings-cat:hover:not([aria-selected='true']) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
 /* Dropdown / overflow menu items. */
 .menu-item {
   border: none;

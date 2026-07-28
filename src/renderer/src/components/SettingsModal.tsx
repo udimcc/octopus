@@ -5,10 +5,17 @@
  * free-form configurable chords (next/prev session, next/prev task, new session, new
  * task) — and saves them via `app.updateSettings(patch)`.
  *
+ * The settings are grouped into categories shown as a left sidebar; clicking a
+ * category swaps the content pane. As more options accrue this keeps the dialog
+ * navigable rather than a single ever-growing scroll. All categories share one
+ * form/save cycle — switching category never discards in-progress edits (the field
+ * state lives on this component, not the panels), and Save persists everything.
+ *
  * A chord is captured by pressing keys: it must carry ≥1 modifier (`hasModifier`) so
  * it can't shadow a bare terminal keystroke, and it must not collide with a fixed
  * shortcut (`RESERVED_CHORDS`) or any OTHER configurable chord. A bad/colliding
- * capture surfaces inline and disables Save.
+ * capture surfaces inline and disables Save (from any category, since the whole form
+ * saves together).
  *
  * `updateSettings` emits NO event (it isn't part of the workspace event stream),
  * so after a successful save we re-fetch `app.getState()` and re-`hydrate` to pull
@@ -18,7 +25,7 @@
 
 import { useState } from 'react'
 import { useStore } from '../store/store'
-import { overlayStyle, modalCardStyle, color, fontSize } from '../style/tokens'
+import { overlayStyle, modalCardStyle, color, fontSize, radius } from '../style/tokens'
 import {
   hasModifier,
   isModifierCode,
@@ -61,6 +68,19 @@ const CHORD_FIELDS: ReadonlyArray<ChordFieldDef> = [
   { key: 'searchKey', label: 'Terminal search', default: 'Ctrl+Shift+KeyF' }
 ]
 
+/** The settings categories, shown in the left sidebar in this order. */
+type CategoryId = 'general' | 'keybindings'
+
+interface CategoryDef {
+  readonly id: CategoryId
+  readonly label: string
+}
+
+const CATEGORIES: ReadonlyArray<CategoryDef> = [
+  { id: 'general', label: 'General' },
+  { id: 'keybindings', label: 'Key Bindings' }
+]
+
 export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Element {
   const settings = useStore((s) => s.settings)
   const hydrate = useStore((s) => s.hydrate)
@@ -83,6 +103,9 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
   const [switchError, setSwitchError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // The category whose panel is shown. Edits persist across switches (all field
+  // state lives above), so this only chooses what's visible — never what's saved.
+  const [category, setCategory] = useState<CategoryId>('general')
 
   // Name of the action already bound to `chord`, or null if free. Checks the fixed
   // shortcuts (`RESERVED_CHORDS`) and every OTHER configurable chord, so two actions
@@ -186,6 +209,27 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
     fontSize: fontSize.sm
   }
 
+  // The scrollable content pane for the active category. A fixed height keeps the
+  // dialog from resizing as categories with different field counts swap in.
+  const pane: React.CSSProperties = {
+    flex: 1,
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12,
+    height: 320,
+    overflowY: 'auto',
+    paddingRight: 4
+  }
+
+  // A keybinding row: the action label on the left, its chord button on the right.
+  const chordRow: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12
+  }
+
   return (
     <div role="presentation" onClick={onClose} style={overlayStyle}>
       <div
@@ -197,69 +241,121 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
           e.stopPropagation()
           if (e.key === 'Escape' && !busy) onClose()
         }}
-        style={{ ...modalCardStyle, width: 460 }}
+        style={{ ...modalCardStyle, width: 640 }}
       >
         <h2 style={{ margin: 0, fontSize: fontSize.title }}>Settings</h2>
 
-        <label style={field}>
-          <span>Worktree base directory</span>
-          <input
-            aria-label="worktree location"
-            value={location}
-            placeholder="(default: ~/… )"
-            disabled={busy}
-            onChange={(e) => setLocation(e.target.value)}
-          />
-        </label>
+        <div style={{ display: 'flex', gap: 16, minHeight: 0 }}>
+          {/* Category sidebar — clicking swaps the content pane; edits are retained. */}
+          <nav
+            aria-label="Settings categories"
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 2,
+              width: 160,
+              flexShrink: 0,
+              borderRight: `1px solid ${color.border}`,
+              paddingRight: 12
+            }}
+          >
+            {CATEGORIES.map((c) => {
+              const selected = category === c.id
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  className="settings-cat"
+                  role="tab"
+                  aria-selected={selected}
+                  onClick={() => setCategory(c.id)}
+                  style={{
+                    textAlign: 'left',
+                    padding: '7px 10px',
+                    border: '1px solid transparent',
+                    borderRadius: radius.sm,
+                    background: selected ? color.bgSelected : 'transparent',
+                    color: selected ? color.text : color.textSecondary,
+                    boxShadow: selected ? `inset 2px 0 0 ${color.accent}` : 'none',
+                    fontWeight: selected ? 500 : 400,
+                    cursor: 'pointer'
+                  }}
+                >
+                  {c.label}
+                </button>
+              )
+            })}
+          </nav>
 
-        <label style={field}>
-          <span>Terminal shell</span>
-          <input
-            aria-label="terminal shell"
-            value={shell}
-            placeholder="(default: login shell)"
-            disabled={busy}
-            onChange={(e) => setShell(e.target.value)}
-          />
-        </label>
+          {/* Content pane for the active category. */}
+          {category === 'general' ? (
+            <div style={pane} role="tabpanel" aria-label="General">
+              <label style={field}>
+                <span>Worktree base directory</span>
+                <input
+                  aria-label="worktree location"
+                  value={location}
+                  placeholder="(default: ~/… )"
+                  disabled={busy}
+                  onChange={(e) => setLocation(e.target.value)}
+                />
+              </label>
 
-        {CHORD_FIELDS.map((f) => {
-          const active = capturing === f.key
-          return (
-            <label key={f.key} style={field}>
-              <span>{f.label} shortcut</span>
-              <button
-                type="button"
-                aria-label={`${f.label.toLowerCase()} shortcut`}
-                disabled={busy}
-                onClick={() => startCapture(f.key)}
-                onBlur={() => {
-                  if (active) {
-                    setCapturing(null)
-                    setPreview('')
-                  }
-                }}
-                onKeyDown={active ? (e) => captureChord(f.key, e) : undefined}
-                onKeyUp={active ? trackRelease : undefined}
-              >
-                {active
-                  ? preview
-                    ? `${preview}+…`
-                    : 'Press a shortcut…'
-                  : chordLabel(chords[f.key])}
-              </button>
-              {active && switchError ? (
-                <span role="alert" style={{ color: color.errorText }}>
-                  {switchError}
-                </span>
-              ) : conflicts[f.key] ? (
-                <span role="alert" style={{ color: color.errorText }}>
-                  Already used by {conflicts[f.key]}
-                </span>
-              ) : null}
-            </label>
-          )
-        })}
+              <label style={field}>
+                <span>Terminal shell</span>
+                <input
+                  aria-label="terminal shell"
+                  value={shell}
+                  placeholder="(default: login shell)"
+                  disabled={busy}
+                  onChange={(e) => setShell(e.target.value)}
+                />
+              </label>
+            </div>
+          ) : (
+            <div style={pane} role="tabpanel" aria-label="Key Bindings">
+              {CHORD_FIELDS.map((f) => {
+                const active = capturing === f.key
+                return (
+                  <label key={f.key} style={field}>
+                    <span style={chordRow}>
+                      <span>{f.label} shortcut</span>
+                      <button
+                        type="button"
+                        aria-label={`${f.label.toLowerCase()} shortcut`}
+                        disabled={busy}
+                        onClick={() => startCapture(f.key)}
+                        onBlur={() => {
+                          if (active) {
+                            setCapturing(null)
+                            setPreview('')
+                          }
+                        }}
+                        onKeyDown={active ? (e) => captureChord(f.key, e) : undefined}
+                        onKeyUp={active ? trackRelease : undefined}
+                      >
+                        {active
+                          ? preview
+                            ? `${preview}+…`
+                            : 'Press a shortcut…'
+                          : chordLabel(chords[f.key])}
+                      </button>
+                    </span>
+                    {active && switchError ? (
+                      <span role="alert" style={{ color: color.errorText }}>
+                        {switchError}
+                      </span>
+                    ) : conflicts[f.key] ? (
+                      <span role="alert" style={{ color: color.errorText }}>
+                        Already used by {conflicts[f.key]}
+                      </span>
+                    ) : null}
+                  </label>
+                )
+              })}
+            </div>
+          )}
+        </div>
 
         {error ? (
           <p role="alert" style={{ margin: 0, color: color.errorText }}>
