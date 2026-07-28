@@ -36,6 +36,8 @@ export interface TaskRow {
   created_at: number
   position: number
   active_session_id: string | null
+  /** 1 = Octopus provisioned it (delete on removal); 0 = adopted, left on disk (§6.4). */
+  managed: number
 }
 
 /** A `sessions` row (§6.3, plus the `config` JSON column). */
@@ -86,7 +88,8 @@ export function taskToRow(snap: TaskSnapshot): TaskRow {
     repo_root: snap.worktree.provisionedBy.repoRoot || null,
     created_at: snap.createdAt,
     position: snap.position,
-    active_session_id: snap.activeSessionId ?? null
+    active_session_id: snap.activeSessionId ?? null,
+    managed: snap.worktree.managed ? 1 : 0
   }
 }
 
@@ -140,6 +143,7 @@ export function rowToTaskSnapshot(row: TaskRow, sessionRows: readonly SessionRow
       path: row.worktree,
       branch: row.branch ?? undefined,
       baseRef: row.base_ref ?? undefined,
+      managed: row.managed !== 0,
       provisionedBy: {
         script: '',
         args: [],

@@ -3,7 +3,15 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { DeleteTaskConfirm } from './DeleteTaskConfirm'
 import { useStore, initialData } from '../store/store'
 import { installStubBridge } from '../test-support/stub-bridge'
-import type { CommandAck, TaskDTO } from '../../../shared/dto'
+import type { CommandAck, TaskDTO, WorktreeRefDTO } from '../../../shared/dto'
+
+function worktree(managed: boolean): WorktreeRefDTO {
+  return {
+    path: '/wt',
+    managed,
+    provisionedBy: { script: 's', args: [], repoRoot: '/repo', provisionedAt: 1 }
+  }
+}
 
 function task(id: string, over: Partial<TaskDTO> = {}): TaskDTO {
   return {
@@ -71,6 +79,20 @@ describe('<DeleteTaskConfirm>', () => {
     render(<DeleteTaskConfirm taskId="t1" onClose={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: 'Force-forget' }))
     expect(window.octopusAPI.tasks.delete).toHaveBeenCalledWith({ taskId: 't1', force: true })
+  })
+
+  it('tells the user a managed worktree is removed', () => {
+    installStubBridge()
+    seed(task('t1', { name: 'Alpha', worktree: worktree(true) }))
+    render(<DeleteTaskConfirm taskId="t1" onClose={vi.fn()} />)
+    expect(screen.getByText(/removes its git worktree/)).toBeInTheDocument()
+  })
+
+  it('tells the user an adopted repo directory is left on disk (managed: false)', () => {
+    installStubBridge()
+    seed(task('t1', { name: 'Alpha', worktree: worktree(false) }))
+    render(<DeleteTaskConfirm taskId="t1" onClose={vi.fn()} />)
+    expect(screen.getByText(/repository directory is left on disk/)).toBeInTheDocument()
   })
 
   it('does NOT offer Force-forget for a ready task', () => {

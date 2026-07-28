@@ -2,9 +2,13 @@
  * The New-Task modal (DESIGN §5.4). Two tabs, one dispatch (`tasks.create`):
  *   - **From New Worktree** (default): the four inputs to provision a new worktree
  *     — **name**, **repo directory** (native OS picker via `dialog:pickDirectory`),
- *     **source branch**, **new branch**.
- *   - **From Existing Worktree**: **name** + an existing **worktree directory**
- *     Octopus adopts (git detects its owning repo + branch).
+ *     **source branch**, **new branch**. Octopus removes the worktree on delete.
+ *   - **From Existing Repo**: **name** + an existing **repository directory**
+ *     Octopus adopts (git detects its owning repo + branch). Deleting the task
+ *     leaves the directory on disk (the worktree is `managed: false`, §6.4).
+ *
+ * An info button (top-right) reveals a per-tab tooltip on hover/focus explaining
+ * what each mode does — in particular the differing delete behavior.
  *
  * Outcome is driven by the EVENT stream, not the command ack: `createTask`
  * catches a provisioning/adoption failure and emits `scriptError` while the ack
@@ -22,7 +26,15 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { taskNameToBranchSlug } from '../util/slug'
-import { overlayStyle, modalCardStyle, color, font, fontSize, radius } from '../style/tokens'
+import {
+  overlayStyle,
+  modalCardStyle,
+  color,
+  font,
+  fontSize,
+  radius,
+  shadow
+} from '../style/tokens'
 
 export interface NewTaskModalProps {
   /** Close the modal (success or user cancel). */
@@ -31,8 +43,26 @@ export interface NewTaskModalProps {
 
 type Tab = 'new' | 'existing'
 
+/**
+ * Per-tab explanation shown in the info tooltip. Each entry is a pair of
+ * paragraphs: the first states the delete behavior, the second explains HOW the
+ * worktree is created/removed (repo-local scripts vs. native git defaults, §6.4).
+ */
+const TAB_INFO: Record<Tab, readonly [string, string]> = {
+  new: [
+    'Octopus provisions a fresh git worktree for this task and removes it when the task is deleted.',
+    'If the repo has create_worktree.sh / delete_worktree.sh, Octopus runs those scripts. Otherwise it uses native git — git worktree add under ~/octopus_repos/ (configurable in Settings), and git worktree remove on delete.'
+  ],
+  existing: [
+    'Octopus uses an existing repository directory as-is (including a repo’s main checkout) — nothing is created.',
+    'Deleting the task closes its sessions but leaves the directory on disk. No delete script or git command runs.'
+  ]
+}
+
 export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element {
   const [tab, setTab] = useState<Tab>('new')
+  // Info tooltip visibility (hover or keyboard focus of the ⓘ button).
+  const [infoOpen, setInfoOpen] = useState(false)
   const [name, setName] = useState('')
   const [repoDir, setRepoDir] = useState('')
   const [sourceBranch, setSourceBranch] = useState('')
@@ -142,7 +172,56 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
         onKeyDown={onKeyDown}
         style={{ ...modalCardStyle, width: 420 }}
       >
-        <h2 style={{ margin: 0, fontSize: fontSize.title }}>New Task</h2>
+        <div
+          style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}
+        >
+          <h2 style={{ margin: 0, fontSize: fontSize.title }}>New Task</h2>
+          <div style={{ position: 'relative', display: 'flex' }}>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="about task sources"
+              aria-describedby={infoOpen ? 'new-task-info' : undefined}
+              onMouseEnter={() => setInfoOpen(true)}
+              onMouseLeave={() => setInfoOpen(false)}
+              onFocus={() => setInfoOpen(true)}
+              onBlur={() => setInfoOpen(false)}
+            >
+              ⓘ
+            </button>
+            {infoOpen ? (
+              <div
+                id="new-task-info"
+                role="tooltip"
+                style={{
+                  position: 'absolute',
+                  top: '100%',
+                  right: 0,
+                  zIndex: 20,
+                  marginTop: 4,
+                  padding: 8,
+                  width: 300,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 6,
+                  background: color.bgSurfaceRaised,
+                  color: color.textSecondary,
+                  border: `1px solid ${color.border}`,
+                  borderRadius: radius.md,
+                  boxShadow: shadow.md,
+                  fontSize: fontSize.sm,
+                  fontWeight: 'normal'
+                }}
+              >
+                {TAB_INFO[tab].map((paragraph) => (
+                  <p key={paragraph} style={{ margin: 0 }}>
+                    {paragraph}
+                  </p>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </div>
 
         <div role="tablist" aria-label="Task source" style={{ display: 'flex', gap: 6 }}>
           <button
@@ -163,7 +242,7 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
             disabled={busy}
             onClick={() => setTab('existing')}
           >
-            From Existing Worktree
+            From Existing Repo
           </button>
         </div>
 
@@ -263,12 +342,12 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
               fontSize: fontSize.sm
             }}
           >
-            <span>Worktree directory</span>
+            <span>Repository directory</span>
             <div style={{ display: 'flex', gap: 6 }}>
               <input
-                aria-label="worktree directory"
+                aria-label="existing repo directory"
                 value={worktreeDir}
-                placeholder="Choose an existing worktree…"
+                placeholder="Choose an existing repository…"
                 disabled={busy}
                 readOnly
                 onChange={(e) => setWorktreeDir(e.target.value)}
@@ -283,7 +362,7 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
 
         {busy ? (
           <p aria-live="polite" style={{ margin: 0, color: color.muted }}>
-            Provisioning worktree…
+            {tab === 'new' ? 'Provisioning worktree…' : 'Adding task…'}
             {progress ? (
               <span style={{ display: 'block', fontFamily: font.mono }}>{progress}</span>
             ) : null}

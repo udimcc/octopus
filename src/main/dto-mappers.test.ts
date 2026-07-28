@@ -21,6 +21,7 @@ const worktree: WorktreeRefSnapshot = {
   path: '/wt/t1',
   branch: 'feature/x',
   baseRef: 'main',
+  managed: true,
   provisionedBy: {
     script: '/scripts/create.sh',
     args: ['My Task', 'feature/x'],

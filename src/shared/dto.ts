@@ -28,6 +28,8 @@ export interface WorktreeRefDTO {
   readonly path: string
   readonly branch?: string
   readonly baseRef?: string
+  /** true = Octopus provisioned it (delete on removal); false = adopted, left on disk (§6.4). */
+  readonly managed: boolean
   readonly provisionedBy: ScriptInvocationMetaDTO
 }
 
@@ -163,9 +165,10 @@ export interface CreateTaskFromNewInput {
 }
 
 /**
- * Create a task by ADOPTING an existing worktree directory (New-Task modal,
- * "From Existing Worktree" tab). Octopus detects the worktree's owning repo and
- * branch via git instead of provisioning anything.
+ * Create a task by ADOPTING an existing repository directory (New-Task modal,
+ * "From Existing Repo" tab). Octopus detects the directory's owning repo and
+ * branch via git (the repo's main checkout is allowed) instead of provisioning
+ * anything, and marks the worktree `managed: false` so delete leaves it on disk.
  */
 export interface CreateTaskFromExistingInput {
   readonly mode: 'existing'

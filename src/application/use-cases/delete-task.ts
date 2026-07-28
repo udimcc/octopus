@@ -74,7 +74,9 @@ export async function deleteTask(
   // Step 4: remove the worktree (skipped on force-forget or if never Ready). Use
   // the task's OWN stored repo directory (`provisionedBy.repoRoot`), not a global
   // — different tasks target different repos, and this survives a restart (§6.4).
-  if (!forceForget && worktree) {
+  // An ADOPTED worktree (`managed === false`, "From Existing Repo") is left on disk:
+  // Octopus did not create it, so deleting the task must not remove the directory.
+  if (!forceForget && worktree && worktree.managed) {
     try {
       await deps.worktrees.remove({
         taskId: input.taskId,

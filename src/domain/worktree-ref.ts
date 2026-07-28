@@ -27,6 +27,12 @@ export interface WorktreeRefProps {
   branch?: string
   /** Base ref the worktree was created from, if known. */
   baseRef?: string
+  /**
+   * true = Octopus provisioned this worktree, so it is removed when the task is
+   * deleted; false = adopted from an existing repo/checkout ("From Existing Repo"
+   * tab), so deleting the task leaves the directory untouched on disk (§6.4).
+   */
+  managed: boolean
   provisionedBy: ScriptInvocationMeta
 }
 
@@ -34,12 +40,14 @@ export class WorktreeRef {
   readonly path: string
   readonly branch?: string
   readonly baseRef?: string
+  readonly managed: boolean
   readonly provisionedBy: ScriptInvocationMeta
 
   private constructor(props: WorktreeRefProps) {
     this.path = props.path
     this.branch = props.branch
     this.baseRef = props.baseRef
+    this.managed = props.managed
     // Freeze the invocation meta (incl. its args array) so the whole value
     // object is deeply immutable (I2).
     this.provisionedBy = Object.freeze({

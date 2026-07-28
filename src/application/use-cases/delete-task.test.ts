@@ -80,8 +80,8 @@ describe('deleteTask strict teardown order (I3, §6.6)', () => {
   })
 })
 
-describe('deleteTask on an adopted worktree (§6.4)', () => {
-  it('removes with repoDir = the owning repo (distinct from the worktree path)', async () => {
+describe('deleteTask on an adopted repo (§6.4)', () => {
+  it('leaves the directory on disk (managed:false) but still removes the task', async () => {
     const fd = makeDeps()
     fd.worktrees.adoptedPath = '/home/u/worktrees/wt-x'
     fd.worktrees.adoptedRepoRoot = '/home/u/project'
@@ -95,14 +95,13 @@ describe('deleteTask on an adopted worktree (§6.4)', () => {
     const result = await deleteTask(fd.deps, { taskId })
 
     expect(result).toEqual({ ok: true })
-    expect(fd.worktrees.removeCalls).toHaveLength(1)
-    // repoDir is the owning repo, path is the linked worktree — so
-    // assertSafeToDelete sees candidate !== repoRoot and permits the delete.
-    expect(fd.worktrees.removeCalls[0]).toMatchObject({
-      path: '/home/u/worktrees/wt-x',
-      repoDir: '/home/u/project'
-    })
+    // "From Existing Repo" tasks are `managed:false` — Octopus did not provision the
+    // directory, so it is NOT removed from disk (§6.4). No worktree script runs.
+    expect(fd.worktrees.removeCalls).toEqual([])
+    // The task record + workspace entry are still torn down and announced.
     expect(fd.workspace.task(taskId)).toBeUndefined()
+    expect(fd.persistence.deletedTasks).toEqual([taskId])
+    expect(fd.bus.ofType('taskDeleted').map((e) => e.taskId)).toEqual([taskId])
   })
 })
 

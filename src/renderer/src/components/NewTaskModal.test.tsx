@@ -117,33 +117,57 @@ describe('<NewTaskModal>', () => {
     expect(screen.getByLabelText('source branch')).toHaveAttribute('placeholder', 'master')
   })
 
-  it('the Existing tab shows only task name + worktree directory', () => {
+  it('reveals a per-tab info tooltip on hover, with distinct delete-behavior text', () => {
     render(<NewTaskModal onClose={vi.fn()} />)
-    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Worktree' }))
+    const info = screen.getByRole('button', { name: 'about task sources' })
+    // No tooltip until hovered.
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+
+    // New-Worktree tab: removed on delete, and it explains HOW it's provisioned
+    // (repo scripts vs. native git).
+    fireEvent.mouseEnter(info)
+    const newTip = screen.getByRole('tooltip')
+    expect(newTip).toHaveTextContent(/removes it when the task is deleted/)
+    expect(newTip).toHaveTextContent(/create_worktree\.sh/)
+    expect(newTip).toHaveTextContent(/git worktree add/)
+    fireEvent.mouseLeave(info)
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+
+    // Existing-Repo tab: the directory is left on disk and nothing runs on delete.
+    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Repo' }))
+    fireEvent.mouseEnter(info)
+    const existingTip = screen.getByRole('tooltip')
+    expect(existingTip).toHaveTextContent(/leaves the directory on disk/)
+    expect(existingTip).toHaveTextContent(/No delete script or git command runs/)
+  })
+
+  it('the Existing tab shows only task name + existing repo directory', () => {
+    render(<NewTaskModal onClose={vi.fn()} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Repo' }))
     expect(screen.getByLabelText('task name')).toBeInTheDocument()
-    expect(screen.getByLabelText('worktree directory')).toBeInTheDocument()
+    expect(screen.getByLabelText('existing repo directory')).toBeInTheDocument()
     // New-worktree-only fields are gone.
     expect(screen.queryByLabelText('repo directory')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('source branch')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('new branch')).not.toBeInTheDocument()
   })
 
-  it('gates Create on name + worktree dir in the Existing tab', () => {
+  it('gates Create on name + repo dir in the Existing tab', () => {
     render(<NewTaskModal onClose={vi.fn()} />)
-    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Worktree' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Repo' }))
     const create = screen.getByRole('button', { name: 'Create Task' })
     expect(create).toBeDisabled()
     fill('task name', 'Adopted')
-    expect(create).toBeDisabled() // worktree dir still empty
-    fill('worktree directory', '/home/u/wt-x')
+    expect(create).toBeDisabled() // repo dir still empty
+    fill('existing repo directory', '/home/u/wt-x')
     expect(create).toBeEnabled()
   })
 
-  it('dispatches create with the existing-worktree payload (mode: existing)', () => {
+  it('dispatches create with the existing-repo payload (mode: existing)', () => {
     render(<NewTaskModal onClose={vi.fn()} />)
-    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Worktree' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Repo' }))
     fill('task name', ' Adopted ')
-    fill('worktree directory', '/home/u/wt-x')
+    fill('existing repo directory', '/home/u/wt-x')
     fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
     expect(window.octopusAPI.tasks.create).toHaveBeenCalledWith({
       mode: 'existing',
@@ -155,9 +179,9 @@ describe('<NewTaskModal>', () => {
   it('the Existing tab closes on success (activeTaskChanged)', async () => {
     const onClose = vi.fn()
     render(<NewTaskModal onClose={onClose} />)
-    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Worktree' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Repo' }))
     fill('task name', 'Adopted')
-    fill('worktree directory', '/home/u/wt-x')
+    fill('existing repo directory', '/home/u/wt-x')
     fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
     await waitFor(() => expect(window.octopusAPI.tasks.create).toHaveBeenCalled())
 
@@ -168,9 +192,9 @@ describe('<NewTaskModal>', () => {
   it('the Existing tab shows the adopt stderr inline on scriptError', async () => {
     const onClose = vi.fn()
     render(<NewTaskModal onClose={onClose} />)
-    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Worktree' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Repo' }))
     fill('task name', 'Adopted')
-    fill('worktree directory', '/home/u/wt-x')
+    fill('existing repo directory', '/home/u/wt-x')
     fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
     await waitFor(() => expect(window.octopusAPI.tasks.create).toHaveBeenCalled())
 

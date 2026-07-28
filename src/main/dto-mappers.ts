@@ -43,6 +43,7 @@ export function toWorktreeRefDTO(w: WorktreeRefSnapshot): WorktreeRefDTO {
     path: w.path,
     branch: w.branch,
     baseRef: w.baseRef,
+    managed: w.managed,
     provisionedBy: {
       script: w.provisionedBy.script,
       args: [...w.provisionedBy.args],

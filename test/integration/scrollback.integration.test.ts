@@ -144,6 +144,7 @@ d('scrollback persist + replay across a simulated restart (integration, §6.6/§
           name: taskId,
           worktree: {
             path,
+            managed: true,
             provisionedBy: { script: 'git', args: [taskId], repoRoot: '/repo', provisionedAt: 1 }
           },
           lifecycle: TaskLifecycle.Ready,

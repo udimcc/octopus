@@ -72,6 +72,7 @@ function taskSnapshot(
     name: id,
     worktree: {
       path,
+      managed: true,
       provisionedBy: { script: 'git', args: [id], repoRoot: '/repo', provisionedAt: 1 }
     },
     lifecycle: TaskLifecycle.Ready,

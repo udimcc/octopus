@@ -1,8 +1,9 @@
 /**
  * The delete-task confirmation dialog (DESIGN §5.4, §6.6; PRD §Controls). Deleting
- * a task closes all its sessions and removes its worktree — irreversible — so it is
- * gated behind an explicit confirm, with the backend's dirty-worktree gate layered
- * on top:
+ * a task closes all its sessions and (for an Octopus-provisioned worktree) removes
+ * it — irreversible — so it is gated behind an explicit confirm, with the backend's
+ * dirty-worktree gate layered on top. An adopted repo (`managed: false`) is left on
+ * disk; the body text reflects which case applies:
  *
  *  1. Confirm → `tasks.delete({ taskId })`.
  *  2. If the ack returns `needsDirtyConfirm`, escalate to a second step —
@@ -53,10 +54,17 @@ export function DeleteTaskConfirm({ taskId, onClose }: DeleteTaskConfirmProps): 
     })
   }
 
+  // Adopted repos ("From Existing Repo", `managed: false`) are left on disk on
+  // delete; only Octopus-provisioned worktrees are removed. Absent worktree
+  // (Provisioning/Failed) defaults to the managed wording.
+  const managed = task.worktree?.managed !== false
+
   const title = dirtyStep ? 'Uncommitted changes' : `Delete "${task.name}"?`
   const body = dirtyStep
     ? 'This worktree has uncommitted changes. Delete it anyway? This cannot be undone.'
-    : 'This closes all of its sessions and removes its git worktree. This cannot be undone.'
+    : managed
+      ? 'This closes all of its sessions and removes its git worktree. This cannot be undone.'
+      : 'This closes all of its sessions. The repository directory is left on disk. This cannot be undone.'
 
   return (
     <div role="presentation" onClick={onClose} style={overlayStyle}>

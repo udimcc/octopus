@@ -173,13 +173,10 @@ export class NativeGitWorktreeProvider implements WorktreeProvider {
       throw new Error(`could not determine the repo root for: ${req.worktreeDir}`)
     }
 
-    // Refuse the repo's MAIN working tree: storing repoRoot === path would make
-    // the task undeletable (assertSafeToDelete refuses candidate === repoRoot).
-    if (canonPath(repoRoot) === canonPath(req.worktreeDir)) {
-      throw new Error(
-        'selected directory is the repository’s main working tree, not a linked worktree; create a new worktree instead'
-      )
-    }
+    // The repo's MAIN working tree is allowed here (repoRoot === path): an adopted
+    // task is `managed === false`, so `deleteTask` never calls `remove` and thus
+    // `assertSafeToDelete`'s candidate===repoRoot refusal is never reached — the
+    // directory is simply left on disk when the task is deleted (§6.4).
 
     // Detect the current branch; `HEAD` means detached → no branch.
     const head = await this.runner.run(

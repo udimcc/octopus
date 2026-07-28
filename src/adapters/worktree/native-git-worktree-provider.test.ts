@@ -259,14 +259,21 @@ describe('NativeGitWorktreeProvider.adopt (§6.4)', () => {
     await expect(provider(runner).adopt(adoptReq)).rejects.toThrow(/not a git worktree/)
   })
 
-  it('refuses the repository main working tree (would be undeletable)', async () => {
+  it('adopts the repository main working tree (repoRoot === path); left on disk on delete', async () => {
     const runner = new AdoptRunner()
-    // Picked dir IS the main worktree → first porcelain entry equals it.
+    // Picked dir IS the main worktree → the single porcelain entry equals it.
     runner.list = {
       ...runner.list,
       stdout: 'worktree /home/u/worktrees/wt-x\nHEAD abc\nbranch refs/heads/main\n'
     }
-    await expect(provider(runner).adopt(adoptReq)).rejects.toThrow(/main working tree/)
+    runner.revParse = { ...runner.revParse, stdout: 'main\n' }
+
+    // Previously refused (would be undeletable); now allowed — an adopted task is
+    // `managed:false`, so deleteTask never removes it from disk (§6.4).
+    const res = await provider(runner).adopt(adoptReq)
+    expect(res.repoRoot).toBe('/home/u/worktrees/wt-x')
+    expect(res.path).toBe('/home/u/worktrees/wt-x')
+    expect(res.branch).toBe('main')
   })
 
   it('rejects when the picked directory fails validation', async () => {

@@ -23,11 +23,13 @@
  * the nullable `base_ref` column (the worktree's source branch); 2 → 3 to add the
  * `session_scrollback` table (persisted terminal output, replayed on restart —
  * the realized §6.6 backend ring-buffer seam); 3 → 4 (V1.5, §6.3) to add the
- * `sessions.window_id` column and the `windows` table (multi-window placement).
+ * `sessions.window_id` column and the `windows` table (multi-window placement);
+ * 4 → 5 to add the `tasks.managed` column (Octopus-provisioned vs. adopted-repo
+ * worktree — the latter is left on disk when the task is deleted, §6.4).
  * `SqliteStore` runs the guarded migrations when an older DB opens (see
  * {@link MIGRATIONS}).
  */
-export const SCHEMA_VERSION = 4
+export const SCHEMA_VERSION = 5
 
 /**
  * Connection pragmas applied on every open. `foreign_keys` is per-connection
@@ -53,7 +55,8 @@ export const SCHEMA_STATEMENTS: readonly string[] = Object.freeze([
      repo_root TEXT,
      created_at INTEGER NOT NULL,
      position INTEGER NOT NULL,
-     active_session_id TEXT
+     active_session_id TEXT,
+     managed INTEGER NOT NULL DEFAULT 1
    )`,
   `CREATE TABLE IF NOT EXISTS sessions (
      id TEXT PRIMARY KEY,
@@ -117,7 +120,11 @@ export interface Migration {
  * applies every migration whose `toVersion` exceeds the DB's current
  * `user_version`, then stamps `user_version = SCHEMA_VERSION`. The v3 migration
  * uses `CREATE TABLE IF NOT EXISTS` (identical DDL to {@link SCHEMA_STATEMENTS}),
- * so it is safe to re-run and matches the fresh-DB bootstrap exactly.
+ * so it is safe to re-run and matches the fresh-DB bootstrap exactly. The v5
+ * migration adds `tasks.managed` (DEFAULT 1 so existing provisioned worktrees
+ * keep deleting) and back-fills `managed = 0` for adopted rows — reliably
+ * identified by `base_ref IS NULL`, since only a provisioned worktree records a
+ * source branch (§6.4).
  */
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { toVersion: 2, statements: Object.freeze(['ALTER TABLE tasks ADD COLUMN base_ref TEXT']) },
@@ -150,6 +157,17 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
        )`,
       `INSERT OR IGNORE INTO windows (id, role, x, y, width, height, created_at)
          VALUES ('main', 'main', 0, 0, 1280, 800, CAST(strftime('%s','now') AS INTEGER) * 1000)`
+    ])
+  },
+  // v5: distinguish Octopus-provisioned worktrees (deleted with the task) from
+  // adopted repos/checkouts (left on disk). The DEFAULT 1 migrates every existing
+  // row to "managed" with no UPDATE pass; the back-fill then marks pre-v5 adopted
+  // rows (no source branch → `base_ref IS NULL`) as unmanaged (§6.4).
+  {
+    toVersion: 5,
+    statements: Object.freeze([
+      'ALTER TABLE tasks ADD COLUMN managed INTEGER NOT NULL DEFAULT 1',
+      'UPDATE tasks SET managed = 0 WHERE base_ref IS NULL'
     ])
   }
 ])

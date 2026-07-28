@@ -231,6 +231,7 @@ export class Task {
             path: this._worktree.path,
             branch: this._worktree.branch,
             baseRef: this._worktree.baseRef,
+            managed: this._worktree.managed,
             provisionedBy: this._worktree.provisionedBy
           }
         : undefined,

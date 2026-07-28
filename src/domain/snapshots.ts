@@ -19,6 +19,8 @@ export interface WorktreeRefSnapshot {
   readonly path: string
   readonly branch?: string
   readonly baseRef?: string
+  /** true = Octopus provisioned it (delete on removal); false = adopted, left on disk (§6.4). */
+  readonly managed: boolean
   readonly provisionedBy: ScriptInvocationMeta
 }
 

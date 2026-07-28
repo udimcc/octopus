@@ -25,6 +25,8 @@ describe('createTask (§3.5, §6.4)', () => {
     // The source branch is recorded as the worktree's baseRef (§3.2, §6.4).
     expect(task.worktree?.branch).toBe('feature/x')
     expect(task.worktree?.baseRef).toBe('main')
+    // A provisioned worktree is Octopus-managed → removed on delete (§6.4).
+    expect(task.worktree?.managed).toBe(true)
 
     // The provider was invoked with the four create fields (name/repoDir/branches).
     expect(worktrees.createCalls).toHaveLength(1)
@@ -106,6 +108,8 @@ describe('createTask (§3.5, §6.4)', () => {
     expect(task.worktree?.branch).toBe('feature/adopted')
     // baseRef is unknown for an adopted worktree.
     expect(task.worktree?.baseRef).toBeUndefined()
+    // An adopted directory is NOT Octopus-managed → left on disk on delete (§6.4).
+    expect(task.worktree?.managed).toBe(false)
     // repoRoot MUST be the owning repo (not the worktree) so delete is safe (§6.4).
     expect(task.worktree?.provisionedBy.repoRoot).toBe('/home/u/project')
     expect(task.worktree?.provisionedBy.script).toBe('adopt')

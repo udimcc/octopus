@@ -103,6 +103,8 @@ async function provisionNew(
     path: result.path,
     branch: input.newBranch,
     baseRef: input.sourceBranch,
+    // Octopus provisioned this worktree, so it is removed when the task is deleted (§6.4).
+    managed: true,
     provisionedBy: {
       script: result.script,
       args: result.args,
@@ -132,6 +134,8 @@ async function adoptExisting(
     path: result.path,
     branch: result.branch,
     baseRef: undefined,
+    // Adopted from an existing repo/checkout: deleting the task leaves it on disk (§6.4).
+    managed: false,
     provisionedBy: {
       script: 'adopt',
       args: [],
