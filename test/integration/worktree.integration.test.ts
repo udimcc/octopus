@@ -72,7 +72,8 @@ d('worktree providers (integration, §6.4)', () => {
     settings = {
       worktree: { location: base },
       terminal: {},
-      defaultSessionTypeId: 'terminal'
+      defaultSessionTypeId: 'terminal',
+      groupTasksByRepo: true
     }
   })
 

@@ -74,6 +74,13 @@ export interface StoreActions {
   applyEvent(event: EventDTO): void
   setActiveTask(taskId: string): void
   setActiveSession(taskId: string, sessionId: string): void
+  /**
+   * Optimistically flip the group-by-repo view preference in place (§5.1). The
+   * caller persists it via `app.updateSettings`; unlike the SettingsModal we do
+   * NOT re-hydrate the whole workspace for a one-click view toggle (that would
+   * reset toasts), so this patches just the one settings field.
+   */
+  setGroupTasksByRepo(value: boolean): void
   pushToast(kind: ToastKind, message: string): void
   dismissToast(id: number): void
 }
@@ -84,6 +91,7 @@ const DEFAULT_SETTINGS: SettingsDTO = {
   worktree: { location: '' },
   terminal: {},
   defaultSessionTypeId: 'terminal',
+  groupTasksByRepo: true,
   sessionNextKey: 'Ctrl+Shift+ArrowRight',
   sessionPrevKey: 'Ctrl+Shift+ArrowLeft',
   taskNextKey: 'Ctrl+Shift+ArrowDown',
@@ -430,6 +438,9 @@ export const useStore = create<Store>((set) => ({
     set((data) => ({
       activeSessionByTask: { ...data.activeSessionByTask, [taskId]: sessionId }
     })),
+
+  setGroupTasksByRepo: (value) =>
+    set((data) => ({ settings: { ...data.settings, groupTasksByRepo: value } })),
 
   pushToast: (kind, message) => set((data) => pushToastData(data, kind, message)),
 

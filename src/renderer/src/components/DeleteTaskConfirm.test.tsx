@@ -31,7 +31,12 @@ function seed(t: TaskDTO): void {
     tasks: [t],
     activeTaskId: t.id,
     sessionTypes: [],
-    settings: { worktree: { location: '' }, terminal: {}, defaultSessionTypeId: 'terminal' },
+    settings: {
+      worktree: { location: '' },
+      terminal: {},
+      defaultSessionTypeId: 'terminal',
+      groupTasksByRepo: true
+    },
     version: 1,
     thisWindowId: 'main',
     thisWindowRole: 'main',

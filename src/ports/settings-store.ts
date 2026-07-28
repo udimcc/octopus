@@ -37,6 +37,8 @@ export interface Settings {
   readonly defaultSessionTypeId: string
   /** Worktree create timeout override (ms); default 30 000 — script AND git (§6.4). */
   readonly worktreeCreateTimeoutMs?: number
+  /** Group the task list by owning repo in the Progress panel (default true). */
+  readonly groupTasksByRepo: boolean
   /**
    * Chords for the user-configurable actions (§5.4): cycle to the NEXT / PREVIOUS
    * session, move to the NEXT / PREVIOUS task, create a new session, create a new
@@ -68,6 +70,7 @@ export interface SettingsPatch {
   readonly terminal?: Partial<TerminalSettings>
   readonly defaultSessionTypeId?: string
   readonly worktreeCreateTimeoutMs?: number
+  readonly groupTasksByRepo?: boolean
   readonly sessionNextKey?: string
   readonly sessionPrevKey?: string
   readonly taskNextKey?: string

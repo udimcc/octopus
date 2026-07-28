@@ -91,6 +91,7 @@ describe('snapshot → DTO mappers (§5.2)', () => {
       terminal: { shell: '/bin/zsh' },
       defaultSessionTypeId: 'terminal',
       worktreeCreateTimeoutMs: 45000,
+      groupTasksByRepo: false,
       sessionNextKey: 'ArrowUp',
       sessionPrevKey: 'ArrowDown',
       copyKey: 'Ctrl+Shift+KeyC',
@@ -101,6 +102,7 @@ describe('snapshot → DTO mappers (§5.2)', () => {
       terminal: { shell: '/bin/zsh' },
       defaultSessionTypeId: 'terminal',
       worktreeCreateTimeoutMs: 45000,
+      groupTasksByRepo: false,
       sessionNextKey: 'ArrowUp',
       sessionPrevKey: 'ArrowDown',
       copyKey: 'Ctrl+Shift+KeyC',
@@ -123,7 +125,8 @@ describe('snapshot → DTO mappers (§5.2)', () => {
       settings: {
         worktree: { location: '/home/u/octopus_repos' },
         terminal: {},
-        defaultSessionTypeId: 'terminal'
+        defaultSessionTypeId: 'terminal',
+        groupTasksByRepo: true
       },
       version: 1,
       windows: []

@@ -95,6 +95,8 @@ export interface SettingsDTO {
   }
   readonly defaultSessionTypeId: string
   readonly worktreeCreateTimeoutMs?: number
+  /** Group the task list by owning repo in the Progress panel (default true). */
+  readonly groupTasksByRepo: boolean
   /**
    * Configurable chords, each bound independently (§5.4): cycle to the next /
    * previous session, move to the next / previous task, create a new session,
@@ -123,6 +125,7 @@ export interface SettingsPatchDTO {
   }
   readonly defaultSessionTypeId?: string
   readonly worktreeCreateTimeoutMs?: number
+  readonly groupTasksByRepo?: boolean
   readonly sessionNextKey?: string
   readonly sessionPrevKey?: string
   readonly taskNextKey?: string

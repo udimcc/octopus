@@ -95,7 +95,8 @@ d('CommandLoop over the real PTY stack (integration, §6.6/§6.1)', () => {
       settings: new FakeSettingsStore({
         worktree: { location: '/octopus_repos' },
         terminal: { shell: '/bin/bash' },
-        defaultSessionTypeId: 'terminal'
+        defaultSessionTypeId: 'terminal',
+        groupTasksByRepo: true
       }),
       worktrees,
       sessions: new PtySessionManager({ getSettings: () => deps.settings.load(), graceMs: 500 }),
@@ -119,7 +120,11 @@ d('CommandLoop over the real PTY stack (integration, §6.6/§6.1)', () => {
     return { loop, bus, deps, ptyData: () => buf }
   }
 
-  async function waitFor(get: () => string, pred: (s: string) => boolean, ms = 4000): Promise<string> {
+  async function waitFor(
+    get: () => string,
+    pred: (s: string) => boolean,
+    ms = 4000
+  ): Promise<string> {
     const start = Date.now()
     while (Date.now() - start < ms) {
       if (pred(get())) return get()

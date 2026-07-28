@@ -18,7 +18,11 @@ import { createRequire } from 'node:module'
 import { mkdtempSync, rmSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { SessionManager, SessionRuntime, SessionRuntimeContext } from '../../src/ports/session-runtime'
+import type {
+  SessionManager,
+  SessionRuntime,
+  SessionRuntimeContext
+} from '../../src/ports/session-runtime'
 import type { Settings } from '../../src/ports/settings-store'
 import { PtySessionManager } from '../../src/adapters/session/pty-session-manager'
 import { asTaskId, asSessionId } from '../../src/domain/ids'
@@ -41,7 +45,8 @@ const d = ptyOk ? describe : describe.skip
 const SETTINGS: Settings = {
   worktree: { location: '/octopus_repos' },
   terminal: { shell: '/bin/bash' },
-  defaultSessionTypeId: 'terminal'
+  defaultSessionTypeId: 'terminal',
+  groupTasksByRepo: true
 }
 
 d('PtySessionManager (integration, §6.1)', () => {

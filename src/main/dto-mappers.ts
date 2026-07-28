@@ -101,6 +101,7 @@ export function toSettingsDTO(s: Settings): SettingsDTO {
     terminal: { shell: s.terminal.shell },
     defaultSessionTypeId: s.defaultSessionTypeId,
     worktreeCreateTimeoutMs: s.worktreeCreateTimeoutMs,
+    groupTasksByRepo: s.groupTasksByRepo,
     sessionNextKey: s.sessionNextKey,
     sessionPrevKey: s.sessionPrevKey,
     taskNextKey: s.taskNextKey,

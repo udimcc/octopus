@@ -18,13 +18,27 @@ function task(id: string, over: Partial<TaskDTO> = {}): TaskDTO {
   }
 }
 
+/** A worktree DTO stub whose only load-bearing field is the repo root. */
+function worktree(repoRoot: string): TaskDTO['worktree'] {
+  return {
+    path: `${repoRoot}/wt`,
+    managed: true,
+    provisionedBy: { script: '', args: [], repoRoot, provisionedAt: 0 }
+  }
+}
+
 /** Seed the store as if hydrated with the given tasks + active id. */
-function seed(tasks: TaskDTO[], activeTaskId?: string): void {
+function seed(tasks: TaskDTO[], activeTaskId?: string, groupTasksByRepo = false): void {
   useStore.getState().hydrate({
     tasks,
     activeTaskId,
     sessionTypes: [],
-    settings: { worktree: { location: '' }, terminal: {}, defaultSessionTypeId: 'terminal' },
+    settings: {
+      worktree: { location: '' },
+      terminal: {},
+      defaultSessionTypeId: 'terminal',
+      groupTasksByRepo
+    },
     version: 1,
     thisWindowId: 'main',
     thisWindowRole: 'main',
@@ -109,5 +123,44 @@ describe('<ProgressPanel>', () => {
     render(<ProgressPanel onNewTask={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: 'settings' }))
     expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument()
+  })
+
+  it('renders a repo header per group when grouping is on', () => {
+    seed(
+      [
+        task('t1', { name: 'Alpha', position: 0, worktree: worktree('/r/Trading') }),
+        task('t2', { name: 'Beta', position: 1, worktree: worktree('/r/AnotherRepo') }),
+        task('t3', { name: 'Gamma', position: 2, worktree: worktree('/r/Trading') })
+      ],
+      undefined,
+      true
+    )
+    render(<ProgressPanel onNewTask={vi.fn()} />)
+    // Repo basenames appear as (uppercased-by-CSS) headers, plus all task rows.
+    expect(screen.getByText('Trading')).toBeInTheDocument()
+    expect(screen.getByText('AnotherRepo')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Alpha' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Gamma' })).toBeInTheDocument()
+  })
+
+  it('does not render repo headers in the flat view', () => {
+    seed([task('t1', { name: 'Alpha', worktree: worktree('/r/Trading') })], undefined, false)
+    render(<ProgressPanel onNewTask={vi.fn()} />)
+    expect(screen.queryByText('Trading')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Alpha' })).toBeInTheDocument()
+  })
+
+  it('toggles the grouped/flat view, flipping the store and persisting', () => {
+    seed([task('t1', { name: 'Alpha', worktree: worktree('/r/Trading') })], undefined, true)
+    render(<ProgressPanel onNewTask={vi.fn()} />)
+    const toggle = screen.getByRole('button', { name: 'group tasks by repo' })
+    // Starts grouped: the header shows.
+    expect(screen.getByText('Trading')).toBeInTheDocument()
+
+    fireEvent.click(toggle)
+    // Now flat: store flipped and the change was persisted (fire-and-forget).
+    expect(useStore.getState().settings.groupTasksByRepo).toBe(false)
+    expect(window.octopusAPI.app.updateSettings).toHaveBeenCalledWith({ groupTasksByRepo: false })
+    expect(screen.queryByText('Trading')).not.toBeInTheDocument()
   })
 })

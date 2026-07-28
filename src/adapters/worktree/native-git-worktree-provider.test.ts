@@ -41,7 +41,8 @@ const SETTINGS: Settings = {
   worktree: { location: '/base' },
   terminal: {},
   defaultSessionTypeId: 'terminal',
-  worktreeCreateTimeoutMs: 9999
+  worktreeCreateTimeoutMs: 9999,
+  groupTasksByRepo: true
 }
 
 const BASE = '/base'

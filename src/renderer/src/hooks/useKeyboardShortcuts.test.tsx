@@ -48,6 +48,7 @@ function seed(tasks: TaskDTO[], activeTaskId?: string): void {
       worktree: { location: '' },
       terminal: {},
       defaultSessionTypeId: 'terminal',
+      groupTasksByRepo: true,
       sessionNextKey: 'Ctrl+Shift+ArrowRight',
       sessionPrevKey: 'Ctrl+Shift+ArrowLeft',
       taskNextKey: 'Ctrl+Shift+ArrowDown',

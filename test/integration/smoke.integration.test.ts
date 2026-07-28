@@ -103,7 +103,8 @@ d('V1 E2E smoke: create → run → switch (keep-alive) → delete (§11)', () =
       settings: new FakeSettingsStore({
         worktree: { location: '/octopus_repos' },
         terminal: { shell: '/bin/bash' },
-        defaultSessionTypeId: 'terminal'
+        defaultSessionTypeId: 'terminal',
+        groupTasksByRepo: true
       }),
       worktrees,
       sessions: new PtySessionManager({ getSettings: () => deps.settings.load(), graceMs: 500 }),

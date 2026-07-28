@@ -20,13 +20,16 @@ export interface TaskListItemProps {
   readonly active: boolean
   readonly onActivate: () => void
   readonly onRename: (name: string) => void
+  /** Indent the row under a repo header in the grouped view (§5.1). */
+  readonly indent?: boolean
 }
 
 export function TaskListItem({
   task,
   active,
   onActivate,
-  onRename
+  onRename,
+  indent = false
 }: TaskListItemProps): React.JSX.Element {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: task.id
@@ -40,7 +43,7 @@ export function TaskListItem({
     alignItems: 'center',
     width: '100%',
     textAlign: 'left',
-    padding: '7px 12px',
+    padding: indent ? '7px 12px 7px 24px' : '7px 12px',
     background: active ? color.bgSelected : 'transparent',
     color: active ? color.text : color.textSecondary,
     boxShadow: active ? `inset 2px 0 0 ${color.accent}` : 'none',

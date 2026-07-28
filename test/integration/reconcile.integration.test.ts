@@ -141,7 +141,8 @@ d('reconcileOnStartup over real dirs + the real PTY stack (integration, §6.3/I1
       settings: new FakeSettingsStore({
         worktree: { location: '/octopus_repos' },
         terminal: { shell: '/bin/bash' },
-        defaultSessionTypeId: 'terminal'
+        defaultSessionTypeId: 'terminal',
+        groupTasksByRepo: true
       }),
       worktrees: new FakeWorktreeProvider(),
       sessions: new PtySessionManager({ getSettings: () => deps.settings.load(), graceMs: 500 }),

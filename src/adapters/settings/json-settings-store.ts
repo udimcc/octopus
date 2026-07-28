@@ -21,6 +21,7 @@ export const DEFAULT_SETTINGS: Settings = Object.freeze({
   worktree: Object.freeze({ location: '' }),
   terminal: Object.freeze({}),
   defaultSessionTypeId: 'terminal',
+  groupTasksByRepo: true,
   sessionNextKey: 'Ctrl+Shift+ArrowRight',
   sessionPrevKey: 'Ctrl+Shift+ArrowLeft',
   taskNextKey: 'Ctrl+Shift+ArrowDown',
@@ -76,6 +77,7 @@ export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
       patch.worktreeCreateTimeoutMs,
       base.worktreeCreateTimeoutMs
     ),
+    groupTasksByRepo: pickBoolean(patch.groupTasksByRepo, base.groupTasksByRepo),
     sessionNextKey: pickString(patch.sessionNextKey, base.sessionNextKey),
     sessionPrevKey: pickString(patch.sessionPrevKey, base.sessionPrevKey),
     taskNextKey: pickString(patch.taskNextKey, base.taskNextKey),
@@ -97,6 +99,10 @@ function pickString(value: unknown, fallback: string | undefined): string | unde
 
 function pickNumber(value: unknown, fallback: number | undefined): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+function pickBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback
 }
 
 /** Only the two known backends survive; anything else falls back (tolerant parse). */

@@ -100,6 +100,7 @@ export interface SettingsPatch {
   }
   readonly defaultSessionTypeId?: string
   readonly worktreeCreateTimeoutMs?: number
+  readonly groupTasksByRepo?: boolean
 }
 
 /** A session's runtime died spontaneously (§6.1). Routed back through the loop. */

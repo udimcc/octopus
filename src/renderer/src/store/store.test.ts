@@ -346,7 +346,8 @@ describe('useStore hydrate + actions', () => {
     settings: {
       worktree: { location: '/home/u/octopus_repos' },
       terminal: {},
-      defaultSessionTypeId: 'terminal'
+      defaultSessionTypeId: 'terminal',
+      groupTasksByRepo: true
     },
     version: 1,
     thisWindowId: 'main',

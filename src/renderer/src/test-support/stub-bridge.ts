@@ -26,7 +26,8 @@ const EMPTY_STATE: WindowedWorkspaceStateDTO = {
   settings: {
     worktree: { location: '' },
     terminal: {},
-    defaultSessionTypeId: 'terminal'
+    defaultSessionTypeId: 'terminal',
+    groupTasksByRepo: true
   },
   version: 1,
   // V1.5: each renderer is stamped with its window identity + the window list.

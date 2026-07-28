@@ -48,16 +48,18 @@ describe('parseSettings (§6.3)', () => {
   })
 
   it('reads terminal.backend and tolerates an invalid value (§6.2)', () => {
-    expect(parseSettings(JSON.stringify({ terminal: { backend: 'daemon' } })).terminal.backend).toBe(
-      'daemon'
-    )
+    expect(
+      parseSettings(JSON.stringify({ terminal: { backend: 'daemon' } })).terminal.backend
+    ).toBe('daemon')
     expect(
       parseSettings(JSON.stringify({ terminal: { backend: 'in-process' } })).terminal.backend
     ).toBe('in-process')
     // Unknown backend → undefined (tolerant parse), so the composition root's
     // default (daemon) applies — only an explicit 'in-process' opts out. Absent by
     // default (no key in DEFAULT_SETTINGS).
-    expect(parseSettings(JSON.stringify({ terminal: { backend: 'bogus' } })).terminal.backend).toBeUndefined()
+    expect(
+      parseSettings(JSON.stringify({ terminal: { backend: 'bogus' } })).terminal.backend
+    ).toBeUndefined()
     expect(parseSettings('{}').terminal.backend).toBeUndefined()
   })
 
@@ -123,6 +125,20 @@ describe('mergeSettings (deep-merge, §6.4)', () => {
     })
     expect(merged.defaultSessionTypeId).toBe('terminal')
     expect(merged.worktreeCreateTimeoutMs).toBeUndefined()
+  })
+
+  it('groupTasksByRepo defaults to true and toggles to false through a patch', () => {
+    expect(DEFAULT_SETTINGS.groupTasksByRepo).toBe(true)
+    // A `false` patch must survive (a naive `patch.x || base.x` would drop it).
+    expect(mergeSettings(DEFAULT_SETTINGS, { groupTasksByRepo: false }).groupTasksByRepo).toBe(
+      false
+    )
+    // Non-boolean values fall back to the base.
+    expect(
+      mergeSettings(DEFAULT_SETTINGS, {
+        groupTasksByRepo: 'yes' as unknown as boolean
+      }).groupTasksByRepo
+    ).toBe(true)
   })
 })
 

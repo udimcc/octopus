@@ -12,8 +12,9 @@ import type { SessionDTO, TaskDTO, WindowedWorkspaceStateDTO } from '../../../sh
  * per-window `windowId` filter — not the terminal internals.
  */
 vi.mock('../session-views/session-view-factory', () => ({
-  resolveSessionView: () => (props: { sessionId: string }) =>
+  resolveSessionView: () => (props: { sessionId: string }) => (
     <div data-testid={`pane-${props.sessionId}`} />
+  )
 }))
 
 function session(id: string, over: Partial<SessionDTO> = {}): SessionDTO {
@@ -48,9 +49,20 @@ function seed(sessions: SessionDTO[], thisWindowId: string): void {
     tasks: [t],
     activeTaskId: 't1',
     sessionTypes: [
-      { typeId: 'terminal', displayName: 'Terminal', icon: '', availableFromVersion: 1, configSchema: {} }
+      {
+        typeId: 'terminal',
+        displayName: 'Terminal',
+        icon: '',
+        availableFromVersion: 1,
+        configSchema: {}
+      }
     ],
-    settings: { worktree: { location: '' }, terminal: {}, defaultSessionTypeId: 'terminal' },
+    settings: {
+      worktree: { location: '' },
+      terminal: {},
+      defaultSessionTypeId: 'terminal',
+      groupTasksByRepo: true
+    },
     version: 1,
     thisWindowId,
     thisWindowRole: 'secondary',

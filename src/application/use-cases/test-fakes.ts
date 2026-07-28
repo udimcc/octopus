@@ -255,7 +255,8 @@ export class FakePersistence implements WorkspacePersistence {
 const DEFAULT_SETTINGS: Settings = {
   worktree: { location: '/octopus_repos' },
   terminal: {},
-  defaultSessionTypeId: 'terminal'
+  defaultSessionTypeId: 'terminal',
+  groupTasksByRepo: true
 }
 
 /** Fake settings store with a deep-merging `save`. */
@@ -273,7 +274,9 @@ export class FakeSettingsStore implements SettingsStore {
       worktree: { ...this.current.worktree, ...patch.worktree },
       terminal: { ...this.current.terminal, ...patch.terminal },
       defaultSessionTypeId: patch.defaultSessionTypeId ?? this.current.defaultSessionTypeId,
-      worktreeCreateTimeoutMs: patch.worktreeCreateTimeoutMs ?? this.current.worktreeCreateTimeoutMs
+      worktreeCreateTimeoutMs:
+        patch.worktreeCreateTimeoutMs ?? this.current.worktreeCreateTimeoutMs,
+      groupTasksByRepo: patch.groupTasksByRepo ?? this.current.groupTasksByRepo
     }
     return this.current
   }

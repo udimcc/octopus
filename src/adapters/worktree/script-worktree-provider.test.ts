@@ -48,7 +48,8 @@ const SETTINGS: Settings = {
   worktree: { location: '/octopus_repos' },
   terminal: {},
   defaultSessionTypeId: 'terminal',
-  worktreeCreateTimeoutMs: 12345
+  worktreeCreateTimeoutMs: 12345,
+  groupTasksByRepo: true
 }
 
 function provider(

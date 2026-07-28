@@ -13,6 +13,7 @@ const seededState: WindowedWorkspaceStateDTO = {
     worktree: { location: '/repos' },
     terminal: { shell: '/bin/bash' },
     defaultSessionTypeId: 'terminal',
+    groupTasksByRepo: true,
     sessionNextKey: 'Ctrl+Shift+ArrowRight',
     sessionPrevKey: 'Ctrl+Shift+ArrowLeft',
     taskNextKey: 'Ctrl+Shift+ArrowDown',

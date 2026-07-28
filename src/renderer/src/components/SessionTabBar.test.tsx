@@ -49,7 +49,12 @@ function seed(opts: {
     tasks: [t],
     activeTaskId: 't1',
     sessionTypes: opts.sessionTypes ?? [TERMINAL_TYPE],
-    settings: { worktree: { location: '' }, terminal: {}, defaultSessionTypeId: 'terminal' },
+    settings: {
+      worktree: { location: '' },
+      terminal: {},
+      defaultSessionTypeId: 'terminal',
+      groupTasksByRepo: true
+    },
     version: 1,
     thisWindowId: 'main',
     thisWindowRole: 'main',

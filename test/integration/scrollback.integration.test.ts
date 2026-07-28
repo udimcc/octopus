@@ -112,7 +112,8 @@ d('scrollback persist + replay across a simulated restart (integration, §6.6/§
       settings: new FakeSettingsStore({
         worktree: { location: '/octopus_repos' },
         terminal: { shell: '/bin/bash' },
-        defaultSessionTypeId: 'terminal'
+        defaultSessionTypeId: 'terminal',
+        groupTasksByRepo: true
       }),
       worktrees: new FakeWorktreeProvider(),
       sessions: new PtySessionManager({ getSettings: () => deps.settings.load(), graceMs: 500 }),
