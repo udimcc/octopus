@@ -96,6 +96,11 @@ const octopusAPI: OctopusAPI = {
       ipcRenderer.invoke(CHANNELS.dialogPickDirectory)
   },
 
+  clipboard: {
+    read: (): Promise<string> => ipcRenderer.invoke(CHANNELS.clipboardRead),
+    write: (text: string): Promise<void> => ipcRenderer.invoke(CHANNELS.clipboardWrite, text)
+  },
+
   onEvent: (handler: (event: EventDTO) => void): (() => void) => {
     const listener = (_e: IpcRendererEvent, event: EventDTO): void => handler(event)
     ipcRenderer.on(CHANNELS.event, listener)

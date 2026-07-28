@@ -95,6 +95,14 @@ export const CHANNELS = {
    */
   appGetWindowId: 'app:getWindowId',
 
+  /**
+   * Clipboard read/write (request/reply) for terminal copy/paste (§5.4). Stateless
+   * main-side QUERIES over Electron's `clipboard` module — like `dialogPickDirectory`,
+   * they do NOT go through the command loop (§6.5).
+   */
+  clipboardRead: 'clipboard:read',
+  clipboardWrite: 'clipboard:write',
+
   /** Streaming events (backend → UI, webContents.send). Carries a discriminated EventDTO. */
   event: 'app:event'
 } as const
@@ -185,6 +193,14 @@ export interface OctopusAPI {
      * chosen absolute directory path, or `undefined` if the user cancelled.
      */
     pickDirectory(): Promise<string | undefined>
+  }
+
+  /** OS clipboard access for terminal copy/paste (§5.4). */
+  clipboard: {
+    /** The clipboard's current plain text (empty string if none). */
+    read(): Promise<string>
+    /** Replace the clipboard's plain text. */
+    write(text: string): Promise<void>
   }
 
   /** Subscribe to the backend event stream; returns an unsubscribe fn (§5.2). */

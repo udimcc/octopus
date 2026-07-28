@@ -92,7 +92,9 @@ describe('snapshot → DTO mappers (§5.2)', () => {
       defaultSessionTypeId: 'terminal',
       worktreeCreateTimeoutMs: 45000,
       sessionNextKey: 'ArrowUp',
-      sessionPrevKey: 'ArrowDown'
+      sessionPrevKey: 'ArrowDown',
+      copyKey: 'Ctrl+Shift+KeyC',
+      pasteKey: 'Ctrl+Shift+KeyV'
     }
     expect(toSettingsDTO(settings)).toEqual({
       worktree: { location: '/home/u/octopus_repos' },
@@ -100,7 +102,9 @@ describe('snapshot → DTO mappers (§5.2)', () => {
       defaultSessionTypeId: 'terminal',
       worktreeCreateTimeoutMs: 45000,
       sessionNextKey: 'ArrowUp',
-      sessionPrevKey: 'ArrowDown'
+      sessionPrevKey: 'ArrowDown',
+      copyKey: 'Ctrl+Shift+KeyC',
+      pasteKey: 'Ctrl+Shift+KeyV'
     })
   })
 

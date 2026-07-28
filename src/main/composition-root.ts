@@ -50,6 +50,7 @@ import { InMemorySessionTypeRegistry } from '../adapters/session-types/session-t
 import { TerminalSessionTypeProvider } from '../adapters/session-types/terminal-session-type-provider'
 import { existsDir } from '../adapters/fs/dir-exists'
 import { existsFile } from '../adapters/fs/file-exists'
+import { ElectronClipboard } from '../adapters/clipboard/electron-clipboard'
 import { createAjvConfigValidator } from '../application/config-validator'
 import { MapRuntimeRegistry, type AppDependencies } from '../application/dependencies'
 import { CommandLoop } from '../application/command-loop'
@@ -262,7 +263,8 @@ export function bootstrap(): AppContext {
   // flush exactly when its renderer can receive them (§6.7, generalizes §6.5).
   registerIpcHandlers(commandLoop, deps, {
     windowIds,
-    onHydrate: (windowId) => windowRegistry.markReady(windowId)
+    onHydrate: (windowId) => windowRegistry.markReady(windowId),
+    clipboard: new ElectronClipboard()
   })
 
   // Async daemon warmup (§6.2). Selects the durable backend when the setting asks

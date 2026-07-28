@@ -178,6 +178,8 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
   const searchInputRef = useRef<HTMLInputElement>(null)
+  // Right-click copy/paste menu: viewport-space anchor while open, null when closed.
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
 
   // Create + mount the terminal exactly once. No deps → never re-runs (§5.3).
   useEffect(() => {
@@ -212,8 +214,9 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
     // `useKeyboardShortcuts` so the layers agree.
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true
-      if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) return false
       const {
+        copyKey,
+        pasteKey,
         sessionNextKey,
         sessionPrevKey,
         taskNextKey,
@@ -223,6 +226,25 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
         closeSessionKey,
         searchKey
       } = useStore.getState().settings
+      // Copy/paste act on THIS terminal's selection/buffer, so they're handled here
+      // (with the live `term`) rather than in the global shortcut hook. Checked before
+      // the blanket Ctrl+Shift drop so a rebind to any other modifier still works.
+      // `preventDefault()` is REQUIRED: returning false only tells xterm to skip the
+      // key, it does NOT cancel the browser default — without it Ctrl+Shift+V's native
+      // `paste` event still fires and xterm's textarea handler pastes a SECOND time
+      // (the extra copy arriving bracketed/highlighted). Same guard for copy.
+      if (matchesChord(e, copyKey)) {
+        e.preventDefault()
+        const sel = term.getSelection()
+        if (sel) void window.octopusAPI.clipboard.write(sel)
+        return false
+      }
+      if (matchesChord(e, pasteKey)) {
+        e.preventDefault()
+        void window.octopusAPI.clipboard.read().then((text) => term.paste(text))
+        return false
+      }
+      if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) return false
       const configurable = [
         sessionNextKey,
         sessionPrevKey,
@@ -256,6 +278,16 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
     // Keystrokes → backend PTY (fire-and-forget, §6.5).
     const dataSub = term.onData((data) => window.octopusAPI.pty.write({ sessionId, data }))
 
+    // Right-click → copy/paste menu (§5.4). Suppressed when the app under the cursor
+    // reads the mouse (tmux/vim with mouse on): there right-click belongs to that
+    // program, so we let xterm forward it instead of stealing it for our menu.
+    const onContextMenu = (e: MouseEvent): void => {
+      if (term.modes.mouseTrackingMode !== 'none') return
+      e.preventDefault()
+      setMenu({ x: e.clientX, y: e.clientY })
+    }
+    host.addEventListener('contextmenu', onContextMenu)
+
     fitAndResize(sessionId, term, fit, host)
 
     // Refit on container resize, debounced so a drag doesn't spam pty:resize.
@@ -272,6 +304,7 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
     return () => {
       if (debounce) clearTimeout(debounce)
       observer?.disconnect()
+      host.removeEventListener('contextmenu', onContextMenu)
       dataSub.dispose()
       unregisterTerminalSink(sessionId)
       unregisterSearchOpener(sessionId)
@@ -357,6 +390,36 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
     else search.findNext(query)
   }
 
+  // Dismiss the right-click menu on an outside click or Escape. Only mounted while
+  // the menu is open, so it costs nothing when closed. `mousedown` (not `click`) so
+  // the menu closes before a fresh contextmenu elsewhere reopens it.
+  useEffect(() => {
+    if (!menu) return
+    const close = (): void => setMenu(null)
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setMenu(null)
+    }
+    window.addEventListener('mousedown', close)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', close)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [menu])
+
+  // Copy the current selection (no-op if empty); paste the clipboard into the PTY.
+  // Both close the menu. Read via the port (Electron clipboard), not navigator (§5.5).
+  const copySelection = (): void => {
+    const sel = termRef.current?.getSelection()
+    if (sel) void window.octopusAPI.clipboard.write(sel)
+    setMenu(null)
+  }
+  const pasteClipboard = (): void => {
+    const term = termRef.current
+    if (term) void window.octopusAPI.clipboard.read().then((text) => term.paste(text))
+    setMenu(null)
+  }
+
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       {searchOpen ? (
@@ -414,6 +477,49 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
         </div>
       ) : null}
       <div ref={hostRef} className="terminal-pane" style={{ width: '100%', height: '100%' }} />
+      {menu ? (
+        <div
+          role="menu"
+          aria-label="terminal actions"
+          // Stop mousedown here so the window-level dismiss listener doesn't close the
+          // menu before a button's click lands.
+          onMouseDown={(e) => e.stopPropagation()}
+          style={{
+            position: 'fixed',
+            top: menu.y,
+            left: menu.x,
+            zIndex: 20,
+            display: 'flex',
+            flexDirection: 'column',
+            minWidth: 120,
+            padding: 4,
+            background: color.bgSurfaceRaised,
+            border: `1px solid ${color.border}`,
+            borderRadius: radius.md,
+            boxShadow: shadow.md
+          }}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            disabled={!termRef.current?.getSelection()}
+            onClick={copySelection}
+            style={{ width: '100%', textAlign: 'left', padding: '6px 8px', cursor: 'pointer' }}
+          >
+            Copy
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            onClick={pasteClipboard}
+            style={{ width: '100%', textAlign: 'left', padding: '6px 8px', cursor: 'pointer' }}
+          >
+            Paste
+          </button>
+        </div>
+      ) : null}
     </div>
   )
 }

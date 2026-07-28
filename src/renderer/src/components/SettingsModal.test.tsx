@@ -20,7 +20,9 @@ const seededState: WindowedWorkspaceStateDTO = {
     newSessionKey: 'Ctrl+Shift+KeyN',
     newTaskKey: 'Ctrl+Shift+KeyT',
     closeSessionKey: 'Ctrl+Shift+KeyW',
-    searchKey: 'Ctrl+Shift+KeyF'
+    searchKey: 'Ctrl+Shift+KeyF',
+    copyKey: 'Ctrl+Shift+KeyC',
+    pasteKey: 'Ctrl+Shift+KeyV'
   },
   version: 1,
   thisWindowId: 'main',
@@ -82,6 +84,8 @@ describe('<SettingsModal>', () => {
     expect(screen.getByLabelText('new task shortcut')).toHaveTextContent('Ctrl+Shift+T')
     expect(screen.getByLabelText('close session shortcut')).toHaveTextContent('Ctrl+Shift+W')
     expect(screen.getByLabelText('terminal search shortcut')).toHaveTextContent('Ctrl+Shift+F')
+    expect(screen.getByLabelText('copy shortcut')).toHaveTextContent('Ctrl+Shift+C')
+    expect(screen.getByLabelText('paste shortcut')).toHaveTextContent('Ctrl+Shift+V')
   })
 
   it('saves a patch and refetches state, then closes', async () => {
@@ -105,7 +109,9 @@ describe('<SettingsModal>', () => {
       newSessionKey: 'Ctrl+Shift+KeyN',
       newTaskKey: 'Ctrl+Shift+KeyT',
       closeSessionKey: 'Ctrl+Shift+KeyW',
-      searchKey: 'Ctrl+Shift+KeyF'
+      searchKey: 'Ctrl+Shift+KeyF',
+      copyKey: 'Ctrl+Shift+KeyC',
+      pasteKey: 'Ctrl+Shift+KeyV'
     })
     // updateSettings emits nothing → the modal must refetch getState to reflect it.
     await waitFor(() => expect(bridge.api.app.getState).toHaveBeenCalled())
@@ -127,7 +133,9 @@ describe('<SettingsModal>', () => {
       newSessionKey: 'Ctrl+Shift+KeyN',
       newTaskKey: 'Ctrl+Shift+KeyT',
       closeSessionKey: 'Ctrl+Shift+KeyW',
-      searchKey: 'Ctrl+Shift+KeyF'
+      searchKey: 'Ctrl+Shift+KeyF',
+      copyKey: 'Ctrl+Shift+KeyC',
+      pasteKey: 'Ctrl+Shift+KeyV'
     })
   })
 
@@ -251,6 +259,20 @@ describe('<SettingsModal>', () => {
     expect(alerts.some((a) => a.textContent?.includes('Already used by Previous session'))).toBe(
       true
     )
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
+
+  it('blocks saving when copy is bound to the paste chord', () => {
+    installStubBridge({ state: seededState })
+    render(<SettingsModal onClose={vi.fn()} />)
+    openKeyBindings()
+    const copyBtn = screen.getByLabelText('copy shortcut')
+    fireEvent.click(copyBtn)
+    // Bind copy to the (default) paste chord → cross-action collision.
+    fireEvent.keyDown(copyBtn, { code: 'KeyV', ctrlKey: true, shiftKey: true })
+    const alerts = screen.getAllByRole('alert')
+    expect(alerts.some((a) => a.textContent?.includes('Already used by Paste'))).toBe(true)
+    expect(alerts.some((a) => a.textContent?.includes('Already used by Copy'))).toBe(true)
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
   })
 

@@ -47,7 +47,8 @@ export interface Settings {
    * session next/prev 'Ctrl+Shift+ArrowRight' / 'Ctrl+Shift+ArrowLeft';
    * task next/prev 'Ctrl+Shift+ArrowDown' / 'Ctrl+Shift+ArrowUp';
    * new session 'Ctrl+Shift+KeyN'; new task 'Ctrl+Shift+KeyT';
-   * close session 'Ctrl+Shift+KeyW'; terminal search 'Ctrl+Shift+KeyF'.
+   * close session 'Ctrl+Shift+KeyW'; terminal search 'Ctrl+Shift+KeyF';
+   * copy 'Ctrl+Shift+KeyC'; paste 'Ctrl+Shift+KeyV'.
    */
   readonly sessionNextKey?: string
   readonly sessionPrevKey?: string
@@ -57,6 +58,8 @@ export interface Settings {
   readonly newTaskKey?: string
   readonly closeSessionKey?: string
   readonly searchKey?: string
+  readonly copyKey?: string
+  readonly pasteKey?: string
 }
 
 /** A deep-partial patch for `save` (nested objects merged, not replaced). */
@@ -73,6 +76,8 @@ export interface SettingsPatch {
   readonly newTaskKey?: string
   readonly closeSessionKey?: string
   readonly searchKey?: string
+  readonly copyKey?: string
+  readonly pasteKey?: string
 }
 
 export interface SettingsStore {

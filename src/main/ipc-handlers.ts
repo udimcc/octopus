@@ -39,6 +39,7 @@ import type {
   WindowedWorkspaceStateDTO
 } from '../shared/dto'
 import type { CommandLoop } from '../application/command-loop'
+import type { Clipboard } from '../ports/clipboard'
 import type { AppDependencies } from '../application/dependencies'
 import type { CommandResult } from '../application/commands'
 import type { SettingsPatch } from '../application/commands'
@@ -76,6 +77,8 @@ export interface IpcHandlerHooks {
    * receive them (§6.7, generalizes the §6.5 single-window hydrate).
    */
   readonly onHydrate?: (windowId: WindowId) => void
+  /** OS clipboard adapter backing the terminal copy/paste queries (§5.4). */
+  readonly clipboard: Clipboard
 }
 
 /** Resolve the WindowId of the calling renderer (`e.sender`), defaulting to main. */
@@ -306,6 +309,13 @@ export function registerIpcHandlers(
     }
     return result.filePaths[0]
   })
+
+  // Clipboard read/write for terminal copy/paste (§5.4). Stateless queries over the
+  // OS clipboard adapter, bypassing the command loop (like dialogPickDirectory).
+  ipcMain.handle(CHANNELS.clipboardRead, (): string => hooks.clipboard.readText())
+  ipcMain.handle(CHANNELS.clipboardWrite, (_e, text: string): void =>
+    hooks.clipboard.writeText(text)
+  )
 
   // ── Fire-and-forget PTY I/O (no reply, §6.5) ────────────────────────────────
   ipcMain.on(CHANNELS.ptyWrite, (_e, input: PtyWriteInput) => {

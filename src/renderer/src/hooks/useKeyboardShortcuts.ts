@@ -18,8 +18,12 @@
  * matched with `matchesChord`. The settings dialog blocks a collision between them
  * (and against `RESERVED_CHORDS` in `chords.ts`, currently empty).
  *
- * DELIBERATE OMISSIONS: `DESIGN §5.4` also lists `Ctrl+Shift+C/V` (the terminal's own
- * copy/paste — xterm/Chromium reserve them); they are intentionally NOT bound here.
+ * COPY/PASTE (`Ctrl+Shift+C/V`, §5.4) are NOT handled here: they act on a specific
+ * terminal's selection/buffer, so they're bound in `TerminalPane` (which holds the
+ * live `Terminal`) via the configurable `copyKey`/`pasteKey` chords. xterm renders
+ * its selection on a canvas/rows layer, not as a DOM selection, so the browser's
+ * native `Ctrl+C` copies nothing — the pane copies `term.getSelection()` to the OS
+ * clipboard (through `octopusAPI.clipboard`) and pastes via `term.paste()` instead.
  *
  * New task and search are surfaced via callbacks because they drive React-local UI
  * (the modal / the terminal search box) that the store doesn't own; everything else

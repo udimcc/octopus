@@ -37,6 +37,10 @@ function stubOctopusAPI(activeTaskId: string | undefined = undefined): OctopusAP
       getVersion: vi.fn().mockResolvedValue('0.0.0-test')
     },
     dialog: { pickDirectory: vi.fn().mockResolvedValue(undefined) },
+    clipboard: {
+      read: vi.fn().mockResolvedValue(''),
+      write: vi.fn().mockResolvedValue(undefined)
+    },
     onEvent: vi.fn().mockReturnValue(() => undefined)
   }
 }

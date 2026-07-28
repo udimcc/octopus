@@ -70,6 +70,8 @@ describe('parseSettings (§6.3)', () => {
     expect(DEFAULT_SETTINGS.newTaskKey).toBe('Ctrl+Shift+KeyT')
     expect(DEFAULT_SETTINGS.closeSessionKey).toBe('Ctrl+Shift+KeyW')
     expect(DEFAULT_SETTINGS.searchKey).toBe('Ctrl+Shift+KeyF')
+    expect(DEFAULT_SETTINGS.copyKey).toBe('Ctrl+Shift+KeyC')
+    expect(DEFAULT_SETTINGS.pasteKey).toBe('Ctrl+Shift+KeyV')
     const s = parseSettings('{}')
     expect(s.sessionNextKey).toBe('Ctrl+Shift+ArrowRight')
     expect(s.sessionPrevKey).toBe('Ctrl+Shift+ArrowLeft')
@@ -79,6 +81,14 @@ describe('parseSettings (§6.3)', () => {
     expect(s.newTaskKey).toBe('Ctrl+Shift+KeyT')
     expect(s.closeSessionKey).toBe('Ctrl+Shift+KeyW')
     expect(s.searchKey).toBe('Ctrl+Shift+KeyF')
+    expect(s.copyKey).toBe('Ctrl+Shift+KeyC')
+    expect(s.pasteKey).toBe('Ctrl+Shift+KeyV')
+  })
+
+  it('round-trips copy/paste keys through a patch, independently', () => {
+    const merged = mergeSettings(DEFAULT_SETTINGS, { copyKey: 'Alt+KeyY' })
+    expect(merged.copyKey).toBe('Alt+KeyY')
+    expect(merged.pasteKey).toBe('Ctrl+Shift+KeyV') // untouched
   })
 })
 

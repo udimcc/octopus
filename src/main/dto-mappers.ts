@@ -108,7 +108,9 @@ export function toSettingsDTO(s: Settings): SettingsDTO {
     newSessionKey: s.newSessionKey,
     newTaskKey: s.newTaskKey,
     closeSessionKey: s.closeSessionKey,
-    searchKey: s.searchKey
+    searchKey: s.searchKey,
+    copyKey: s.copyKey,
+    pasteKey: s.pasteKey
   }
 }
 

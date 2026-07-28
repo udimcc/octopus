@@ -1,9 +1,10 @@
 /**
  * The settings dialog (DESIGN §5.4). Edits the user-facing V1 settings —
  * `worktree.location` (base dir for native worktrees; blank → the backend's
- * home-based default), `terminal.shell` (blank → the backend default), and the six
+ * home-based default), `terminal.shell` (blank → the backend default), and the
  * free-form configurable chords (next/prev session, next/prev task, new session, new
- * task) — and saves them via `app.updateSettings(patch)`.
+ * task, close session, terminal search, copy, paste) — and saves them via
+ * `app.updateSettings(patch)`.
  *
  * The settings are grouped into categories shown as a left sidebar; clicking a
  * category swaps the content pane. As more options accrue this keeps the dialog
@@ -50,6 +51,8 @@ type ChordKey =
   | 'newTaskKey'
   | 'closeSessionKey'
   | 'searchKey'
+  | 'copyKey'
+  | 'pasteKey'
 
 interface ChordFieldDef {
   readonly key: ChordKey
@@ -65,7 +68,9 @@ const CHORD_FIELDS: ReadonlyArray<ChordFieldDef> = [
   { key: 'newSessionKey', label: 'New session', default: 'Ctrl+Shift+KeyN' },
   { key: 'newTaskKey', label: 'New task', default: 'Ctrl+Shift+KeyT' },
   { key: 'closeSessionKey', label: 'Close session', default: 'Ctrl+Shift+KeyW' },
-  { key: 'searchKey', label: 'Terminal search', default: 'Ctrl+Shift+KeyF' }
+  { key: 'searchKey', label: 'Terminal search', default: 'Ctrl+Shift+KeyF' },
+  { key: 'copyKey', label: 'Copy', default: 'Ctrl+Shift+KeyC' },
+  { key: 'pasteKey', label: 'Paste', default: 'Ctrl+Shift+KeyV' }
 ]
 
 /** The settings categories, shown in the left sidebar in this order. */
@@ -185,7 +190,9 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
       newSessionKey: chords.newSessionKey,
       newTaskKey: chords.newTaskKey,
       closeSessionKey: chords.closeSessionKey,
-      searchKey: chords.searchKey
+      searchKey: chords.searchKey,
+      copyKey: chords.copyKey,
+      pasteKey: chords.pasteKey
     }
     void window.octopusAPI.app.updateSettings(patch).then((ack) => {
       if (!ack.ok) {

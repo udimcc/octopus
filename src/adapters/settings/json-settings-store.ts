@@ -28,7 +28,9 @@ export const DEFAULT_SETTINGS: Settings = Object.freeze({
   newSessionKey: 'Ctrl+Shift+KeyN',
   newTaskKey: 'Ctrl+Shift+KeyT',
   closeSessionKey: 'Ctrl+Shift+KeyW',
-  searchKey: 'Ctrl+Shift+KeyF'
+  searchKey: 'Ctrl+Shift+KeyF',
+  copyKey: 'Ctrl+Shift+KeyC',
+  pasteKey: 'Ctrl+Shift+KeyV'
 }) as Settings
 
 /**
@@ -81,7 +83,9 @@ export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
     newSessionKey: pickString(patch.newSessionKey, base.newSessionKey),
     newTaskKey: pickString(patch.newTaskKey, base.newTaskKey),
     closeSessionKey: pickString(patch.closeSessionKey, base.closeSessionKey),
-    searchKey: pickString(patch.searchKey, base.searchKey)
+    searchKey: pickString(patch.searchKey, base.searchKey),
+    copyKey: pickString(patch.copyKey, base.copyKey),
+    pasteKey: pickString(patch.pasteKey, base.pasteKey)
   }
 }
 

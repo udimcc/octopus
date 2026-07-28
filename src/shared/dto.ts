@@ -98,7 +98,8 @@ export interface SettingsDTO {
   /**
    * Configurable chords, each bound independently (§5.4): cycle to the next /
    * previous session, move to the next / previous task, create a new session,
-   * create a new task, close the active session, and open terminal search.
+   * create a new task, close the active session, open terminal search, and copy /
+   * paste the terminal selection.
    */
   readonly sessionNextKey?: string
   readonly sessionPrevKey?: string
@@ -108,6 +109,8 @@ export interface SettingsDTO {
   readonly newTaskKey?: string
   readonly closeSessionKey?: string
   readonly searchKey?: string
+  readonly copyKey?: string
+  readonly pasteKey?: string
 }
 
 /** A deep-partial settings patch (nested objects merged, not replaced). */
@@ -128,6 +131,8 @@ export interface SettingsPatchDTO {
   readonly newTaskKey?: string
   readonly closeSessionKey?: string
   readonly searchKey?: string
+  readonly copyKey?: string
+  readonly pasteKey?: string
 }
 
 /** Full workspace snapshot for renderer hydration on startup (§5.2). */

@@ -91,7 +91,9 @@ const DEFAULT_SETTINGS: SettingsDTO = {
   newSessionKey: 'Ctrl+Shift+KeyN',
   newTaskKey: 'Ctrl+Shift+KeyT',
   closeSessionKey: 'Ctrl+Shift+KeyW',
-  searchKey: 'Ctrl+Shift+KeyF'
+  searchKey: 'Ctrl+Shift+KeyF',
+  copyKey: 'Ctrl+Shift+KeyC',
+  pasteKey: 'Ctrl+Shift+KeyV'
 }
 
 /** The empty projection before hydration (also used to reset the store in tests). */

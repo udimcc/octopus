@@ -30,6 +30,10 @@ function stubOctopusAPI(): { api: OctopusAPI; emit: (event: EventDTO) => void } 
       getVersion: vi.fn().mockResolvedValue('0.0.0-test')
     },
     dialog: { pickDirectory: vi.fn().mockResolvedValue(undefined) },
+    clipboard: {
+      read: vi.fn().mockResolvedValue(''),
+      write: vi.fn().mockResolvedValue(undefined)
+    },
     onEvent: (handler) => {
       listeners.add(handler)
       return () => listeners.delete(handler)
