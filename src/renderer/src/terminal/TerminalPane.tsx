@@ -41,6 +41,8 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { CanvasAddon } from '@xterm/addon-canvas'
 import '@xterm/xterm/css/xterm.css'
+import { useStore } from '../store/store'
+import { matchesChord } from '../keybindings/chords'
 import { registerTerminalSink, unregisterTerminalSink } from '../pty/pty-router'
 import { registerSearchOpener, unregisterSearchOpener } from './terminal-search'
 import { webglBudget } from './webgl-budget'
@@ -177,6 +179,20 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
     term.unicode.activeVersion = '11'
 
     term.open(host)
+
+    // Chords owned by the global shortcut layer (§5.4) — the fixed Ctrl+Shift set
+    // plus the two free-form session-switch chords — must NOT reach the PTY.
+    // Returning false drops the key before xterm turns it into `onData` output; the
+    // window listener's preventDefault alone is unreliable (xterm's own textarea
+    // handler runs first). Settings live via `getState()` so a rebind takes effect
+    // without re-attaching. This mirrors `useKeyboardShortcuts` so the layers agree.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown') return true
+      if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) return false
+      const { sessionNextKey, sessionPrevKey } = useStore.getState().settings
+      if (matchesChord(e, sessionNextKey) || matchesChord(e, sessionPrevKey)) return false
+      return true
+    })
 
     termRef.current = term
     fitRef.current = fit

@@ -22,6 +22,7 @@ const h = vi.hoisted(() => {
     rows: number
     unicode: { activeVersion: string }
     onDataCb: ((d: string) => void) | null
+    keyHandler: ((e: KeyboardEvent) => boolean) | null
     loadAddon: ReturnType<typeof vi.fn>
     open: ReturnType<typeof vi.fn>
     write: ReturnType<typeof vi.fn>
@@ -40,12 +41,16 @@ vi.mock('@xterm/xterm', () => ({
     rows = 24
     unicode = { activeVersion: '6' }
     onDataCb: ((d: string) => void) | null = null
+    keyHandler: ((e: KeyboardEvent) => boolean) | null = null
     loadAddon = vi.fn()
     open = vi.fn()
     write = vi.fn()
     refresh = vi.fn()
     focus = vi.fn()
     dispose = vi.fn()
+    attachCustomKeyEventHandler(cb: (e: KeyboardEvent) => boolean): void {
+      this.keyHandler = cb
+    }
     onData(cb: (d: string) => void): { dispose: () => void } {
       this.onDataCb = cb
       return { dispose: h.onDataDispose }
@@ -96,6 +101,7 @@ vi.mock('./terminal-search', () => ({
 
 // Imported AFTER the mocks are registered.
 import { TerminalPane } from './TerminalPane'
+import { useStore, initialData } from '../store/store'
 import { registerTerminalSink, unregisterTerminalSink } from '../pty/pty-router'
 import { registerSearchOpener, unregisterSearchOpener } from './terminal-search'
 import { webglBudget } from './webgl-budget'
@@ -106,6 +112,8 @@ describe('<TerminalPane> wiring (§5.3/§6.1)', () => {
   beforeEach(() => {
     h.instances.length = 0
     vi.clearAllMocks()
+    // Reset the store so `attachCustomKeyEventHandler` reads the default chords.
+    useStore.setState(initialData())
     // Default every test to a real GPU (WebGL/Canvas tiers active); reset the
     // addon-construction counters the software-GL test inspects.
     h.gpuTier.mockReturnValue('hardware')
@@ -147,6 +155,36 @@ describe('<TerminalPane> wiring (§5.3/§6.1)', () => {
     render(<TerminalPane sessionId="s1" active={true} />)
     h.instances[0].onDataCb?.('ls\r')
     expect(window.octopusAPI.pty.write).toHaveBeenCalledWith({ sessionId: 's1', data: 'ls\r' })
+  })
+
+  it('drops Ctrl+Shift chords before the PTY, but passes everything else (§5.4)', () => {
+    render(<TerminalPane sessionId="s1" active={true} />)
+    const handler = h.instances[0].keyHandler
+    expect(handler).toBeTypeOf('function')
+    // A global Ctrl+Shift chord is swallowed (returns false → never becomes onData).
+    expect(
+      handler?.({ type: 'keydown', code: 'KeyT', ctrlKey: true, shiftKey: true } as KeyboardEvent)
+    ).toBe(false)
+    // Bare terminal keys and non-keydown events pass through untouched.
+    expect(
+      handler?.({ type: 'keydown', code: 'KeyC', ctrlKey: true, shiftKey: false } as KeyboardEvent)
+    ).toBe(true)
+    expect(
+      handler?.({ type: 'keyup', code: 'KeyT', ctrlKey: true, shiftKey: true } as KeyboardEvent)
+    ).toBe(true)
+  })
+
+  it('also drops a configured non-Ctrl+Shift session-switch chord (§5.4)', () => {
+    // Bind next=Alt+K; a custom chord must not leak into the shell either.
+    useStore.setState((s) => ({
+      settings: { ...s.settings, sessionNextKey: 'Alt+KeyK', sessionPrevKey: 'Alt+KeyJ' }
+    }))
+    render(<TerminalPane sessionId="s1" active={true} />)
+    const handler = h.instances[0].keyHandler
+    expect(handler?.({ type: 'keydown', code: 'KeyK', altKey: true } as KeyboardEvent)).toBe(false)
+    expect(handler?.({ type: 'keydown', code: 'KeyJ', altKey: true } as KeyboardEvent)).toBe(false)
+    // An unbound bare key still reaches the terminal.
+    expect(handler?.({ type: 'keydown', code: 'KeyL', altKey: true } as KeyboardEvent)).toBe(true)
   })
 
   it('activates Unicode 11', () => {

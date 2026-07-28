@@ -35,12 +35,23 @@ describe('parseSettings (§6.3)', () => {
         worktree: { location: '/home/u/octopus_repos' },
         terminal: { shell: '/bin/zsh' },
         defaultSessionTypeId: 'terminal',
-        worktreeCreateTimeoutMs: 45000
+        worktreeCreateTimeoutMs: 45000,
+        sessionNextKey: 'ArrowUp',
+        sessionPrevKey: 'ArrowDown'
       })
     )
     expect(s.worktree).toEqual({ location: '/home/u/octopus_repos' })
     expect(s.terminal.shell).toBe('/bin/zsh')
     expect(s.worktreeCreateTimeoutMs).toBe(45000)
+    expect(s.sessionNextKey).toBe('ArrowUp')
+    expect(s.sessionPrevKey).toBe('ArrowDown')
+  })
+
+  it('defaults session next/prev keys to the Ctrl+Shift arrow chords', () => {
+    expect(DEFAULT_SETTINGS.sessionNextKey).toBe('Ctrl+Shift+ArrowRight')
+    expect(DEFAULT_SETTINGS.sessionPrevKey).toBe('Ctrl+Shift+ArrowLeft')
+    expect(parseSettings('{}').sessionNextKey).toBe('Ctrl+Shift+ArrowRight')
+    expect(parseSettings('{}').sessionPrevKey).toBe('Ctrl+Shift+ArrowLeft')
   })
 })
 
@@ -53,6 +64,19 @@ describe('mergeSettings (deep-merge, §6.4)', () => {
     const merged = mergeSettings(base, { worktree: { location: '/wt2' } })
     expect(merged.worktree.location).toBe('/wt2')
     expect(merged.terminal.shell).toBe('/bin/zsh') // preserved
+  })
+
+  it('round-trips session next/prev keys through a patch, independently', () => {
+    const merged = mergeSettings(DEFAULT_SETTINGS, {
+      sessionNextKey: 'ArrowDown',
+      sessionPrevKey: 'ArrowUp'
+    })
+    expect(merged.sessionNextKey).toBe('ArrowDown')
+    expect(merged.sessionPrevKey).toBe('ArrowUp')
+    // Patching only one leaves the other untouched.
+    const next = mergeSettings(merged, { sessionNextKey: 'ArrowRight' })
+    expect(next.sessionNextKey).toBe('ArrowRight')
+    expect(next.sessionPrevKey).toBe('ArrowUp')
   })
 
   it('ignores wrong-typed values, keeping the base', () => {

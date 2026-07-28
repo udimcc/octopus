@@ -20,7 +20,9 @@ import type { Settings, SettingsPatch, SettingsStore } from '../../ports/setting
 export const DEFAULT_SETTINGS: Settings = Object.freeze({
   worktree: Object.freeze({ location: '' }),
   terminal: Object.freeze({}),
-  defaultSessionTypeId: 'terminal'
+  defaultSessionTypeId: 'terminal',
+  sessionNextKey: 'Ctrl+Shift+ArrowRight',
+  sessionPrevKey: 'Ctrl+Shift+ArrowLeft'
 }) as Settings
 
 /**
@@ -61,7 +63,12 @@ export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
       shell: pickString(patch.terminal?.shell, base.terminal.shell)
     },
     defaultSessionTypeId: pickString(patch.defaultSessionTypeId, base.defaultSessionTypeId),
-    worktreeCreateTimeoutMs: pickNumber(patch.worktreeCreateTimeoutMs, base.worktreeCreateTimeoutMs)
+    worktreeCreateTimeoutMs: pickNumber(
+      patch.worktreeCreateTimeoutMs,
+      base.worktreeCreateTimeoutMs
+    ),
+    sessionNextKey: pickString(patch.sessionNextKey, base.sessionNextKey),
+    sessionPrevKey: pickString(patch.sessionPrevKey, base.sessionPrevKey)
   }
 }
 

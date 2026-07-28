@@ -83,7 +83,9 @@ export type Store = StoreData & StoreActions
 const DEFAULT_SETTINGS: SettingsDTO = {
   worktree: { location: '' },
   terminal: {},
-  defaultSessionTypeId: 'terminal'
+  defaultSessionTypeId: 'terminal',
+  sessionNextKey: 'Ctrl+Shift+ArrowRight',
+  sessionPrevKey: 'Ctrl+Shift+ArrowLeft'
 }
 
 /** The empty projection before hydration (also used to reset the store in tests). */

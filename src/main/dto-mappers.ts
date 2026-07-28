@@ -100,7 +100,9 @@ export function toSettingsDTO(s: Settings): SettingsDTO {
     worktree: { location: s.worktree.location },
     terminal: { shell: s.terminal.shell },
     defaultSessionTypeId: s.defaultSessionTypeId,
-    worktreeCreateTimeoutMs: s.worktreeCreateTimeoutMs
+    worktreeCreateTimeoutMs: s.worktreeCreateTimeoutMs,
+    sessionNextKey: s.sessionNextKey,
+    sessionPrevKey: s.sessionPrevKey
   }
 }
 

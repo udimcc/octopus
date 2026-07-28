@@ -320,10 +320,17 @@ restore complexity). The serialize-and-replay path is kept available for a futur
 - **Status icons (V2):** shape **and** color (accessibility): Waiting = hollow/pause, gray; Working =
   spinner/filled, blue; Blocked = warning triangle, amber. Low-confidence heuristic states render dimmed or
   pulsing. Tooltips give plain-text descriptions.
-- **Keyboard:** `Ctrl+Shift+]`/`[` cycle tasks; `Ctrl+Tab`/`Ctrl+Shift+Tab` cycle sessions; `Ctrl+Shift+T`
-  new terminal; `Ctrl+Shift+N` new task; `Ctrl+Shift+W` close session; `Ctrl+Shift+F` terminal search;
-  `Ctrl+Shift+C/V` copy/paste; `Esc` close modal/dropdown. Only `Shift`-modified shortcuts are intercepted
-  globally so terminal `Ctrl+C` etc. are never stolen.
+- **Keyboard:** `Ctrl+Shift+]`/`[` cycle tasks; `Ctrl+Shift+Tab` cycles sessions; next/prev session are two
+  **fully user-configurable chords** in Settings (`sessionNextKey` / `sessionPrevKey`, defaults
+  `Ctrl+Shift+→`/`←`, bound independently — no "opposite" is inferred). A capture accepts any key but is
+  validated to require ≥1 modifier (so it can't shadow a bare terminal keystroke) and is checked for
+  conflicts against the fixed shortcuts and the other direction before Save is allowed. `Ctrl+Shift+T` new
+  terminal; `Ctrl+Shift+N` new task; `Ctrl+Shift+W` close session; `Ctrl+Shift+F` terminal search;
+  `Ctrl+Shift+C/V` copy/paste; `Esc` close modal/dropdown. The fixed set stays `Ctrl+Shift`-gated so terminal
+  `Ctrl+C` etc. are never stolen. `TerminalPane` also installs an xterm `attachCustomKeyEventHandler` that
+  drops both every `Ctrl+Shift` chord AND the two configured session-switch chords before they become PTY
+  input, so a global shortcut is never *also* written to the terminal (the `window` listener's
+  `preventDefault` alone is unreliable — xterm's textarea handler runs first).
 - **Empty states & toasts:** "No tasks yet", "No sessions", inline "Connecting…" written into the terminal;
   bottom-right toasts for script failures, unexpected PTY exit, Jenkins errors (V3).
 

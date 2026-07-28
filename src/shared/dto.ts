@@ -95,6 +95,9 @@ export interface SettingsDTO {
   }
   readonly defaultSessionTypeId: string
   readonly worktreeCreateTimeoutMs?: number
+  /** Keys that cycle to the next / previous session, bound independently (§5.4). */
+  readonly sessionNextKey?: string
+  readonly sessionPrevKey?: string
 }
 
 /** A deep-partial settings patch (nested objects merged, not replaced). */
@@ -107,6 +110,8 @@ export interface SettingsPatchDTO {
   }
   readonly defaultSessionTypeId?: string
   readonly worktreeCreateTimeoutMs?: number
+  readonly sessionNextKey?: string
+  readonly sessionPrevKey?: string
 }
 
 /** Full workspace snapshot for renderer hydration on startup (§5.2). */

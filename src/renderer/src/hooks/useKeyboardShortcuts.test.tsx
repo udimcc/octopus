@@ -44,7 +44,13 @@ function seed(tasks: TaskDTO[], activeTaskId?: string): void {
     tasks,
     activeTaskId,
     sessionTypes: [],
-    settings: { worktree: { location: '' }, terminal: {}, defaultSessionTypeId: 'terminal' },
+    settings: {
+      worktree: { location: '' },
+      terminal: {},
+      defaultSessionTypeId: 'terminal',
+      sessionNextKey: 'Ctrl+Shift+ArrowRight',
+      sessionPrevKey: 'Ctrl+Shift+ArrowLeft'
+    },
     version: 1,
     thisWindowId: 'main',
     thisWindowRole: 'main',
@@ -96,6 +102,69 @@ describe('useKeyboardShortcuts (§5.4 — Shift-gated)', () => {
     render(<Host onNewTask={vi.fn()} />)
     chord('Tab')
     expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+  })
+
+  it('Ctrl+Shift+ArrowRight cycles to the next session (default binding)', () => {
+    const t = task('t1', {
+      sessions: [session('s1'), session('s2', { order: 1 })],
+      activeSessionId: 's1'
+    })
+    seed([t], 't1')
+    render(<Host onNewTask={vi.fn()} />)
+    chord('ArrowRight')
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+  })
+
+  it('Ctrl+Shift+ArrowLeft cycles to the previous session, wrapping', () => {
+    const t = task('t1', {
+      sessions: [session('s1'), session('s2', { order: 1 })],
+      activeSessionId: 's1'
+    })
+    seed([t], 't1')
+    render(<Host onNewTask={vi.fn()} />)
+    chord('ArrowLeft')
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s2') // wrapped backwards
+  })
+
+  it('honors independently configured next/prev chords (no opposite inference)', () => {
+    const t = task('t1', {
+      sessions: [session('s1'), session('s2', { order: 1 })],
+      activeSessionId: 's1'
+    })
+    seed([t], 't1')
+    // Two arbitrary, non-mirrored chords: next = Ctrl+Shift+↑, prev = Ctrl+Shift+→.
+    useStore.setState((s) => ({
+      settings: {
+        ...s.settings,
+        sessionNextKey: 'Ctrl+Shift+ArrowUp',
+        sessionPrevKey: 'Ctrl+Shift+ArrowRight'
+      }
+    }))
+    render(<Host onNewTask={vi.fn()} />)
+    chord('ArrowUp')
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+    chord('ArrowRight') // configured as PREV — not the opposite of ArrowUp
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
+    // The default arrows are no longer bound once overridden.
+    chord('ArrowLeft')
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
+  })
+
+  it('matches a free-form (non-Ctrl+Shift) chord before the fixed gate', () => {
+    const t = task('t1', {
+      sessions: [session('s1'), session('s2', { order: 1 })],
+      activeSessionId: 's1'
+    })
+    seed([t], 't1')
+    // Alt+K would be dropped by the Ctrl+Shift gate; matching runs before it.
+    useStore.setState((s) => ({
+      settings: { ...s.settings, sessionNextKey: 'Alt+KeyK', sessionPrevKey: 'Alt+KeyJ' }
+    }))
+    render(<Host onNewTask={vi.fn()} />)
+    fireEvent.keyDown(window, { code: 'KeyK', altKey: true })
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+    fireEvent.keyDown(window, { code: 'KeyJ', altKey: true })
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
   })
 
   it('Ctrl+Shift+T opens a new terminal in the active (ready) task', () => {

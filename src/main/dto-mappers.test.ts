@@ -90,13 +90,17 @@ describe('snapshot → DTO mappers (§5.2)', () => {
       worktree: { location: '/home/u/octopus_repos' },
       terminal: { shell: '/bin/zsh' },
       defaultSessionTypeId: 'terminal',
-      worktreeCreateTimeoutMs: 45000
+      worktreeCreateTimeoutMs: 45000,
+      sessionNextKey: 'ArrowUp',
+      sessionPrevKey: 'ArrowDown'
     }
     expect(toSettingsDTO(settings)).toEqual({
       worktree: { location: '/home/u/octopus_repos' },
       terminal: { shell: '/bin/zsh' },
       defaultSessionTypeId: 'terminal',
-      worktreeCreateTimeoutMs: 45000
+      worktreeCreateTimeoutMs: 45000,
+      sessionNextKey: 'ArrowUp',
+      sessionPrevKey: 'ArrowDown'
     })
   })
 
@@ -140,86 +144,120 @@ describe('toEventDTO (§6.5) — total over the DomainEvent union', () => {
   // the union, this list (and toEventDTO's exhaustive switch) must grow — the
   // never-guard makes an unmapped event a build error, and this test asserts the
   // wire shape of each mapped one.
-  const cases: Array<{ event: DomainEvent; expect: (dto: ReturnType<typeof toEventDTO>) => void }> = [
-    {
-      event: { type: 'ptyData', sessionId: asSessionId('s1'), data: 'x' },
-      expect: (d) => expect(d).toEqual({ type: 'ptyData', sessionId: 's1', data: 'x' })
-    },
-    {
-      event: { type: 'sessionCreated', taskId: asTaskId('t1'), session },
-      expect: (d) => {
-        expect(d.type).toBe('sessionCreated')
-        if (d.type === 'sessionCreated') expect(d.session.id).toBe('s1')
-      }
-    },
-    {
-      event: { type: 'sessionExited', taskId: asTaskId('t1'), sessionId: asSessionId('s1'), exitCode: 3 },
-      expect: (d) => expect(d).toMatchObject({ type: 'sessionExited', sessionId: 's1', exitCode: 3 })
-    },
-    {
-      event: { type: 'sessionClosed', taskId: asTaskId('t1'), sessionId: asSessionId('s1') },
-      expect: (d) => expect(d).toEqual({ type: 'sessionClosed', taskId: 't1', sessionId: 's1' })
-    },
-    {
-      event: { type: 'sessionRenamed', taskId: asTaskId('t1'), sessionId: asSessionId('s1'), title: 'New' },
-      expect: (d) => expect(d).toMatchObject({ type: 'sessionRenamed', title: 'New' })
-    },
-    {
-      event: {
-        type: 'sessionReordered',
-        taskId: asTaskId('t1'),
-        orderedSessionIds: [asSessionId('s1'), asSessionId('s2')]
+  const cases: Array<{ event: DomainEvent; expect: (dto: ReturnType<typeof toEventDTO>) => void }> =
+    [
+      {
+        event: { type: 'ptyData', sessionId: asSessionId('s1'), data: 'x' },
+        expect: (d) => expect(d).toEqual({ type: 'ptyData', sessionId: 's1', data: 'x' })
       },
-      expect: (d) => expect(d).toEqual({ type: 'sessionReordered', taskId: 't1', orderedSessionIds: ['s1', 's2'] })
-    },
-    {
-      event: { type: 'taskCreated', task },
-      expect: (d) => {
-        expect(d.type).toBe('taskCreated')
-        if (d.type === 'taskCreated') expect(d.task.id).toBe('t1')
+      {
+        event: { type: 'sessionCreated', taskId: asTaskId('t1'), session },
+        expect: (d) => {
+          expect(d.type).toBe('sessionCreated')
+          if (d.type === 'sessionCreated') expect(d.session.id).toBe('s1')
+        }
+      },
+      {
+        event: {
+          type: 'sessionExited',
+          taskId: asTaskId('t1'),
+          sessionId: asSessionId('s1'),
+          exitCode: 3
+        },
+        expect: (d) =>
+          expect(d).toMatchObject({ type: 'sessionExited', sessionId: 's1', exitCode: 3 })
+      },
+      {
+        event: { type: 'sessionClosed', taskId: asTaskId('t1'), sessionId: asSessionId('s1') },
+        expect: (d) => expect(d).toEqual({ type: 'sessionClosed', taskId: 't1', sessionId: 's1' })
+      },
+      {
+        event: {
+          type: 'sessionRenamed',
+          taskId: asTaskId('t1'),
+          sessionId: asSessionId('s1'),
+          title: 'New'
+        },
+        expect: (d) => expect(d).toMatchObject({ type: 'sessionRenamed', title: 'New' })
+      },
+      {
+        event: {
+          type: 'sessionReordered',
+          taskId: asTaskId('t1'),
+          orderedSessionIds: [asSessionId('s1'), asSessionId('s2')]
+        },
+        expect: (d) =>
+          expect(d).toEqual({
+            type: 'sessionReordered',
+            taskId: 't1',
+            orderedSessionIds: ['s1', 's2']
+          })
+      },
+      {
+        event: { type: 'taskCreated', task },
+        expect: (d) => {
+          expect(d.type).toBe('taskCreated')
+          if (d.type === 'taskCreated') expect(d.task.id).toBe('t1')
+        }
+      },
+      {
+        event: { type: 'taskDeleted', taskId: asTaskId('t1') },
+        expect: (d) => expect(d).toEqual({ type: 'taskDeleted', taskId: 't1' })
+      },
+      {
+        event: { type: 'taskRenamed', taskId: asTaskId('t1'), name: 'Renamed' },
+        expect: (d) => expect(d).toEqual({ type: 'taskRenamed', taskId: 't1', name: 'Renamed' })
+      },
+      {
+        event: { type: 'taskReordered', orderedTaskIds: [asTaskId('t1'), asTaskId('t2')] },
+        expect: (d) => expect(d).toEqual({ type: 'taskReordered', orderedTaskIds: ['t1', 't2'] })
+      },
+      {
+        event: { type: 'taskStale', taskId: asTaskId('t1') },
+        expect: (d) => expect(d).toEqual({ type: 'taskStale', taskId: 't1' })
+      },
+      {
+        event: { type: 'activeTaskChanged', taskId: asTaskId('t1') },
+        expect: (d) => expect(d).toEqual({ type: 'activeTaskChanged', taskId: 't1' })
+      },
+      {
+        event: { type: 'scriptProgress', taskId: asTaskId('t1'), line: 'building' },
+        expect: (d) => expect(d).toEqual({ type: 'scriptProgress', taskId: 't1', line: 'building' })
+      },
+      {
+        event: {
+          type: 'scriptError',
+          taskId: asTaskId('t1'),
+          script: '/c',
+          exitCode: 1,
+          stderr: 'boom'
+        },
+        expect: (d) => expect(d).toMatchObject({ type: 'scriptError', exitCode: 1, stderr: 'boom' })
+      },
+      {
+        event: {
+          type: 'error',
+          message: 'oops',
+          taskId: asTaskId('t1'),
+          sessionId: asSessionId('s1')
+        },
+        expect: (d) => expect(d).toMatchObject({ type: 'error', message: 'oops' })
+      },
+      {
+        event: {
+          type: 'sessionStateChanged',
+          sessionId: asSessionId('s1'),
+          state: SessionState.Working
+        },
+        expect: (d) =>
+          expect(d).toEqual({ type: 'sessionStateChanged', sessionId: 's1', state: 'working' })
+      },
+      {
+        event: { type: 'taskStateChanged', taskId: asTaskId('t1'), state: TaskState.Blocked },
+        expect: (d) =>
+          expect(d).toEqual({ type: 'taskStateChanged', taskId: 't1', state: 'blocked' })
       }
-    },
-    {
-      event: { type: 'taskDeleted', taskId: asTaskId('t1') },
-      expect: (d) => expect(d).toEqual({ type: 'taskDeleted', taskId: 't1' })
-    },
-    {
-      event: { type: 'taskRenamed', taskId: asTaskId('t1'), name: 'Renamed' },
-      expect: (d) => expect(d).toEqual({ type: 'taskRenamed', taskId: 't1', name: 'Renamed' })
-    },
-    {
-      event: { type: 'taskReordered', orderedTaskIds: [asTaskId('t1'), asTaskId('t2')] },
-      expect: (d) => expect(d).toEqual({ type: 'taskReordered', orderedTaskIds: ['t1', 't2'] })
-    },
-    {
-      event: { type: 'taskStale', taskId: asTaskId('t1') },
-      expect: (d) => expect(d).toEqual({ type: 'taskStale', taskId: 't1' })
-    },
-    {
-      event: { type: 'activeTaskChanged', taskId: asTaskId('t1') },
-      expect: (d) => expect(d).toEqual({ type: 'activeTaskChanged', taskId: 't1' })
-    },
-    {
-      event: { type: 'scriptProgress', taskId: asTaskId('t1'), line: 'building' },
-      expect: (d) => expect(d).toEqual({ type: 'scriptProgress', taskId: 't1', line: 'building' })
-    },
-    {
-      event: { type: 'scriptError', taskId: asTaskId('t1'), script: '/c', exitCode: 1, stderr: 'boom' },
-      expect: (d) => expect(d).toMatchObject({ type: 'scriptError', exitCode: 1, stderr: 'boom' })
-    },
-    {
-      event: { type: 'error', message: 'oops', taskId: asTaskId('t1'), sessionId: asSessionId('s1') },
-      expect: (d) => expect(d).toMatchObject({ type: 'error', message: 'oops' })
-    },
-    {
-      event: { type: 'sessionStateChanged', sessionId: asSessionId('s1'), state: SessionState.Working },
-      expect: (d) => expect(d).toEqual({ type: 'sessionStateChanged', sessionId: 's1', state: 'working' })
-    },
-    {
-      event: { type: 'taskStateChanged', taskId: asTaskId('t1'), state: TaskState.Blocked },
-      expect: (d) => expect(d).toEqual({ type: 'taskStateChanged', taskId: 't1', state: 'blocked' })
-    }
-  ]
+    ]
 
   it('maps every event variant to a plain-string wire DTO', () => {
     for (const c of cases) {

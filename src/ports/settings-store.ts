@@ -29,6 +29,15 @@ export interface Settings {
   readonly defaultSessionTypeId: string
   /** Worktree create timeout override (ms); default 30 000 — script AND git (§6.4). */
   readonly worktreeCreateTimeoutMs?: number
+  /**
+   * Chords that cycle to the NEXT / PREVIOUS session (§5.4). Each is a canonical
+   * chord string (`parseChord` in `renderer/keybindings/chords.ts`), e.g.
+   * `'Ctrl+Shift+ArrowRight'` — ANY key with at least one modifier is allowed, and
+   * the two directions are bound independently (no "opposite" inference). Defaults
+   * 'Ctrl+Shift+ArrowRight' / 'Ctrl+Shift+ArrowLeft'.
+   */
+  readonly sessionNextKey?: string
+  readonly sessionPrevKey?: string
 }
 
 /** A deep-partial patch for `save` (nested objects merged, not replaced). */
@@ -37,6 +46,8 @@ export interface SettingsPatch {
   readonly terminal?: Partial<TerminalSettings>
   readonly defaultSessionTypeId?: string
   readonly worktreeCreateTimeoutMs?: number
+  readonly sessionNextKey?: string
+  readonly sessionPrevKey?: string
 }
 
 export interface SettingsStore {

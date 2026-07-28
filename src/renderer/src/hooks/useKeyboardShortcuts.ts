@@ -11,6 +11,17 @@
  *   Ctrl+Shift+Tab cycle sessions       Ctrl+Shift+T   new terminal (active task)
  *   Ctrl+Shift+N   new task             Ctrl+Shift+W   close active session
  *   Ctrl+Shift+F   terminal search      Esc            (handled by open modals)
+ *   next/prev session — two fully user-configurable chords (§5.4)
+ *
+ * SESSION-SWITCH KEYS: `settings.sessionNextKey` / `sessionPrevKey` are canonical
+ * chord strings (see `keybindings/chords.ts`) that cycle to the next / previous
+ * session (defaults `Ctrl+Shift+ArrowRight` / `Ctrl+Shift+ArrowLeft`). Unlike the
+ * fixed shortcuts they are FREE-FORM — any key with ≥1 modifier — and bound
+ * independently (no "opposite" inference). Because a custom chord may not be
+ * Ctrl+Shift (e.g. `Alt+K`), these are matched with `matchesChord` BEFORE the
+ * Ctrl+Shift gate below; the settings dialog enforces the ≥1-modifier rule so the
+ * safety guarantee (never a bare terminal control key) still holds. The fixed set
+ * (`RESERVED_CHORDS` in `chords.ts`) stays reserved; settings blocks a collision.
  *
  * DELIBERATE OMISSIONS: `DESIGN §5.4` also lists `Ctrl+Tab` and `Ctrl+Shift+C/V`.
  * `Ctrl+Tab` violates the Shift-only-intercept safety rule (bare Ctrl chord), and
@@ -24,6 +35,7 @@
 
 import { useEffect } from 'react'
 import { useStore } from '../store/store'
+import { matchesChord } from '../keybindings/chords'
 
 export interface KeyboardShortcutHandlers {
   /** Open the New-Task modal (owned by `ProgressPanel`). */
@@ -35,9 +47,6 @@ export interface KeyboardShortcutHandlers {
 export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHandlers): void {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
-      // Only ever act on Ctrl+Shift chords (never bare Ctrl — see the safety rule).
-      if (!e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return
-
       const store = useStore.getState()
       const { taskOrder, activeTaskId } = store
 
@@ -63,7 +72,24 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
         if (next) store.setActiveSession(activeTaskId, next)
       }
 
-      // `e.code` is layout-independent for the bracket/letter keys; `Tab` uses `key`.
+      // Free-form session-switch chords come from settings and are bound
+      // independently. Matched BEFORE the Ctrl+Shift gate because a custom chord
+      // (e.g. `Alt+K`) need not be Ctrl+Shift; settings guarantees ≥1 modifier.
+      const { sessionNextKey, sessionPrevKey } = store.settings
+      if (matchesChord(e, sessionNextKey)) {
+        e.preventDefault()
+        cycleSession(1)
+        return
+      }
+      if (matchesChord(e, sessionPrevKey)) {
+        e.preventDefault()
+        cycleSession(-1)
+        return
+      }
+
+      // The fixed shortcuts below stay Ctrl+Shift-gated (never bare Ctrl — see the
+      // safety rule). `e.code` is layout-independent for brackets/letters; `Tab` too.
+      if (!e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return
       switch (e.code) {
         case 'BracketRight':
           e.preventDefault()
