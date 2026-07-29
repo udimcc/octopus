@@ -15,7 +15,14 @@ function stubOctopusAPI(): { api: OctopusAPI; emit: (event: EventDTO) => void } 
   const api: OctopusAPI = {
     ping: vi.fn().mockResolvedValue('pong'),
     tasks: { create: ack, delete: ack, rename: ack, reorder: ack, switch: ack },
-    sessions: { create: ack, close: ack, rename: ack, reorder: ack, move: ack },
+    sessions: {
+      create: ack,
+      close: ack,
+      rename: ack,
+      reorder: ack,
+      move: ack,
+      cwd: vi.fn().mockResolvedValue(null)
+    },
     windows: {
       create: ack,
       close: ack,

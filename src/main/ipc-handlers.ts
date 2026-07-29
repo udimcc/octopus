@@ -30,6 +30,7 @@ import type {
   CloseSessionInput,
   RenameSessionInput,
   ReorderSessionInput,
+  SessionCwdInput,
   CreateWindowInput,
   CloseWindowInput,
   MoveSessionInput,
@@ -44,6 +45,7 @@ import type { AppDependencies } from '../application/dependencies'
 import type { CommandResult } from '../application/commands'
 import type { SettingsPatch } from '../application/commands'
 import { getState } from '../application/queries/get-state'
+import { getSessionCwd } from '../application/queries/get-session-cwd'
 import {
   asTaskId,
   asSessionId,
@@ -211,6 +213,14 @@ export function registerIpcHandlers(
       }
     })
     return ack(result)
+  })
+
+  // A session's live cwd (query, bypasses the loop, §6.5). Reads the live runtime
+  // handle straight from deps.runtimes; maps undefined → null for the wire. Powers
+  // "new terminal from this directory".
+  ipcMain.handle(CHANNELS.sessionCwd, async (_e, input: SessionCwdInput): Promise<string | null> => {
+    const cwd = await getSessionCwd(deps, asSessionId(input.sessionId))
+    return cwd ?? null
   })
 
   // ── Window commands (V1.5, §6.7) ────────────────────────────────────────────

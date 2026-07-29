@@ -251,3 +251,28 @@ describe('PtyTerminalRuntime spontaneous exit vs user stop (§3.6/§6.1)', () =>
     expect(rt.stateEvaluator()).toBeNull()
   })
 })
+
+describe('PtyTerminalRuntime.currentCwd (§6.1, "new terminal here")', () => {
+  it('resolves undefined before start (no live pid)', async () => {
+    const h = harness()
+    const rt = new PtyTerminalRuntime(h.ctx, { spawn: h.spawn, shell: '/bin/bash' })
+    await expect(rt.currentCwd()).resolves.toBeUndefined()
+  })
+
+  it('resolves undefined after the process exits', async () => {
+    const h = harness()
+    const rt = new PtyTerminalRuntime(h.ctx, { spawn: h.spawn, shell: '/bin/bash' })
+    await rt.start()
+    h.fakePty.emitExit(0)
+    await expect(rt.currentCwd()).resolves.toBeUndefined()
+  })
+
+  it('reads /proc/<pid>/cwd for a live pid (undefined when the pid is not a real process)', async () => {
+    // The fake pty reports pid 4242; procCwd reads the REAL /proc, which has no
+    // such process here, so the live path returns undefined without throwing.
+    const h = harness()
+    const rt = new PtyTerminalRuntime(h.ctx, { spawn: h.spawn, shell: '/bin/bash' })
+    await rt.start()
+    await expect(rt.currentCwd()).resolves.toBeUndefined()
+  })
+})

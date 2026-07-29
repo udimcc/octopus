@@ -8,9 +8,13 @@
  * and only calls `onCommit` with a trimmed, changed, non-empty draft. The store is
  * still the source of truth — the actual rename lands when the backend's
  * `taskRenamed`/`sessionRenamed` event patches `value` on the next render.
+ *
+ * A `ref` exposes `beginEdit()` so a caller can start editing programmatically
+ * (e.g. the session tab's right-click "Rename tab" item), in addition to the
+ * built-in double-click.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 
 export interface EditableLabelProps {
   readonly value: string
@@ -20,15 +24,19 @@ export interface EditableLabelProps {
   readonly style?: React.CSSProperties
 }
 
-export function EditableLabel({
-  value,
-  onCommit,
-  editAriaLabel,
-  style
-}: EditableLabelProps): React.JSX.Element {
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(value)
-  const inputRef = useRef<HTMLInputElement>(null)
+/** Imperative handle: start editing without a double-click. */
+export interface EditableLabelHandle {
+  beginEdit(): void
+}
+
+export const EditableLabel = forwardRef<EditableLabelHandle, EditableLabelProps>(
+  function EditableLabel(
+    { value, onCommit, editAriaLabel, style }: EditableLabelProps,
+    ref
+  ): React.JSX.Element {
+    const [editing, setEditing] = useState(false)
+    const [draft, setDraft] = useState(value)
+    const inputRef = useRef<HTMLInputElement>(null)
 
   // Select the whole draft when the input appears so a rename overwrites cleanly.
   useEffect(() => {
@@ -39,6 +47,9 @@ export function EditableLabel({
     setDraft(value)
     setEditing(true)
   }
+
+  // Let a parent (e.g. the tab's "Rename" menu item) start editing imperatively.
+  useImperativeHandle(ref, () => ({ beginEdit: begin }), [value])
 
   const commit = (): void => {
     setEditing(false)
@@ -82,4 +93,4 @@ export function EditableLabel({
       {value}
     </span>
   )
-}
+})

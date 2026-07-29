@@ -21,6 +21,7 @@ import {
   type OutputBatcherOptions
 } from '../../shared/node/output-batcher'
 import { buildPtyEnv } from '../../shared/pty-env'
+import { procCwd } from '../../shared/node/proc-cwd'
 
 /** A disposable listener registration (node-pty's IDisposable shape). */
 export interface PtyDisposable {
@@ -186,6 +187,18 @@ export class PtyTerminalRuntime implements SessionRuntime {
   /** V2 seam: null in V1 (Terminal has no `EvaluatesState`) (§10). */
   stateEvaluator(): StateEvaluator | null {
     return null
+  }
+
+  /**
+   * Where the shell has `cd`'d to, via `/proc/<pid>/cwd` (§6.2). `undefined` once
+   * the process is gone (or never spawned) — the pid's /proc entry disappears.
+   */
+  currentCwd(): Promise<string | undefined> {
+    const pid = this.pty?.pid
+    if (pid === undefined || this.exited) {
+      return Promise.resolve(undefined)
+    }
+    return Promise.resolve(procCwd(pid))
   }
 
   private handleExit(exitCode: number, signal?: number): void {

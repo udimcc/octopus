@@ -59,6 +59,14 @@ export interface SessionRuntime {
   dispose(): void
   /** V2 seam: returns null in V1 (Terminal has no `EvaluatesState`) (§10). */
   stateEvaluator(): StateEvaluator | null
+  /**
+   * Best-effort current working directory of the live process (§6.1) — where a
+   * terminal has `cd`'d to since spawn, used to open a new session in the same
+   * directory. Optional §10 seam: a runtime that can't observe it (or a
+   * non-terminal type) omits the method; callers treat absence as "unavailable".
+   * Returns `undefined` for an exited/never-started session.
+   */
+  currentCwd?(): Promise<string | undefined>
 }
 
 export interface SessionManager {

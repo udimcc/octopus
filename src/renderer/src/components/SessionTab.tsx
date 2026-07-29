@@ -4,15 +4,28 @@
  * it (`sessions.close`), and the whole tab is a dnd-kit sortable handle so tabs
  * reorder by dragging (`sessions.reorder`, reconciled by `sessionReordered`).
  *
+ * Right-click opens a small context menu (mirroring the terminal's copy/paste menu
+ * in `TerminalPane`) with: open a new terminal in THIS terminal's current directory,
+ * rename, move to another window, and close. The "new terminal here" item resolves
+ * the live cwd via `sessions.cwd` when the menu opens and stays disabled until a
+ * path comes back (it's `null` for an exited/non-terminal/non-Linux session).
+ *
  * A dead session (`lifecycle === 'exited'`) keeps its tab — the buffer is still
  * readable (§6.1) — and shows an "(exited)" suffix.
  */
 
+import { useEffect, useRef, useState } from 'react'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { EditableLabel } from './EditableLabel'
-import { color } from '../style/tokens'
+import { EditableLabel, type EditableLabelHandle } from './EditableLabel'
+import { color, radius, shadow } from '../style/tokens'
 import type { SessionDTO } from '../../../shared/dto'
+
+/** A window this session can be moved to, with a human label ("Main window"/"Window 2"). */
+export interface MoveTarget {
+  readonly id: string
+  readonly label: string
+}
 
 export interface SessionTabProps {
   readonly session: SessionDTO
@@ -20,6 +33,16 @@ export interface SessionTabProps {
   readonly onActivate: () => void
   readonly onRename: (title: string) => void
   readonly onClose: () => void
+  /** Open a new terminal in `cwd` (the current terminal's live directory). */
+  readonly onNewTerminalFromHere: (cwd: string) => void
+  /** Reassign this session to another open window. */
+  readonly onMoveToWindow: (targetWindowId: string) => void
+  /** Other open windows this session can move to (empty → the item is disabled). */
+  readonly moveTargets: readonly MoveTarget[]
+  /** Resolve this session's live cwd, or `null` if it can't be determined. */
+  readonly resolveCwd: () => Promise<string | null>
+  /** Whether "new terminal here" applies (terminal sessions only). */
+  readonly canOpenHere: boolean
 }
 
 export function SessionTab({
@@ -27,11 +50,48 @@ export function SessionTab({
   active,
   onActivate,
   onRename,
-  onClose
+  onClose,
+  onNewTerminalFromHere,
+  onMoveToWindow,
+  moveTargets,
+  resolveCwd,
+  canOpenHere
 }: SessionTabProps): React.JSX.Element {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: session.id
   })
+
+  const labelRef = useRef<EditableLabelHandle>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  // undefined = resolving, null = unavailable, string = resolved path.
+  const [cwd, setCwd] = useState<string | null | undefined>(undefined)
+
+  const openMenu = (e: React.MouseEvent): void => {
+    // The tab is a dnd-kit drag handle: stop the event so a right-click neither
+    // starts a drag nor shows the OS menu.
+    e.preventDefault()
+    e.stopPropagation()
+    setMenu({ x: e.clientX, y: e.clientY })
+    if (canOpenHere) {
+      setCwd(undefined)
+      void resolveCwd().then((c) => setCwd(c))
+    }
+  }
+
+  // Dismiss the menu on an outside mousedown or Escape (mirrors TerminalPane).
+  useEffect(() => {
+    if (!menu) return
+    const close = (): void => setMenu(null)
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setMenu(null)
+    }
+    window.addEventListener('mousedown', close)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', close)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [menu])
 
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
@@ -53,6 +113,12 @@ export function SessionTab({
   }
 
   const exited = session.lifecycle === 'exited'
+  const menuItemStyle: React.CSSProperties = {
+    width: '100%',
+    textAlign: 'left',
+    padding: '6px 8px',
+    cursor: 'pointer'
+  }
 
   return (
     <div
@@ -64,9 +130,15 @@ export function SessionTab({
       aria-selected={active}
       aria-label={session.title}
       onClick={onActivate}
+      onContextMenu={openMenu}
       style={style}
     >
-      <EditableLabel value={session.title} onCommit={onRename} editAriaLabel="rename session" />
+      <EditableLabel
+        ref={labelRef}
+        value={session.title}
+        onCommit={onRename}
+        editAriaLabel="rename session"
+      />
       {exited ? <span style={{ color: color.muted, fontWeight: 400 }}>(exited)</span> : null}
       <span
         role="button"
@@ -91,6 +163,99 @@ export function SessionTab({
       >
         ✕
       </span>
+
+      {menu ? (
+        <div
+          role="menu"
+          aria-label="session actions"
+          // Stop mousedown here so the window-level dismiss listener doesn't close the
+          // menu before a button's click lands. Stop click so activating the tab
+          // (the parent's onClick) doesn't fire from inside the menu.
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            position: 'fixed',
+            top: menu.y,
+            left: menu.x,
+            zIndex: 20,
+            display: 'flex',
+            flexDirection: 'column',
+            minWidth: 200,
+            padding: 4,
+            background: color.bgSurfaceRaised,
+            border: `1px solid ${color.border}`,
+            borderRadius: radius.md,
+            boxShadow: shadow.md
+          }}
+        >
+          {canOpenHere ? (
+            <button
+              type="button"
+              role="menuitem"
+              className="menu-item"
+              disabled={cwd == null}
+              onClick={() => {
+                if (cwd) onNewTerminalFromHere(cwd)
+                setMenu(null)
+              }}
+              style={menuItemStyle}
+            >
+              New terminal from this directory
+            </button>
+          ) : null}
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            onClick={() => {
+              setMenu(null)
+              labelRef.current?.beginEdit()
+            }}
+            style={menuItemStyle}
+          >
+            Rename tab
+          </button>
+          {moveTargets.length === 0 ? (
+            <button
+              type="button"
+              role="menuitem"
+              className="menu-item"
+              disabled
+              style={menuItemStyle}
+            >
+              Move to window
+            </button>
+          ) : (
+            moveTargets.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                role="menuitem"
+                className="menu-item"
+                onClick={() => {
+                  onMoveToWindow(t.id)
+                  setMenu(null)
+                }}
+                style={menuItemStyle}
+              >
+                Move to {t.label}
+              </button>
+            ))
+          )}
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            onClick={() => {
+              onClose()
+              setMenu(null)
+            }}
+            style={menuItemStyle}
+          >
+            Close session
+          </button>
+        </div>
+      ) : null}
     </div>
   )
 }

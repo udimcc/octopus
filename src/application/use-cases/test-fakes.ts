@@ -88,6 +88,8 @@ export class FakeRuntime implements SessionRuntime {
   readonly resizes: Array<{ cols: number; rows: number }> = []
   /** When set, `start()` rejects with this error (drives StartFailed). */
   failStartWith?: Error
+  /** Value returned by `currentCwd()` (undefined → cwd unavailable). */
+  cwdValue?: string
 
   constructor(ctx: SessionRuntimeContext) {
     this.ctx = ctx
@@ -115,6 +117,9 @@ export class FakeRuntime implements SessionRuntime {
   }
   stateEvaluator(): StateEvaluator | null {
     return null
+  }
+  currentCwd(): Promise<string | undefined> {
+    return Promise.resolve(this.cwdValue)
   }
 }
 

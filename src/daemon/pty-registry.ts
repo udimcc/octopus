@@ -12,8 +12,8 @@
  */
 
 import * as pty from 'node-pty'
-import { readlinkSync } from 'node:fs'
 import { buildPtyEnv } from '../shared/pty-env'
+import { procCwd } from '../shared/node/proc-cwd'
 import type { DaemonSessionInfo, SpawnParams } from '../shared/node/daemon-protocol'
 import { DaemonPty, type DaemonPtySink, type DaemonPtySpawn } from './daemon-pty'
 
@@ -27,15 +27,6 @@ export interface PtyRegistryOptions {
   readonly bufferBytes?: number
   /** cwd resolver (default reads /proc/<pid>/cwd); injectable for tests/portability. */
   readonly resolveCwd?: (pid: number) => string | undefined
-}
-
-/** Best-effort cwd of a pid via /proc (Linux). Undefined if unresolvable. */
-function procCwd(pid: number): string | undefined {
-  try {
-    return readlinkSync(`/proc/${pid}/cwd`)
-  } catch {
-    return undefined
-  }
 }
 
 export class PtyRegistry {

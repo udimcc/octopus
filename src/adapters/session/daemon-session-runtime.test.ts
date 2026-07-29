@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { DaemonSessionRuntime } from './daemon-session-runtime'
 import type { DaemonClient, DaemonSessionSink } from './daemon-client'
-import type { SpawnParams } from '../../shared/node/daemon-protocol'
+import type { SpawnParams, DaemonSessionInfo } from '../../shared/node/daemon-protocol'
 import type { SessionRuntimeContext } from '../../ports/session-runtime'
 import { asTaskId, asSessionId } from '../../domain/ids'
 
@@ -26,6 +26,13 @@ class FakeDaemonClient {
   attachAlive = true
   spawnReject: Error | null = null
   attachReject: Error | null = null
+  /** Roster returned by `listSessions` (drives `currentCwd`). */
+  roster: readonly DaemonSessionInfo[] = []
+
+  async listSessions(): Promise<readonly DaemonSessionInfo[]> {
+    this.order.push('listSessions')
+    return this.roster
+  }
 
   registerSink(id: string, sink: DaemonSessionSink): void {
     this.order.push('registerSink')
@@ -256,5 +263,35 @@ describe('DaemonSessionRuntime.stateEvaluator (§10)', () => {
     const rt = makeRuntime(h)
     await rt.start()
     expect(rt.stateEvaluator()).toBeNull()
+  })
+})
+
+describe('DaemonSessionRuntime.currentCwd (§6.2, "new terminal here")', () => {
+  it('returns the cwd of its own entry in the daemon roster', async () => {
+    const h = harness()
+    h.client.roster = [
+      { sessionId: 'other', alive: true, pid: 11, cwd: '/elsewhere', cols: 80, rows: 24 },
+      { sessionId: 's1', alive: true, pid: 22, cwd: '/wt/t1/sub', cols: 100, rows: 40 }
+    ]
+    const rt = makeRuntime(h)
+    await rt.start()
+    await expect(rt.currentCwd()).resolves.toBe('/wt/t1/sub')
+  })
+
+  it('returns undefined when the roster entry has no resolvable cwd', async () => {
+    const h = harness()
+    h.client.roster = [{ sessionId: 's1', alive: true, pid: 22, cols: 100, rows: 40 }]
+    const rt = makeRuntime(h)
+    await rt.start()
+    await expect(rt.currentCwd()).resolves.toBeUndefined()
+  })
+
+  it('returns undefined after exit without querying the daemon', async () => {
+    const h = harness()
+    const rt = makeRuntime(h)
+    await rt.start()
+    h.client.sink?.onExit(0)
+    await expect(rt.currentCwd()).resolves.toBeUndefined()
+    expect(h.client.order).not.toContain('listSessions')
   })
 })

@@ -25,6 +25,7 @@ import type {
   CloseSessionInput,
   RenameSessionInput,
   ReorderSessionInput,
+  SessionCwdInput,
   CreateWindowInput,
   CloseWindowInput,
   MoveSessionInput,
@@ -52,6 +53,14 @@ export const CHANNELS = {
   sessionRename: 'session:rename',
   sessionReorder: 'session:reorder',
   sessionMove: 'session:move',
+
+  /**
+   * A session's live current working directory (request/reply). A stateless
+   * main-side QUERY — like `getState`, it does NOT go through the command loop
+   * (§6.5). Reads the live runtime's cwd (via `/proc/<pid>/cwd`); resolves to the
+   * path, or `null` if it can't be resolved (exited/non-terminal/non-Linux).
+   */
+  sessionCwd: 'session:cwd',
 
   // Window commands (UI → backend, request/reply) (V1.5, §6.7).
   windowCreate: 'window:create',
@@ -144,6 +153,11 @@ export interface OctopusAPI {
     reorder(input: ReorderSessionInput): Promise<CommandAck>
     /** Reassign a session to another open window (V1.5, §3.7). */
     move(input: MoveSessionInput): Promise<CommandAck>
+    /**
+     * The session's live cwd → the path, or `null` if unresolvable (query, §6.5).
+     * Powers "new terminal from this directory".
+     */
+    cwd(input: SessionCwdInput): Promise<string | null>
   }
 
   /** Multi-window control (V1.5, §5.6, §6.7). */

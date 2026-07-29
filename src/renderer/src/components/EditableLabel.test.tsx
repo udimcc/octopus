@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
-import { EditableLabel } from './EditableLabel'
+import { createRef } from 'react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
+import { EditableLabel, type EditableLabelHandle } from './EditableLabel'
 
 describe('<EditableLabel>', () => {
   it('shows the value as text until double-clicked', () => {
@@ -58,5 +59,21 @@ describe('<EditableLabel>', () => {
     fireEvent.blur(input)
     expect(onCommit).not.toHaveBeenCalled()
     expect(screen.getByText('Alpha')).toBeInTheDocument()
+  })
+
+  it('enters edit mode via the imperative beginEdit() handle', () => {
+    const onCommit = vi.fn()
+    const ref = createRef<EditableLabelHandle>()
+    render(
+      <EditableLabel ref={ref} value="Alpha" onCommit={onCommit} editAriaLabel="rename task" />
+    )
+    // No input until the parent asks to edit.
+    expect(screen.queryByLabelText('rename task')).not.toBeInTheDocument()
+    // beginEdit() sets state outside a React event, so flush it inside act().
+    act(() => ref.current?.beginEdit())
+    const input = screen.getByLabelText('rename task')
+    fireEvent.change(input, { target: { value: 'Beta' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onCommit).toHaveBeenCalledWith('Beta')
   })
 })

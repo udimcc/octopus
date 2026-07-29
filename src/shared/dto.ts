@@ -250,6 +250,11 @@ export interface RenameSessionInput {
   readonly title: string
 }
 
+/** Query a session's live current working directory (§6.5, "new terminal here"). */
+export interface SessionCwdInput {
+  readonly sessionId: string
+}
+
 export interface ReorderSessionInput {
   readonly taskId: string
   readonly sessionId: string

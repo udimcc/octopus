@@ -40,6 +40,7 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
   const task = useStore((s) => s.tasks[taskId])
   const sessions = useStore((s) => s.sessions)
   const windowId = useStore((s) => s.windowId)
+  const windows = useStore((s) => s.windows)
   const activeSessionId = useStore((s) => s.activeSessionByTask[taskId])
   const setActiveSession = useStore((s) => s.setActiveSession)
 
@@ -157,6 +158,20 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
 
   const canAddSession = task?.lifecycle === 'ready'
 
+  // Human labels for the "Move to window" menu. Windows carry no name, so the main
+  // window is "Main window" and secondaries are numbered "Window N" in creation
+  // order (array order — event-created windows share createdAt 0, §6.7). The number
+  // is stable across tabs; the current window is excluded from each tab's targets.
+  const secondaries = windows.filter((w) => w.role === 'secondary')
+  const windowLabel = (id: string): string => {
+    const win = windows.find((w) => w.id === id)
+    if (!win || win.role === 'main') return 'Main window'
+    return `Window ${secondaries.indexOf(win) + 1}`
+  }
+  const moveTargets = windows
+    .filter((w) => w.id !== windowId)
+    .map((w) => ({ id: w.id, label: windowLabel(w.id) }))
+
   return (
     <div
       className="session-tabs"
@@ -210,6 +225,19 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
                   onActivate={() => setActiveSession(taskId, sid)}
                   onRename={(title) => window.octopusAPI.sessions.rename({ sessionId: sid, title })}
                   onClose={() => window.octopusAPI.sessions.close({ sessionId: sid })}
+                  canOpenHere={s.config.kind === 'terminal'}
+                  resolveCwd={() => window.octopusAPI.sessions.cwd({ sessionId: sid })}
+                  onNewTerminalFromHere={(cwd) =>
+                    window.octopusAPI.sessions.create({
+                      taskId,
+                      typeId: s.typeId,
+                      config: { kind: 'terminal', cwdOverride: cwd }
+                    })
+                  }
+                  onMoveToWindow={(targetWindowId) =>
+                    window.octopusAPI.sessions.move({ sessionId: sid, targetWindowId })
+                  }
+                  moveTargets={moveTargets}
                 />
               )
             })}
