@@ -36,14 +36,14 @@ A session is a window containing a developer tool needed for task completion.
 ### Session Types
 
 1. **Terminal** - Interactive terminal starting in the task's worktree directory. Used for Claude Code, file viewing, running scripts, etc.
-2. **Jenkins Pipeline Viewer** (Version 3) - Displays pipeline progression for the task's branch.
-3. Potentially more types in future versions.
+2. **Jenkins Pipeline Viewer** (Phase 3) - Displays pipeline progression for the task's branch.
+3. Potentially more types in future phases.
 
 ### Opening a Session
 
 When opening a session, the developer chooses the desired session type from a dropdown.
 
-### Session State (Version 2+)
+### Session State (Phase 2+)
 
 Each session evaluates its state and displays a status icon:
 
@@ -60,7 +60,7 @@ A window listing all task names. Located on the left side of the screen.
 ### Behavior
 
 - Clicking a task switches to it and displays all its sessions.
-- Each task name shows a status icon on the left (Version 2+):
+- Each task name shows a status icon on the left (Phase 2+):
   1. Waiting for user command
   2. Working
   3. Blocked
@@ -92,21 +92,21 @@ A window listing all task names. Located on the left side of the screen.
 - **Right side:** Task window containing session content.
 - **Top of task window:** Session tabs (clickable) and a "New Session" dropdown button on the top-left.
 
-## Versioning
+## Phases
 
-### Version 1
+### Phase 1
 
 - Tasks, sessions, and progress window.
 - Terminal session type.
 - No session or task state indicators.
 
-### Version 2
+### Phase 2
 
 - Session state evaluation and display.
 - Task state derived from session states.
 - Status icons in progress window and session tabs.
 
-### Version 3
+### Phase 3
 
 - New session type: Jenkins Pipeline Viewer.
 - Connects to Jenkins to display pipeline progression.

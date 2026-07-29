@@ -3,7 +3,7 @@
 > **Status:** Draft for review · **Companion to:** [`PRD.md`](./PRD.md)
 > This document turns the product requirements into an implementable architecture. It defines the
 > domain model, the layering, the technology stack, the process/PTY backend, the session-state-detection
-> subsystem, and a version-by-version build plan with the seams that keep future work additive.
+> subsystem, and a phase-by-phase build plan with the seams that keep future work additive.
 
 ---
 
@@ -20,8 +20,8 @@ sessions while **all sessions keep running in the background**.
 1. **Parallelism without loss** — sessions of non-active tasks keep running and retain scrollback.
 2. **A small, stable domain surrounded by pluggable edges** — the OS (git scripts, PTYs), the UI framework,
    and external integrations (Jenkins) are all volatile; the core is not.
-3. **Additive versioning** — V1 ships without painting into a corner; V2 (state) and V3 (Jenkins) add
-   *implementations* behind interfaces defined in V1, not rewrites.
+3. **Additive phasing** — phase 1 ships without painting into a corner; phase 2 (state) and phase 3 (Jenkins) add
+   *implementations* behind interfaces defined in phase 1, not rewrites.
 4. **Safety of destructive operations** — worktree create/delete run user scripts guarded by validation,
    containment checks, and strict teardown ordering.
 
@@ -29,16 +29,16 @@ sessions while **all sessions keep running in the background**.
 
 | Item | Resolution | Where decided |
 |---|---|---|
-| PRD line 39 tags Jenkins "Version 2+", but §Versioning says V3 | **Jenkins is V3.** V2 is *state only*. | §10 |
+| PRD line 39 tags Jenkins "Phase 2+", but §Phases says phase 3 | **Jenkins is phase 3.** Phase 2 is *state only*. | §10 |
 | Desktop runtime / UI stack (was open) | **Electron + React + TypeScript.** | §4 |
 | Quit semantics (was open) | **Persist metadata + gracefully terminate processes; do not resurrect live process state.** Reconcile worktrees on startup. | §7, §8 |
-| PTY hosting: in-process vs daemon vs tmux | **V1: node-pty in-process behind a `SessionManager` port.** Durable backend (daemon or tmux) is a V2+ migration with the same message protocol. | §6.2 |
+| PTY hosting: in-process vs daemon vs tmux | **Phase 1: node-pty in-process behind a `SessionManager` port.** Durable backend (daemon or tmux) is a phase 2+ migration with the same message protocol. | §6.2 |
 | Task-state aggregation rule | **Worst-status-wins:** `Blocked > Working > Waiting > Unknown`. | §3.4, §9.3 |
 | Worktree provisioning | **Repo-local script if present, else native git.** If `<repoDir>/create_worktree.sh` (resp. `delete_worktree.sh`) exists, Octopus runs it (script owns the location); otherwise Octopus provisions the worktree itself via `git worktree`. Detected **per task** on each create/delete. | §6.4, §12.4 |
 | Worktree location | **Octopus-owned by default**, under a configurable base dir `worktree.location` (default `~/octopus_repos/`). A repo-local create script may return any location instead; Octopus stores the path verbatim. `repo_root` stored per task, so multi-repo works with no special support. | §6.3, §6.4, §12.4 |
-| State-signal injection (OSC 133 + Claude hooks) | **Opt-out auto-injection** (rcfile sources user's rc; `.claude/settings.json` merged, never clobbered). Lands in V2. | §12.1 |
+| State-signal injection (OSC 133 + Claude hooks) | **Opt-out auto-injection** (rcfile sources user's rc; `.claude/settings.json` merged, never clobbered). Lands in phase 2. | §12.1 |
 | Task-creation inputs | **Modal collects name, repo directory (native picker), source branch, new branch** (new-branch prefilled with a slug). All are passed to native git / the repo-local create script. | §5.4, §12.3 |
-| Single vs multiple windows | **Multi-window, V1.5.** The **main** window owns the progress panel; **secondary** windows are session-only. All windows sync on the single `activeTaskId` (switch a task → sessions switch everywhere). Session→window is an opaque `windowId` on `Session` (default `MAIN_WINDOW_ID`); pixel bounds live in persistence only, never the domain. Windows + session assignments are restored on relaunch. | §3.7, §5.6, §6.7, §10 |
+| Single vs multiple windows | **Multi-window, phase 1.5.** The **main** window owns the progress panel; **secondary** windows are session-only. All windows sync on the single `activeTaskId` (switch a task → sessions switch everywhere). Session→window is an opaque `windowId` on `Session` (default `MAIN_WINDOW_ID`); pixel bounds live in persistence only, never the domain. Windows + session assignments are restored on relaunch. | §3.7, §5.6, §6.7, §10 |
 
 ---
 
@@ -46,7 +46,7 @@ sessions while **all sessions keep running in the background**.
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────┐
-│ MAIN RENDERER (React)          │  SECONDARY RENDERER* (V1.5, one per window) │
+│ MAIN RENDERER (React)          │  SECONDARY RENDERER* (phase 1.5, one per window) │
 │   ProgressPanel (tasks, icons, │    SecondaryWorkspace → SessionPane*        │
 │     New/Delete/New Window)     │      (sessions where windowId == thisWindow)│
 │   TaskWorkspace → TaskView* →  │    (no progress panel; session-only)        │
@@ -62,13 +62,13 @@ sessions while **all sessions keep running in the background**.
 │ MAIN PROCESS (Node.js)                                                        │
 │   Application layer: use cases + single-writer command loop                   │
 │   Domain (pure): Task, Session, WorktreeRef, State machines, Aggregator       │
-│   WindowRegistry (V1.5): windowId → webContents; routes events per window     │
+│   WindowRegistry (phase 1.5): windowId → webContents; routes events per window     │
 │   Ports → Adapters:                                                           │
 │     WorktreeProvider → SelectingWorktreeProvider (Script | NativeGit)         │
 │     SessionManager / SessionRuntime → PtyTerminalRuntime (node-pty)           │
 │     WorkspacePersistence → SqliteStore (better-sqlite3)                        │
-│     StateEvaluator (V2) → Terminal heuristic + ClaudeCode explicit            │
-│     JenkinsClient (V3) → JenkinsHttpClient                                     │
+│     StateEvaluator (phase 2) → Terminal heuristic + ClaudeCode explicit            │
+│     JenkinsClient (phase 3) → JenkinsHttpClient                                     │
 │     EventBus, Clock, IdGenerator, CredentialsProvider                         │
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -96,13 +96,13 @@ Workspace (app root)
 Task (aggregate root for its sessions)
   1 ── 1 WorktreeRef     (value object; required once Ready)
   1 ── * Session         (ordered tabs; ≤1 active)
-  derived: TaskState     (V2+, computed from child session states)
+  derived: TaskState     (phase 2+, computed from child session states)
 
 Session (entity inside the Task aggregate)
   * ── 1 SessionType     (by typeId → resolved via registry)
   1 ── 1 SessionConfig   (type-specific value object; fully serializable)
   1 ── 0/1 RuntimeHandle  (opaque id into infra; not the process object)
-  attribute: SessionState (V2+)
+  attribute: SessionState (phase 2+)
 ```
 
 **Aggregate boundaries.** `Task` is the consistency boundary for its sessions (all add/remove/reorder/state
@@ -115,10 +115,10 @@ persistence, event routing, and any future multi-window refactor clean.
 - **Workspace** — `tasks: OrderedMap<TaskId,Task>`, `activeTaskId: TaskId?`, `config: WorkspaceConfig`. Owns
   the "at most one active task" rule.
 - **Task** — `id`, `name` (display only), `worktree: WorktreeRef`, `sessions: OrderedList<Session>`,
-  `activeSessionId?`, `lifecycle: TaskLifecycle`, `state: TaskState` (derived, V2+), timestamps.
+  `activeSessionId?`, `lifecycle: TaskLifecycle`, `state: TaskState` (derived, phase 2+), timestamps.
 - **Session** — `id` (globally unique), `taskId`, `typeId`, `title`, `config: SessionConfig`,
-  `lifecycle: SessionLifecycle`, `state: SessionState` (V2+, default `Unknown`), `runtimeRef?`, `order`,
-  `windowId: WindowId` (V1.5; which window renders it, default `MAIN_WINDOW_ID`; §3.7). `windowId` is an
+  `lifecycle: SessionLifecycle`, `state: SessionState` (phase 2+, default `Unknown`), `runtimeRef?`, `order`,
+  `windowId: WindowId` (phase 1.5; which window renders it, default `MAIN_WINDOW_ID`; §3.7). `windowId` is an
   opaque assignment tag orthogonal to `taskId` — moving a session between windows never changes `taskId`
   (I7) or lifecycle (I9), so it is **not** a cross-aggregate object reference, just a presentation label.
 - **WorktreeRef** (immutable once set) — `path: AbsolutePath`, `branch?` (the new branch), `baseRef?`
@@ -132,7 +132,7 @@ persistence, event routing, and any future multi-window refactor clean.
   `availableFromVersion`, `configSchema`, `capabilities: Set<Capability>`, runtime factory reference.
 - **SessionConfig** — per-type, validated against the type's `configSchema`. Must be fully serializable so a
   session can be recreated on restart. Terminal: `{ shell?, initialCommand?, cwdOverride? }` (defaults to the
-  worktree path). Jenkins (V3): `{ jobPath, branch (defaults to worktree branch), credentialsRef }`.
+  worktree path). Jenkins (phase 3): `{ jobPath, branch (defaults to worktree branch), credentialsRef }`.
 
 ### 3.3 State enums
 
@@ -145,7 +145,7 @@ Internal-only session sub-states (feed confidence scoring, not the UI): `Waiting
 `Waiting/Explicit`, `Working/Subprocess`, `Working/Explicit`, `Blocked/Permission`, `Blocked/Explicit`,
 `Blocked/Heuristic`, `Initializing` (mapped to `Working` for display). See §9.
 
-### 3.4 Task-state aggregation (V2+)
+### 3.4 Task-state aggregation (phase 2+)
 
 **Rule — worst-status-wins**, a pure `max` over the lattice `Blocked > Working > Waiting > Unknown`:
 
@@ -196,11 +196,11 @@ the list. `DeleteFailed` retains metadata so the user can retry or "force-forget
                                                     (Stopping) ──dispose──▶ (Closed)
 ```
 
-`SessionLifecycle` ("is the runtime alive?") is **orthogonal** to `SessionState` ("what is it doing?", V2+).
+`SessionLifecycle` ("is the runtime alive?") is **orthogonal** to `SessionState` ("what is it doing?", phase 2+).
 Switching tasks never changes lifecycle — background sessions stay `Running`; visibility is a UI concern, not
 a domain state. A `StartFailed`/`Exited` session maps to `Blocked` for aggregation.
 
-### 3.7 Window model (V1.5)
+### 3.7 Window model (phase 1.5)
 
 Octopus runs across **multiple OS windows** (one per monitor). This is deliberately a **presentation +
 persistence concept, not a domain aggregate** — the domain stays pure and its invariants unchanged:
@@ -251,18 +251,18 @@ complication — npm deps are vendored, Electron is bundled, no runtime network 
 App
 ├── ProgressPanel
 │   ├── PanelHeader → NewTaskButton, DeleteTaskButton
-│   └── TaskList → TaskListItem*  (TaskStatusIcon [V2] + label)
+│   └── TaskList → TaskListItem*  (TaskStatusIcon [phase 2] + label)
 └── TaskWorkspace
     └── TaskView*                 (one per task; only active is visible)
-        ├── SessionTabBar → NewSessionDropdown, SessionTab* (SessionStatusIcon [V2])
-        └── SessionPaneArea → SessionPane*  (TerminalPane | JenkinsPane [V3])
+        ├── SessionTabBar → NewSessionDropdown, SessionTab* (SessionStatusIcon [phase 2])
+        └── SessionPaneArea → SessionPane*  (TerminalPane | JenkinsPane [phase 3])
 ```
 
 All `TaskView`s and their `SessionPane`s stay mounted; only the active ones are visible (see §5.3).
 
 ### 5.2 State management & data flow
 
-Zustand store holds: `tasks`, `sessions`, `activeTaskId`, `activeSessionId` (per task), and (V2)
+Zustand store holds: `tasks`, `sessions`, `activeTaskId`, `activeSessionId` (per task), and (phase 2)
 `sessionStatuses` + derived `taskStatuses` (selector applying §3.4). **High-frequency `ptyData` bypasses the
 store** — it is delivered by IPC directly to the target `TerminalPane`'s `terminal.write(data)`. On startup
 the renderer calls `app:getState` (§6.5) to hydrate; thereafter lifecycle/status events patch the store.
@@ -271,7 +271,7 @@ the renderer calls `app:getState` (§6.5) to hydrate; thereafter lifecycle/statu
 Keystroke:  xterm onData → octopusAPI.pty.input → ipcMain → pty.write
 Output:     pty onData → (batched, §6.5) → webContents.send('pty:data') → terminal.write   [not via store]
 New task:   modal → octopusAPI.tasks.create → provision worktree (script or native git) → persist → resolve → store.createTask
-Status(V2): evaluator → send('session:status') → store.updateSessionStatus → icons re-render
+Status(phase 2): evaluator → send('session:status') → store.updateSessionStatus → icons re-render
 ```
 
 ### 5.3 Keep-alive on task switch (critical)
@@ -317,12 +317,12 @@ restore complexity). The serialize-and-replay path is kept available for a futur
   spinner while the worktree is provisioned/adopted (repo-local script or native git, §6.4) → on success new
   task becomes active with empty state; on failure show stderr in a red block + Retry + toast.
 - **New Session:** dropdown populated from the session-type registry (filtered by `availableFromVersion ≤
-  currentVersion`). Terminal creates immediately; Jenkins (V3) opens a small config modal.
+  currentVersion`). Terminal creates immediately; Jenkins (phase 3) opens a small config modal.
 - **Delete Task:** confirm dialog whose body reflects ownership (§6.4) — a managed worktree "closes all
   sessions and removes the worktree", an adopted repo (`managed: false`) "closes all sessions" but leaves
   the directory on disk; on dirty worktree, an extra "uncommitted changes — delete anyway?" confirmation
   (the dirty gate still fires for adopted repos, even though nothing is removed from disk).
-- **Status icons (V2):** shape **and** color (accessibility): Waiting = hollow/pause, gray; Working =
+- **Status icons (phase 2):** shape **and** color (accessibility): Waiting = hollow/pause, gray; Working =
   spinner/filled, blue; Blocked = warning triangle, amber. Low-confidence heuristic states render dimmed or
   pulsing. Tooltips give plain-text descriptions.
 - **Keyboard:** eight actions are **fully user-configurable chords** in Settings — next/prev session
@@ -339,18 +339,18 @@ restore complexity). The serialize-and-replay path is kept available for a futur
   never *also* written to the terminal (the `window` listener's `preventDefault` alone is unreliable —
   xterm's textarea handler runs first).
 - **Empty states & toasts:** "No tasks yet", "No sessions", inline "Connecting…" written into the terminal;
-  bottom-right toasts for script failures, unexpected PTY exit, Jenkins errors (V3).
+  bottom-right toasts for script failures, unexpected PTY exit, Jenkins errors (phase 3).
 
 ### 5.5 Renderer / main split
 
 - **Main:** all node-pty instances, worktree script execution, IPC server, filesystem, persistence, state
-  evaluators (V2), Jenkins HTTP client (V3). Source of truth for persisted state — survives renderer reload.
+  evaluators (phase 2), Jenkins HTTP client (phase 3). Source of truth for persisted state — survives renderer reload.
 - **Preload:** exposes only a typed `window.octopusAPI` via `contextBridge`; renderer never touches
   `ipcRenderer`/Node directly.
 - **Renderer:** rendering, Zustand store, xterm instances (in refs, never serialized to store), IPC
   subscription setup.
 
-### 5.6 Multiple windows (V1.5)
+### 5.6 Multiple windows (phase 1.5)
 
 Each OS window is a **separate Electron renderer process** with its own Zustand store. Two roles:
 
@@ -392,7 +392,7 @@ node-pty.spawn(shell, ["-l"], {
   name: "xterm-256color", cols, rows, cwd: worktreePath,
   env: { ...inherited, TERM:"xterm-256color", COLORTERM:"truecolor",
          OCTOPUS_TASK_ID, OCTOPUS_SESSION_ID, OCTOPUS_WORKTREE,
-         OCTOPUS_STATE_SOCKET /* V2, §9 */,
+         OCTOPUS_STATE_SOCKET /* phase 2, §9 */,
          /* stripped: TMUX, STY, WINDOWID */ } })
 ```
 
@@ -402,7 +402,7 @@ node-pty.spawn(shell, ["-l"], {
   `TIOCSWINSZ` delivers SIGWINCH automatically.
 - **Exit:** node-pty `onExit` reaps the child (waitpid) → mark `Exited`, emit `sessionExited`, retain
   scrollback so the user can read final output.
-- **Close:** SIGHUP; if still alive after 2 s, SIGKILL. (V2+: spawn each shell via `setsid` so SIGKILL to the
+- **Close:** SIGHUP; if still alive after 2 s, SIGKILL. (phase 2+: spawn each shell via `setsid` so SIGKILL to the
   group also kills descendants — compilers, agents.)
 - **FD limits:** raise `RLIMIT_NOFILE` to 65536 at startup (default 1024 is exhausted by dozens of PTYs).
 
@@ -446,9 +446,9 @@ CREATE TABLE sessions (
   id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   type TEXT NOT NULL, label TEXT NOT NULL, shell TEXT, position INTEGER NOT NULL,
   state TEXT NOT NULL DEFAULT 'unknown', created_at INTEGER NOT NULL, exited_at INTEGER,
-  window_id TEXT NOT NULL DEFAULT 'main');  -- V1.5: which window renders it (§3.7); default = main
+  window_id TEXT NOT NULL DEFAULT 'main');  -- phase 1.5: which window renders it (§3.7); default = main
 CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);  -- e.g. active_task_id
-CREATE TABLE windows (  -- V1.5: window records incl. monitor placement (§3.7, §6.7)
+CREATE TABLE windows (  -- phase 1.5: window records incl. monitor placement (§3.7, §6.7)
   id TEXT PRIMARY KEY, role TEXT NOT NULL CHECK(role IN ('main','secondary')),
   x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0,
   width INTEGER NOT NULL DEFAULT 1280, height INTEGER NOT NULL DEFAULT 800,
@@ -476,7 +476,7 @@ repo-local script / git repo (§6.4).
 **Schema version:** `PRAGMA user_version` is stamped with the current version. Adding `base_ref` bumped it
 to **2**; `SqliteStore` runs a guarded, idempotent `ALTER TABLE tasks ADD COLUMN base_ref TEXT` when it
 opens a `user_version < 2` database (§10 — this is the first use of the migration seam). Persisted scrollback
-bumped it to **3**. **V1.5 (multi-window) bumps it to 4:** a guarded `ALTER TABLE sessions ADD COLUMN
+bumped it to **3**. **Phase 1.5 (multi-window) bumps it to 4:** a guarded `ALTER TABLE sessions ADD COLUMN
 window_id TEXT NOT NULL DEFAULT 'main'` (the default migrates every existing session to the main window with
 no UPDATE pass), a `CREATE TABLE IF NOT EXISTS windows`, and an `INSERT OR IGNORE` seeding the `main` window
 record — the same fresh-DB-`CREATE`-plus-guarded-upgrade pattern proven at v2/v3. **Adopted-repo ownership
@@ -485,7 +485,7 @@ back-fill `UPDATE tasks SET managed = 0 WHERE base_ref IS NULL` — historically
 `base_ref` null, so this marks them unmanaged (left on disk on delete, §6.4) while every provisioned row
 keeps the `DEFAULT 1`.
 
-**Windows persistence (V1.5, §3.7, §6.7).** `WorkspacePersistence` gains `loadWindows/upsertWindow/
+**Windows persistence (phase 1.5, §3.7, §6.7).** `WorkspacePersistence` gains `loadWindows/upsertWindow/
 deleteWindow`. Window **bounds** are saved (debounced) on OS move/resize; the session's `window_id` is
 saved via the normal `upsertSession`. **Restore:** at boot, main creates a `BrowserWindow` for every
 persisted `WindowRecord` at its saved bounds, but **clamps off-screen bounds** — if a saved window
@@ -495,7 +495,7 @@ whichever window its `window_id` names (falling back to the main window if that 
 
 ### 6.4 Worktree provisioning contract
 
-Worktree create/delete go through the `WorktreeProvider` port. The V1 implementation is a
+Worktree create/delete go through the `WorktreeProvider` port. The phase 1 implementation is a
 `SelectingWorktreeProvider` composing two adapters behind that single unchanged port (§10): a
 **`ScriptWorktreeProvider`** (repo-local user script) and a **`NativeGitWorktreeProvider`** (Octopus runs
 git itself). The selector **probes per task** — `<repoDir>/create_worktree.sh` (resp. `delete_worktree.sh`)
@@ -551,9 +551,9 @@ repos so the user is warned about uncommitted changes, even though nothing is re
 
 ### 6.5 IPC protocol
 
-**V1 transport:** Electron `contextBridge` + `ipcMain`/`ipcRenderer`, all behind the typed `octopusAPI`.
+**Phase 1 transport:** Electron `contextBridge` + `ipcMain`/`ipcRenderer`, all behind the typed `octopusAPI`.
 Request/reply commands use `ipcMain.handle` (with a renderer-generated `requestId`); streaming `ptyData` uses
-`webContents.send` to avoid head-of-line blocking. The message set is transport-agnostic so the V2 daemon can
+`webContents.send` to avoid head-of-line blocking. The message set is transport-agnostic so the phase 2 daemon can
 carry it over a Unix socket unchanged.
 
 ```
@@ -563,7 +563,7 @@ Commands (UI→backend): createTask{name,repoDir,sourceBranch,newBranch}, delete
 Queries (UI→backend, no domain mutation): pickDirectory (native OS folder picker for the New-Task modal)
 Events (backend→UI):  ptyData, sessionCreated, sessionExited, sessionClosed,
   taskCreated, taskDeleted, taskRenamed, taskStale, scriptProgress, scriptError,
-  sessionStateChanged (V2), taskStateChanged (V2), error
+  sessionStateChanged (phase 2), taskStateChanged (phase 2), error
 ```
 
 ### 6.6 Concurrency & resilience
@@ -590,7 +590,7 @@ Events (backend→UI):  ptyData, sessionCreated, sessionExited, sessionClosed,
 - **App quit:** SIGHUP all PTYs (fire-and-forget), `PRAGMA wal_checkpoint(TRUNCATE)`, then quit. Warn the
   user if any session is `Working`/`Blocked`.
 
-### 6.7 Multi-window backend (V1.5)
+### 6.7 Multi-window backend (phase 1.5)
 
 **Event routing — `WindowRegistry`.** The single-target event forwarder (§6.5, one `webContents`) is
 replaced by a **`WindowRegistry`**: a `Map<WindowId, { webContents, ready, pending[] }>` with **one** bus
@@ -599,7 +599,7 @@ subscription whose closure routes each mapped `EventDTO` by kind:
   window hosting that session** (look up `session.windowId`; drop silently if the session is mid-close).
 - **`sessionMovedToWindow`** (new) → **both** the source and target windows, so both re-render in one cycle.
 - **Task-level / broadcast events** (`taskCreated/Deleted/Renamed/Reordered/Stale`, `activeTaskChanged`,
-  `scriptProgress/Error`, `error`, settings, and the dormant V2 `sessionStateChanged/taskStateChanged`) →
+  `scriptProgress/Error`, `error`, settings, and the dormant phase 2 `sessionStateChanged/taskStateChanged`) →
   **all** windows — every window keeps its active-task view (and the main window its full task list) correct.
 
 Each window identifies itself at creation via a `?windowId=<id>` URL param (§5.6). Per-window `markReady`
@@ -607,7 +607,7 @@ fires from that window's `getState` call — the handler resolves the caller via
 `BrowserWindow.fromWebContents(e.sender)` — so each renderer's buffered startup events flush exactly when it
 can receive them (generalizes the §6.5 single-window `onHydrate`).
 
-**New protocol (transport-agnostic, §6.5 — the V2 daemon carries `windowId` unchanged):**
+**New protocol (transport-agnostic, §6.5 — the phase 2 daemon carries `windowId` unchanged):**
 - **Commands:** `createWindow{role:'secondary', bounds?}`, `closeWindow{windowId, disposition:'move-to-main'
   | 'kill-sessions'}`, `moveSessionToWindow{sessionId, targetWindowId}`, and `createWindowWithSession
   {sessionId, bounds?}` (atomic create-then-move so the drop-on-desktop path is one dispatch, not a racy
@@ -664,12 +664,12 @@ A quit-in-progress (`before-quit`) sets an `isQuitting` flag that suppresses the
   / fresh Jenkins viewer) — **except** when a durable backend re-attaches a still-live session, in which case
   the config is not re-applied (the process already exists; `initialCommand` is not re-run).
 - **I16.** Never persist secrets. Jenkins config stores a `credentialsRef`; a `CredentialsProvider` port
-  resolves it from the OS keychain (libsecret) at runtime. Define this port's shape in V1's persistence
-  design so V3 doesn't retrofit secret handling.
+  resolves it from the OS keychain (libsecret) at runtime. Define this port's shape in phase 1's persistence
+  design so phase 3 doesn't retrofit secret handling.
 - **I17.** User scripts, native `git` invocations, and terminal commands are a trust boundary: run via
   `ScriptRunner` with explicit cwd, **no shell-string interpolation of untrusted names** (branch names,
   paths, and repo dirs are passed as argv elements with `shell:false`), timeouts, captured exit/stderr.
-- **I18.** (V1.5) A session has exactly one `windowId` at all times (default `MAIN_WINDOW_ID`); moving it
+- **I18.** (phase 1.5) A session has exactly one `windowId` at all times (default `MAIN_WINDOW_ID`); moving it
   between windows changes only `windowId`, never `taskId` (I7) or lifecycle (I9). A session whose persisted
   `window_id` names a window that no longer exists falls back to `MAIN_WINDOW_ID` on restore (never orphaned).
   On restore, windows and their session assignments are reconstructed alongside tasks/sessions (extends
@@ -694,17 +694,17 @@ registry**:
 optional `stateEvaluator()` (present iff `EvaluatesState`). State is **push-based**: the runtime emits
 `sessionStateChanged` on the `EventBus`; the Application ingests it and recomputes `TaskState`.
 
-**Acceptance test for the abstraction:** adding Jenkins (V3) is a `JenkinsSessionTypeProvider` +
+**Acceptance test for the abstraction:** adding Jenkins (phase 3) is a `JenkinsSessionTypeProvider` +
 `JenkinsViewFactory` + a `JenkinsHttpClient` adapter, registered at the composition root — **zero edits** to
 `Task`, the aggregator, or the dropdown logic. If adding a type required editing those, the abstraction is
-wrong. V1 uses static registration (Terminal only); dynamic/third-party plugin loading is deferred but
+wrong. Phase 1 uses static registration (Terminal only); dynamic/third-party plugin loading is deferred but
 additive behind this registry.
 
 ---
 
-## 9. Session-State-Detection Subsystem (V2 core)
+## 9. Session-State-Detection Subsystem (phase 2 core)
 
-This is the hardest part of V2. Terminal state is inferred from **layered signals, highest-confidence wins**.
+This is the hardest part of phase 2. Terminal state is inferred from **layered signals, highest-confidence wins**.
 
 ### 9.1 Signal layers
 
@@ -755,14 +755,14 @@ server (richer but heavier — defer).
   confidence, assessed_at, reason, layer}`, `teardown()`. Confidence ∈ {Authoritative, High, Medium, Low,
   None}; Medium/Low set a `low_confidence` flag the UI dims.
 - **Composition:** a Claude-Code terminal uses a `CompositeStateProvider` = `TerminalHeuristicProvider`
-  (Layers 1+2) + `ClaudeCodeProvider` (Layer 3), applying §9.1 logic. Jenkins (V3) uses `JenkinsProvider`.
+  (Layers 1+2) + `ClaudeCodeProvider` (Layer 3), applying §9.1 logic. Jenkins (phase 3) uses `JenkinsProvider`.
 - **Delivery:** OSC parsing and socket reads are event-driven (in the PTY read loop / async socket);
   `tcgetpgrp` polled at 200 ms; PTY-activity checked at 1 s.
 - **Debounce/hysteresis (anti-flicker):** min 500 ms hold; `Working→Waiting` requires 1 s stability;
   `Waiting→Working` immediate; **`Blocked` immediate, no debounce**; `Unknown` emitted once at start.
   Task-level aggregation also debounced 300 ms (except Blocked).
 
-### 9.4 V3 Jenkins state mapping
+### 9.4 Phase 3 Jenkins state mapping
 
 Poll `<job>/lastBuild/api/json` every ~10 s (configurable):
 `building==true` → **Working**; `SUCCESS/UNSTABLE/FAILURE/ABORTED/NOT_BUILT` → **Waiting** (a failed pipeline
@@ -772,12 +772,12 @@ poll.
 
 ---
 
-## 10. Versioning Roadmap
+## 10. Phases Roadmap
 
-**Principle:** define interfaces/enums in V1; add *implementations* in V2/V3. Signatures never change across
-versions.
+**Principle:** define interfaces/enums in phase 1; add *implementations* in phase 2/phase 3. Signatures never change across
+phases.
 
-### V1 — Tasks, Sessions, Progress window, Terminal (no state)
+### Phase 1 — Tasks, Sessions, Progress window, Terminal (no state)
 
 - **Domain:** `Task`, `Session`, `WorktreeRef`, `Workspace`, both state machines. Also define
   `SessionState`/`TaskState`/`TaskStateAggregator` — but everything is `Unknown` and the UI renders **no
@@ -796,9 +796,9 @@ versions.
   `OCTOPUS_STATE_SOCKET` env + per-session socket dir provisioned (unused); `CredentialsProvider` port shape
   defined.
 
-### V1.5 — Multiple windows
+### Phase 1.5 — Multiple windows
 
-Ships on top of feature-complete V1; **strictly additive** — no domain/port/IPC signature changes, only new
+Ships on top of feature-complete phase 1; **strictly additive** — no domain/port/IPC signature changes, only new
 fields, commands, events, and one schema migration. Each layer's addition:
 - **Domain:** `WindowId` branded id + `MAIN_WINDOW_ID` constant; `Session.windowId` field +
   `assignToWindow()`; `windowId` in `SessionSnapshot`. No aggregate/invariant changes (§3.7, I18).
@@ -812,24 +812,24 @@ fields, commands, events, and one schema migration. Each layer's addition:
 - **UI:** main/secondary `App` split; `SecondaryWorkspace`; New Window button; cross-window detach DnD
   (§5.6). `pty-router`/`webgl-budget` need **no** change (per-renderer-process singletons already correct).
 
-**Forward-compatibility.** V2 is unaffected: status icons (§9) render per-session in whatever window hosts
-the session; `sessionStateChanged/taskStateChanged` are broadcast to all windows. The V2 durable-session
-daemon (§6.2) stays compatible — it echoes `windowId` on each event to route to the right window. V3 (Jenkins)
+**Forward-compatibility.** Phase 2 is unaffected: status icons (§9) render per-session in whatever window hosts
+the session; `sessionStateChanged/taskStateChanged` are broadcast to all windows. The phase 2 durable-session
+daemon (§6.2) stays compatible — it echoes `windowId` on each event to route to the right window. Phase 3 (Jenkins)
 is untouched: a `JenkinsPane` carries a `windowId` like any session and moves between windows the same way.
 
-### V2 — Session state + aggregation + icons
+### Phase 2 — Session state + aggregation + icons
 
 - Implement `TerminalHeuristicProvider` (OSC 133 + tcgetpgrp + activity) and `ClaudeCodeProvider`
   (socket/OSC 9000); flip Terminal's `EvaluatesState` on; inject OSC 133 integration into Octopus terminals.
 - Wire the existing `sessionStateChanged` → ingest → `TaskStateAggregator` → view-model → icons in the
   progress window and on tabs. Debounce/hysteresis (§9.3). Add the state transition log + debug overlay.
 - **No new ports, no domain signature changes.** Optionally expose the alternate aggregation precedence as a
-  setting. *(Durable-session infra — **done ahead of V2**:* `SessionManager` has a durable `octopusd` daemon
+  setting. *(Durable-session infra — **done ahead of phase 2**:* `SessionManager` has a durable `octopusd` daemon
   backend, the default `terminal.backend` (opt out with `'in-process'`), that survives an app restart and
   re-attaches live PTYs — cwd + foreground program + scrollback intact (§6.2). Renderer unaffected, exactly as
   the port boundary reserved.)*
 
-### V3 — Jenkins Pipeline Viewer
+### Phase 3 — Jenkins Pipeline Viewer
 
 - Add `JenkinsClient` port + `JenkinsHttpClient` adapter (auth via `CredentialsProvider`/keychain — never
   plaintext). Add `JenkinsSessionTypeProvider` (`EvaluatesState` on, config schema job/branch/creds) +
@@ -846,13 +846,13 @@ is untouched: a `JenkinsPane` carries a `windowId` like any session and moves be
 | R1 | Terminal state-detection reliability (heuristics misfire) | High | OSC 133 injected by default; Claude Code hooks for authoritative Blocked; manual "refresh state" affordance; log every transition w/ layer+confidence to tune thresholds. |
 | R2 | PTY performance with many sessions | Med | Single epoll loop; output batching (leading-edge + 3 ms trailing coalesce, §6.6); 200 ms tcgetpgrp off the hot path; O(1)/byte OSC parse; 20 sessions ≈ 100 syscalls/s — negligible. |
 | R3 | Worktree provisioning safety (repo-local script **or** native git) | High | Validate the resulting path (absolute, exists, is a directory; warn if not a git worktree); containment check before delete (exactly the stored path, not `/`/`repoDir`/an ancestor); 30 s timeout; show command output; **all inputs passed as argv — no shell interpolation** for both scripts and native git (I17). |
-| R4 | Keeping many sessions alive / crash loses agent work | Med | V1 accepts loss + fresh-shell restore; durable backend (tmux/daemon) is the V2+ mitigation behind `SessionManager`; warn on quit if Working/Blocked. |
+| R4 | Keeping many sessions alive / crash loses agent work | Med | Phase 1 accepts loss + fresh-shell restore; durable backend (tmux/daemon) is the phase 2+ mitigation behind `SessionManager`; warn on quit if Working/Blocked. |
 | R5 | Security (air-gapped on-prem): socket spoofing, secrets | Med | Per-user `chmod 700` socket dir; validate/size-cap socket messages; secrets only via keychain (`credentialsRef`), never in the store/JSON. |
 | R6 | OSC parsing correctness on adversarial output | Low–Med | Reuse a hardened parser (xterm.js's); cap param length (1 KB) + sequence timeout; never propagate parse errors to the renderer. |
 | R7 | State flicker | Med | Debounce/hysteresis (§9.3); Blocked exempt (must be instant). |
-| R8 | (V1.5) Cross-window move race — window moved between drop and `windowAtPoint`, or overlapping unmount/mount | Low | Hit-test is best-effort; worst case the session lands in the wrong window and is re-draggable. Source/target renderers are separate processes, so a brief double-sink during the move overlap cannot collide; the `pty-router` pending buffer covers the pre-mount gap (§6.7). |
-| R9 | (V1.5) Quit blocked by the secondary-window close dialog | Low | `before-quit` sets an `isQuitting` flag; the secondary `close` handler skips its dialog when quitting, so `Ctrl+Q` runs the normal graceful shutdown (§6.7). |
-| R10 | (V1.5) Persisted window off-screen after a monitor change | Low | On restore, clamp any window intersecting no display work area to the nearest display (`screen.getAllDisplays()`), preserving size (§6.3). |
+| R8 | (phase 1.5) Cross-window move race — window moved between drop and `windowAtPoint`, or overlapping unmount/mount | Low | Hit-test is best-effort; worst case the session lands in the wrong window and is re-draggable. Source/target renderers are separate processes, so a brief double-sink during the move overlap cannot collide; the `pty-router` pending buffer covers the pre-mount gap (§6.7). |
+| R9 | (phase 1.5) Quit blocked by the secondary-window close dialog | Low | `before-quit` sets an `isQuitting` flag; the secondary `close` handler skips its dialog when quitting, so `Ctrl+Q` runs the normal graceful shutdown (§6.7). |
+| R10 | (phase 1.5) Persisted window off-screen after a monitor change | Low | On restore, clamp any window intersecting no display work area to the nearest display (`screen.getAllDisplays()`), preserving size (§6.3). |
 
 **Observability:** structured JSON state-transition log at `~/.local/share/octopus/state.log`;
 keyboard-toggled debug overlay showing the last N transitions per session (source layer + reason).
@@ -875,10 +875,10 @@ These were reviewed and decided; recorded here so implementation doesn't re-liti
 1. **Auto-inject OSC 133 & Claude Code hooks — YES, opt-out.** Octopus injects OSC 133 via an `--rcfile` that
    sources the user's own rc first (never edits `~/.bashrc`) and writes hooks into
    `<worktree>/.claude/settings.json`, **merging with — never clobbering — an existing file**. This is what
-   makes V2 state icons work out of the box instead of requiring every developer to hand-configure their
-   shell. The V1 seam (per-session socket + `OCTOPUS_STATE_SOCKET`) is provisioned regardless; injection
-   itself lands in V2.
-2. **Durable backend (survive app restart) — deferred to V2, behind `SessionManager`.** V1 hosts PTYs
+   makes phase 2 state icons work out of the box instead of requiring every developer to hand-configure their
+   shell. The phase 1 seam (per-session socket + `OCTOPUS_STATE_SOCKET`) is provisioned regardless; injection
+   itself lands in phase 2.
+2. **Durable backend (survive app restart) — deferred to phase 2, behind `SessionManager`.** Phase 1 hosts PTYs
    in-process and restores fresh shells at the correct cwd on restart. The `SessionManager` port boundary is
    kept clean enough that swapping in a tmux/daemon backend is drop-in. Pull it earlier only if long-running
    agents surviving crashes becomes a priority; tmux is the recommended backend (persistence + re-attach for
@@ -896,7 +896,7 @@ These were reviewed and decided; recorded here so implementation doesn't re-liti
    Either way `repo_root` is stored **per task**, so multi-repo workspaces work with no special support:
    different tasks may target different repos. `OCTOPUS_REPO_ROOT` (= the task's repo dir) is passed to both
    paths (§6.4).
-5. **Multiple windows (V1.5) — main + secondary, synced on one active task.** The main window owns the
+5. **Multiple windows (phase 1.5) — main + secondary, synced on one active task.** The main window owns the
    progress panel; secondary windows are session-only. All windows share the single `activeTaskId`, so
    switching a task switches sessions in every window. Session→window is an opaque `windowId` on `Session`
    (default `MAIN_WINDOW_ID`); window bounds live only in persistence. Cross-window DnD is *detach +

@@ -1,30 +1,30 @@
 # Project Octopus — Task Breakdown
 
 > **Companion to:** [`PRD.md`](./PRD.md) · [`DESIGN.md`](./DESIGN.md)
-> This document decomposes the design into actionable, version-scoped tasks. Every task references the
+> This document decomposes the design into actionable, phase-scoped tasks. Every task references the
 > design/PRD section that governs it. The organizing principle (DESIGN §10) is: **define interfaces/enums in
-> V1; add implementations in V2/V3 — signatures never change across versions.**
+> phase 1; add implementations in phase 2/phase 3 — signatures never change across phases.**
 
 ## How to use this document
 
-- Tasks are grouped **by version**, then **by architectural layer** (Domain → Application → Ports/Adapters →
+- Tasks are grouped **by phase**, then **by architectural layer** (Domain → Application → Ports/Adapters →
   Infra/IPC → UI → Testing), matching the hexagonal structure in DESIGN §2.
 - `[ ]` = todo, `[~]` = in progress, `[x]` = done. Sub-bullets are acceptance criteria / notes.
-- **V1 "seam" tasks** are load-bearing: they wire dormant hooks that V2/V3 fill. They are explicitly called out
-  so V2/V3 stay additive.
+- **Phase 1 "seam" tasks** are load-bearing: they wire dormant hooks that phase 2/phase 3 fill. They are explicitly called out
+  so phase 2/phase 3 stay additive.
 
 ---
 
-## V0 — Project Foundation & Bootstrap
+## Phase 0 — Project Foundation & Bootstrap
 
-Prerequisite scaffolding before any V1 feature. Not a released version.
+Prerequisite scaffolding before any phase 1 feature. Not a released phase.
 
 ### Tooling & build
 - [x] Initialize Electron + React 18 + TypeScript project via **electron-vite** (DESIGN §4).
   - electron-vite pinned to **3.1.0** (v4/5 need Node ≥20.19; host is 20.17); Electron 33, vite 5.4.
 - [x] Configure **electron-builder** for offline/air-gapped production builds (no runtime network) (DESIGN §4, §11).
   - `electron-builder.yml`: `electronDownload.mirror` → internal Artifactory; Linux `dir` target
-    (AppImage/deb helper binaries deferred to V1 behind `ELECTRON_BUILDER_BINARIES_MIRROR`).
+    (AppImage/deb helper binaries deferred to phase 1 behind `ELECTRON_BUILDER_BINARIES_MIRROR`).
 - [~] Vendor all npm dependencies for air-gapped install; verify no build-time or runtime network access.
   - Install works fully offline-of-GitHub via the internal Artifactory mirror (`.npmrc` `electron_mirror`);
     `package-lock.json` committed. **Not** true tarball vendoring — still depends on the internal registry
@@ -42,15 +42,15 @@ Prerequisite scaffolding before any V1 feature. Not a released version.
 - [x] Raise `RLIMIT_NOFILE` to 65536 at startup (default 1024 exhausted by dozens of PTYs) (DESIGN §6.1).
   - `src/adapters/env/raise-file-limit.ts` via `prlimit(1)`, Linux-only, best-effort, runs before any spawn.
 - [x] Set XDG/AppData data paths for DB + logs (`$XDG_DATA_HOME/octopus/`, `%APPDATA%\octopus\`) (DESIGN §6.3).
-  - `src/adapters/env/paths.ts`; dirs created at startup (no consumers until V1/V2).
+  - `src/adapters/env/paths.ts`; dirs created at startup (no consumers until phase 1/phase 2).
 
 ---
 
-## V1 — Tasks, Sessions, Progress Window, Terminal (no state)
+## Phase 1 — Tasks, Sessions, Progress Window, Terminal (no state)
 
-Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session type, **no state indicators**.
+Goal (PRD §Phases Phase 1): tasks, sessions, progress window, terminal session type, **no state indicators**.
 
-> **Status (M0–M7 done — V1 feature-complete):** the full backend — domain, ports, application (single-writer
+> **Status (M0–M7 done — phase 1 feature-complete):** the full backend — domain, ports, application (single-writer
 > loop, all use cases, reconcile, quit), adapters (PTY runtime, SqliteStore, worktree provider, script runner,
 > settings, socket provisioner), IPC, and composition root — is complete and green. The **renderer** is now the
 > full `DESIGN §5.1` component tree: `App → ProgressPanel + TaskWorkspace`, with `ProgressPanel` (New/Delete Task,
@@ -59,13 +59,13 @@ Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session t
 > rename, `Toaster`, and Shift-gated keyboard shortcuts. Both scale-mitigations are in: renderer-side ring-buffer
 > replay (`pty/pty-router.ts`) and the WebGL→Canvas lease budget (`terminal/webgl-budget.ts`). The two remaining
 > test items — restart-reconciliation and the E2E smoke — are done as headless integration tests over the real
-> PTY stack. Every V1 **dormant seam** (§10) is present and verified unused. `npm run typecheck`, `lint`
+> PTY stack. Every phase 1 **dormant seam** (§10) is present and verified unused. `npm run typecheck`, `lint`
 > (dependency-rule boundary enforced) and `test` (393 tests, 56 files) are all green. What's left before ship is
 > **live `npm run dev` verification on a display** (M7 acceptance walk-through, DESIGN §11 step 5) — not exercised
 > in this headless environment.
 >
-> **V1.5 (multi-window) builds strictly additively on this feature-complete V1** — new domain fields, new
-> commands/events, and one schema migration; no existing signature changes. See the `V1.5 — Multi-Window`
+> **Phase 1.5 (multi-window) builds strictly additively on this feature-complete phase 1** — new domain fields, new
+> commands/events, and one schema migration; no existing signature changes. See the `Phase 1.5 — Multi-Window`
 > section below.
 
 ### Domain (pure, no dependencies) — DESIGN §3
@@ -82,21 +82,21 @@ Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session t
 - [x] `SessionConfig` value objects — fully serializable; Terminal: `{ shell?, initialCommand?, cwdOverride? }`
   defaulting to worktree path (DESIGN §3.2).
 - [x] **State enums** `SessionState`/`TaskState` `{ Unknown, Waiting, Working, Blocked }` + internal sub-states
-  (defined now, all `Unknown` in V1) (DESIGN §3.3, §10 V1).
+  (defined now, all `Unknown` in phase 1) (DESIGN §3.3, §10 phase 1).
 - [x] `TaskLifecycle` state machine: `None → Provisioning → Ready → Deleting → Deleted`, plus
   `ProvisionFailed` / `DeleteFailed` branches (DESIGN §3.5).
 - [x] `SessionLifecycle` state machine: `None → Created → Starting → Running → Stopping → Closed`, plus
   `CreateFailed` / `StartFailed` (DESIGN §3.6). Orthogonal to `SessionState`.
 - [x] `TaskStateAggregator` strategy — pure worst-status-wins `max` over `Blocked>Working>Waiting>Unknown`;
-  empty/all-unknown → `Unknown` (DESIGN §3.4). **In V1 always yields `Unknown`.**
+  empty/all-unknown → `Unknown` (DESIGN §3.4). **In phase 1 always yields `Unknown`.**
 - [x] Enforce invariants I1–I12 in domain logic (DESIGN §7); unit-test each.
 
-### Application layer — DESIGN §6.6, §10 V1
+### Application layer — DESIGN §6.6, §10 phase 1
 
 - [x] **Single-writer command loop** — all domain mutations are commands on one logical writer; adapters do I/O
   off-thread and feed results back as events; no locks around aggregates (DESIGN §6.6).
 - [x] `EventBus` port — already carries `sessionStateChanged` / `taskStateChanged` events (**emitted by nobody
-  in V1** — dormant seam) (DESIGN §10 V1 seams).
+  in phase 1** — dormant seam) (DESIGN §10 phase 1 seams).
 - [x] Use case: **`CreateTask(name, repoDir, sourceBranch, newBranch)`** — run `WorktreeProvider.create`,
   validate path, persist, add task; populate `WorktreeRef.branch = newBranch`, `baseRef = sourceBranch`,
   `provisionedBy.repoRoot = repoDir` (DESIGN §3.5, §6.4, §12.3). *(Signature/fields reworked from the
@@ -115,9 +115,9 @@ Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session t
 - [x] Startup **reconciliation**: verify each task's worktree path exists → else mark `Stale`/degraded, don't
   start sessions (I14, DESIGN §6.3).
 - [x] App quit sequence: SIGHUP all PTYs, `PRAGMA wal_checkpoint(TRUNCATE)`, quit; warn if any session
-  Working/Blocked (I13, DESIGN §6.6). *(Working/Blocked warning is degenerate in V1 — all Unknown.)*
+  Working/Blocked (I13, DESIGN §6.6). *(Working/Blocked warning is degenerate in phase 1 — all Unknown.)*
 
-### Ports & Adapters — DESIGN §6, §10 V1
+### Ports & Adapters — DESIGN §6, §10 phase 1
 
 - [x] `WorktreeProvider` port + **`SelectingWorktreeProvider`** adapter composing **`ScriptWorktreeProvider`**
   (repo-local `create_worktree.sh`/`delete_worktree.sh`) and **`NativeGitWorktreeProvider`** (Octopus runs
@@ -141,7 +141,7 @@ Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session t
   dirty delete); path sanity (exactly the stored path; not `/`, not `repoDir` nor ancestor), uncommitted-changes
   check (`git status --porcelain`), all sessions killed first; stderr (≤64 KB) surfaced (DESIGN §6.4, I4).
 - [x] `SessionManager` / `SessionRuntime` ports + **`PtyTerminalRuntime`** (node-pty) — `start()/stop()/dispose()`,
-  type-neutral output/interaction handle, `stateEvaluator()` **returns null in V1** (DESIGN §6.2, §8, §10 V1).
+  type-neutral output/interaction handle, `stateEvaluator()` **returns null in phase 1** (DESIGN §6.2, §8, §10 phase 1).
 - [x] PTY spawn config — login shell (`-l`), `cwd` = worktree path, `TERM=xterm-256color`,
   `COLORTERM=truecolor`, `OCTOPUS_*` env, strip `TMUX/STY/WINDOWID` (DESIGN §6.1).
 - [x] PTY resize — `ResizeObserver` (debounced ~50 ms) → `fit()` → `pty:resize` → `pty.resize` → `TIOCSWINSZ`
@@ -163,16 +163,16 @@ Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session t
   `terminal.shell`; default session type; `worktreeCreateTimeoutMs`) (DESIGN §6.3, §6.4). *(Replaces the old
   `scripts.createWorktree`/`scripts.deleteWorktree` global keys — worktree scripts are now repo-local. Stale
   `scripts` blocks are silently dropped by `mergeSettings`; no settings migration needed.)*
-- [x] Supporting ports: `IdGenerator`, `Clock`, `EventBus` (DESIGN §10 V1).
-- [x] **`CredentialsProvider` port shape defined** (no implementation) so V3 doesn't retrofit secret handling
-  (I16, §10 V1 seams).
+- [x] Supporting ports: `IdGenerator`, `Clock`, `EventBus` (DESIGN §10 phase 1).
+- [x] **`CredentialsProvider` port shape defined** (no implementation) so phase 3 doesn't retrofit secret handling
+  (I16, §10 phase 1 seams).
 
 ### Session-type registry — DESIGN §8
 
 - [x] `SessionTypeProvider` (application edge) — populates the New-Session dropdown purely from the registry
   (filtered by `availableFromVersion ≤ currentVersion`).
 - [x] `SessionViewFactory` (UI, keyed by same `typeId`) — `mount(runtimeHandle, container)` / `unmount()`.
-- [x] Register **Terminal** type statically (`EvaluatesState` **off** in V1) at the composition root (§10 V1).
+- [x] Register **Terminal** type statically (`EvaluatesState` **off** in phase 1) at the composition root (§10 phase 1).
 
 ### IPC — DESIGN §6.5
 
@@ -189,17 +189,17 @@ Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session t
 - [x] Streaming `ptyData` via `webContents.send` (avoid head-of-line blocking) (DESIGN §6.5).
 - [x] Backend→UI events: `ptyData`, `sessionCreated`, `sessionExited`, `sessionClosed`, `taskCreated`,
   `taskDeleted`, `taskRenamed`, `taskStale`, `scriptProgress`, `scriptError`, `error`; plus
-  `sessionStateChanged`/`taskStateChanged` **defined but dormant** (DESIGN §6.5, §10 V1).
-- [x] Keep message set transport-agnostic (V2 daemon can carry it over a Unix socket unchanged) (DESIGN §6.5).
+  `sessionStateChanged`/`taskStateChanged` **defined but dormant** (DESIGN §6.5, §10 phase 1).
+- [x] Keep message set transport-agnostic (phase 2 daemon can carry it over a Unix socket unchanged) (DESIGN §6.5).
 
 ### Concurrency & resilience — DESIGN §6.6
 
 - [x] **Output batching / back-pressure** — per-session accumulator flushed on 16 ms (60 Hz) timer or at 256 KB
   cap (DESIGN §6.6).
 - [x] **Inactive tabs** — append to a per-session ring buffer (~500 KB) and replay on tab activation (DESIGN §6.6, §5.3).
-  *(V1 realization is renderer-side in `pty/pty-router.ts`: keep-alive keeps every mounted pane's sink live, so
+  *(Phase 1 realization is renderer-side in `pty/pty-router.ts`: keep-alive keeps every mounted pane's sink live, so
   the buffer covers the pre-mount / session-restore window where output would otherwise be lost. The backend
-  "don't-send-to-inactive-tabs" optimization — a pure perf item, not user-visible — stays deferred to V2.)*
+  "don't-send-to-inactive-tabs" optimization — a pure perf item, not user-visible — stays deferred to phase 2.)*
 - [x] **Backend per-session ring buffer, persisted + replayed on restart** (DESIGN §6.6, §6.2 seam). *(Realizes
   the deferred backend ring buffer: `start-session-runtime.ts` taps every `onData` into a `ScrollbackBuffers`
   port — `RingBufferScrollbackStore` (adapter, reuses `session/ring-buffer.ts`, ~500 KB/session). Flushed to
@@ -209,7 +209,7 @@ Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session t
   (history + a dim "session restored" separator) ahead of `sessionCreated`, so the existing renderer replay
   path shows prior scrollback above the fresh prompt — backend-only, no renderer/preload/shared change.
   Captured output is metadata, not live process state — compatible with I13.)*
-- [ ] V2+ note: spawn each shell via `setsid` (group-kill descendants) — *defer to V2* (DESIGN §6.1). *(V1 uses
+- [ ] Phase 2+ note: spawn each shell via `setsid` (group-kill descendants) — *defer to phase 2* (DESIGN §6.1). *(Phase 1 uses
   SIGHUP/SIGKILL to the single PTY.)*
 
 ### UI (Renderer) — DESIGN §5
@@ -219,10 +219,10 @@ Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session t
 - [x] Startup hydration via `app:getState`; thereafter lifecycle events patch the store (DESIGN §5.2).
 - [x] Component tree scaffold: `App → ProgressPanel + TaskWorkspace` (DESIGN §5.1).
 - [x] **`ProgressPanel`** — `PanelHeader (NewTaskButton, DeleteTaskButton, settings gear)` + `TaskList → TaskListItem*`
-  (label only in V1; `TaskStatusIcon` is V2) (DESIGN §5.1, PRD §Progress Window).
+  (label only in phase 1; `TaskStatusIcon` is phase 2) (DESIGN §5.1, PRD §Progress Window).
 - [x] **`TaskWorkspace → TaskView*`** — one per task; **all mounted, only active visible** (DESIGN §5.1, §5.3).
-- [x] **`SessionTabBar`** — `NewSessionDropdown` (registry-driven) + `SessionTab*` (no status icon in V1) (DESIGN §5.1).
-- [x] **`SessionPaneArea → SessionPane*`** — `TerminalPane` (JenkinsPane is V3) (DESIGN §5.1).
+- [x] **`SessionTabBar`** — `NewSessionDropdown` (registry-driven) + `SessionTab*` (no status icon in phase 1) (DESIGN §5.1).
+- [x] **`SessionPaneArea → SessionPane*`** — `TerminalPane` (JenkinsPane is phase 3) (DESIGN §5.1).
 - [x] **`TerminalPane`** — xterm.js instance created once in `useRef`/`useEffect([])`, never destroyed until
   session close (DESIGN §5.3).
 - [x] xterm.js addons: `fit`, `webgl` (canvas fallback), `search`, `web-links`, `unicode11`, `serialize`;
@@ -258,7 +258,7 @@ Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session t
 - [x] **Empty states & toasts** — "No tasks yet", "No sessions", inline "Connecting…"; bottom-right toasts for
   script failures / unexpected PTY exit (DESIGN §5.4).
 
-### V1 dormant seams (explicit — must exist, unused) — DESIGN §10 V1
+### Phase 1 dormant seams (explicit — must exist, unused) — DESIGN §10 phase 1
 
 - [x] `capabilities.EvaluatesState` present (Terminal **off**).
 - [x] `SessionRuntime.stateEvaluator()` returns `null`.
@@ -267,12 +267,12 @@ Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session t
 - [x] View resolution keyed by `typeId`.
 - [x] `SessionConfig` validated against `configSchema`.
 - [x] `OCTOPUS_STATE_SOCKET` env + per-session socket dir `/tmp/octopus-<uid>/` (`chmod 700`) **provisioned but
-  unused** (DESIGN §9.2, §10 V1).
+  unused** (DESIGN §9.2, §10 phase 1).
 - [x] `CredentialsProvider` port shape defined.
 
-### V1 Testing — DESIGN §11
+### Phase 1 Testing — DESIGN §11
 
-- [x] Unit: aggregation combinations (all yield `Unknown` in V1), lifecycle state machines, invariants I1–I12.
+- [x] Unit: aggregation combinations (all yield `Unknown` in phase 1), lifecycle state machines, invariants I1–I12.
 - [x] Unit: path validation & delete safety-check logic (containment, sanity).
 - [x] Unit: pure `worktree-path.ts` (`sanitizeBranchForDir`, flat `computeWorktreePath`); default-base resolver
   in `paths.test.ts`; `SelectingWorktreeProvider` probe dispatch (script present → script; absent → native);
@@ -290,16 +290,16 @@ Goal (PRD §Versioning V1): tasks, sessions, progress window, terminal session t
 
 ---
 
-## V1.5 — Multi-Window
+## Phase 1.5 — Multi-Window
 
 Goal: run Octopus across **multiple OS windows** (one per monitor). The **main** window owns the progress
 panel; **secondary** windows are session-only. All windows sync on the single `activeTaskId` (switch a task →
 sessions switch everywhere). A window may hold zero sessions; a session can be dragged into another window;
-windows + assignments are restored on relaunch. **Strictly additive on V1** — no existing signature changes
-(DESIGN §3.7, §5.6, §6.7, §10 V1.5, I18). User decisions: cross-window DnD = *detach + drop-on-window*;
+windows + assignments are restored on relaunch. **Strictly additive on phase 1** — no existing signature changes
+(DESIGN §3.7, §5.6, §6.7, §10 phase 1.5, I18). User decisions: cross-window DnD = *detach + drop-on-window*;
 secondary-window close with live sessions = *ask* (move-to-main vs kill); main-window close = *quit app*.
 
-### Domain (pure) — DESIGN §3.7, §10 V1.5
+### Domain (pure) — DESIGN §3.7, §10 phase 1.5
 
 - [x] `WindowId` branded id + `MAIN_WINDOW_ID` constant in `src/domain/ids.ts` (mirrors `TaskId`/`SessionId`).
 - [x] `Session.windowId: WindowId` field (default `MAIN_WINDOW_ID`) + `assignToWindow(windowId)` mutation in
@@ -307,7 +307,7 @@ secondary-window close with live sessions = *ask* (move-to-main vs kill); main-w
   **`taskId` never changes** on a move (I7, I18); no invariant/lifecycle change.
 - [x] `windowId: WindowId` added to `SessionSnapshot` in `src/domain/snapshots.ts`.
 
-### Application — DESIGN §6.7, §10 V1.5
+### Application — DESIGN §6.7, §10 phase 1.5
 
 - [x] New commands in `src/application/commands.ts` + `CommandLoop` cases (`src/application/command-loop.ts`):
   `createWindow{role:'secondary',bounds?}`, `closeWindow{windowId,disposition}`,
@@ -378,7 +378,7 @@ secondary-window close with live sessions = *ask* (move-to-main vs kill); main-w
 - [x] No change needed: `src/renderer/src/pty/pty-router.ts` and `src/renderer/src/terminal/webgl-budget.ts`
   — their module-level singletons are already per-renderer-process, so correct per window (§5.6). Confirmed.
 
-### V1.5 Testing — DESIGN §11
+### Phase 1.5 Testing — DESIGN §11
 
 - [x] Unit: schema **v3→4** migration (`sqlite-store.test.ts`, `FakeDb`) — `window_id` ALTER, `windows` table
   created, main window seeded; guarded so it fires only from a v3 DB. *(Real better-sqlite3 can't load under
@@ -399,10 +399,10 @@ secondary-window close with live sessions = *ask* (move-to-main vs kill); main-w
 
 ---
 
-## V2 — Session State + Aggregation + Icons
+## Phase 2 — Session State + Aggregation + Icons
 
-Goal (PRD §Versioning V2): session-state evaluation/display, task state derived from sessions, status icons in
-progress window and tabs. **No new ports, no domain signature changes** (DESIGN §10 V2).
+Goal (PRD §Phases Phase 2): session-state evaluation/display, task state derived from sessions, status icons in
+progress window and tabs. **No new ports, no domain signature changes** (DESIGN §10 phase 2).
 
 ### State-detection subsystem — DESIGN §9
 
@@ -416,7 +416,7 @@ progress window and tabs. **No new ports, no domain signature changes** (DESIGN 
     never propagate parse errors to renderer (R6).
 - [ ] **`ClaudeCodeProvider`** (Layer 3, authoritative — the only reliable `Blocked`) (DESIGN §9.2):
   - [ ] Per-session Unix socket `/tmp/octopus-<uid>/session-<uuid>.sock` (dir `chmod 700`); export
-    `OCTOPUS_STATE_SOCKET`; async listen (activate the V1 seam).
+    `OCTOPUS_STATE_SOCKET`; async listen (activate the phase 1 seam).
   - [ ] Message validation — ≤1 KB, valid JSON, known state values; **nothing from a message is ever executed** (R5).
   - [ ] Graceful degradation — socket unset/gone → `nc` fails silently → fall back to heuristic.
   - [ ] OSC 9000 in-band state escape sequence support (DESIGN §9.1).
@@ -445,7 +445,7 @@ progress window and tabs. **No new ports, no domain signature changes** (DESIGN 
   - `PostToolUse` → `{"state":"working","reason":"tool_use","tool":"…"}`
 - [ ] Provide an opt-out setting for auto-injection.
 
-### Application / Domain wiring — DESIGN §10 V2
+### Application / Domain wiring — DESIGN §10 phase 2
 
 - [ ] Flip Terminal's **`capabilities.EvaluatesState` on**; `SessionRuntime.stateEvaluator()` now returns the
   composite provider.
@@ -458,7 +458,7 @@ progress window and tabs. **No new ports, no domain signature changes** (DESIGN 
 - [ ] Emit `taskStateChanged` view-model events to the renderer.
 - [ ] *(Optional infra)* Spawn shells via `setsid` so group SIGKILL kills descendants (DESIGN §6.1).
 
-### UI — DESIGN §5.4, §10 V2
+### UI — DESIGN §5.4, §10 phase 2
 
 - [ ] **`TaskStatusIcon`** in `TaskListItem` and **`SessionStatusIcon`** in `SessionTab` (DESIGN §5.1).
 - [ ] Icon design — shape **and** color: Waiting = hollow/pause, gray; Working = spinner/filled, blue;
@@ -475,12 +475,12 @@ progress window and tabs. **No new ports, no domain signature changes** (DESIGN 
   layer + confidence + reason) (R1, DESIGN §11).
 - [ ] Keyboard-toggled **debug overlay** showing last N transitions per session (source layer + reason).
 
-### Optional V2 infra (only if process-survival prioritized) — DESIGN §6.2, §12.2
+### Optional Phase 2 infra (only if process-survival prioritized) — DESIGN §6.2, §12.2
 
 - [ ] `DaemonSessionManager` (or tmux backend) behind the existing `SessionManager` port — server-side ring
   buffer (~5 MB/session) replayed on re-attach; **renderer unaffected** (DESIGN §6.2).
 
-### V2 Testing — DESIGN §11
+### Phase 2 Testing — DESIGN §11
 
 - [ ] Unit: OSC parser byte-sequences; §9.1 decision logic; debounce/hysteresis timing (pure).
 - [ ] Integration: scripted PTY emitting OSC 133 at known times → assert Working; `sleep` foreground → Working.
@@ -492,15 +492,15 @@ progress window and tabs. **No new ports, no domain signature changes** (DESIGN 
 
 ---
 
-## V3 — Jenkins Pipeline Viewer
+## Phase 3 — Jenkins Pipeline Viewer
 
-Goal (PRD §Versioning V3): new session type connecting to Jenkins, showing pipeline progression, reporting
+Goal (PRD §Phases Phase 3): new session type connecting to Jenkins, showing pipeline progression, reporting
 state back to the task. **Zero changes** to Domain, Application use cases, Terminal, or the aggregator
-(DESIGN §8 acceptance test, §10 V3).
+(DESIGN §8 acceptance test, §10 phase 3).
 
-### Ports & Adapters — DESIGN §9.4, §10 V3
+### Ports & Adapters — DESIGN §9.4, §10 phase 3
 
-- [ ] `JenkinsClient` port + **`JenkinsHttpClient`** adapter (DESIGN §10 V3).
+- [ ] `JenkinsClient` port + **`JenkinsHttpClient`** adapter (DESIGN §10 phase 3).
 - [ ] Auth via **`CredentialsProvider`/OS keychain (libsecret)** — never plaintext; resolve `credentialsRef` at
   runtime (I16, R5).
 - [ ] `JenkinsProvider` state mapping (poll `<job>/lastBuild/api/json` every ~10 s, configurable) (DESIGN §9.4):
@@ -509,7 +509,7 @@ state back to the task. **Zero changes** to Domain, Application use cases, Termi
   - Input step `PAUSED_PENDING_INPUT` (via `/wfapi/describe`) → **Blocked**
   - Never `Unknown` after first successful poll.
 
-### Session type registration — DESIGN §8, §10 V3
+### Session type registration — DESIGN §8, §10 phase 3
 
 - [ ] `JenkinsSessionTypeProvider` — `EvaluatesState` on; `configSchema` = `{ jobPath, branch (defaults to
   worktree branch), credentialsRef }` (DESIGN §3.2, §8).
@@ -523,22 +523,22 @@ state back to the task. **Zero changes** to Domain, Application use cases, Termi
 - [ ] New-Session flow: Jenkins opens a small **config modal** (job/branch/creds) (DESIGN §5.4).
 - [ ] Jenkins-error toasts (DESIGN §5.4).
 
-### V3 acceptance / testing — DESIGN §8, §11
+### Phase 3 acceptance / testing — DESIGN §8, §11
 
 - [ ] **Abstraction acceptance test**: adding Jenkins required **zero edits** to `Task`, the aggregator, or the
-  dropdown logic (DESIGN §8). If any were needed, the V1 abstraction was wrong — fix upstream.
+  dropdown logic (DESIGN §8). If any were needed, the phase 1 abstraction was wrong — fix upstream.
 - [ ] Integration: mocked Jenkins API responses → assert Working/Waiting/Blocked mapping (§9.4).
 - [ ] Integration: keychain-backed credential resolution; assert no secret ever persisted to DB/JSON (I16).
 - [ ] Perf: Jenkins poll cadence 10 s honored/configurable (DESIGN §11).
 
 ---
 
-## Cross-Cutting Checklist (all versions) — DESIGN §7, §11
+## Cross-Cutting Checklist (all phases) — DESIGN §7, §11
 
 - [ ] **Invariants I1–I17** upheld and unit-tested where applicable (DESIGN §7).
 - [ ] **Trust boundary** — user scripts & terminal commands run via `ScriptRunner`: explicit cwd, no
   shell-string interpolation, timeouts, captured exit/stderr (I17, R3).
 - [ ] **Never persist secrets** — keychain-only via `credentialsRef` (I16, R5).
 - [ ] **Air-gapped** — all deps vendored; no runtime network access outside Jenkins polling (DESIGN §4).
-- [ ] **Performance targets** (DESIGN §11): PTY read→render <5 ms; state timings per V2; icon latency per V2.
+- [ ] **Performance targets** (DESIGN §11): PTY read→render <5 ms; state timings per phase 2; icon latency per phase 2.
 - [ ] **Risk mitigations R1–R7** tracked (DESIGN §11).
