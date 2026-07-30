@@ -28,6 +28,7 @@ import type {
   SwitchTaskInput,
   CreateSessionInput,
   CloseSessionInput,
+  SwitchSessionInput,
   RenameSessionInput,
   ReorderSessionInput,
   SessionCwdInput,
@@ -179,6 +180,17 @@ export function registerIpcHandlers(
   )
 
   ipcMain.handle(
+    CHANNELS.sessionSwitch,
+    async (_e, input: SwitchSessionInput): Promise<CommandAck> => {
+      const result = await loop.dispatch({
+        kind: 'switchSession',
+        input: { sessionId: asSessionId(input.sessionId) }
+      })
+      return ack(result)
+    }
+  )
+
+  ipcMain.handle(
     CHANNELS.sessionRename,
     async (_e, input: RenameSessionInput): Promise<CommandAck> => {
       const result = await loop.dispatch({
@@ -219,10 +231,13 @@ export function registerIpcHandlers(
   // A session's live cwd (query, bypasses the loop, §6.5). Reads the live runtime
   // handle straight from deps.runtimes; maps undefined → null for the wire. Powers
   // "new terminal from this directory".
-  ipcMain.handle(CHANNELS.sessionCwd, async (_e, input: SessionCwdInput): Promise<string | null> => {
-    const cwd = await getSessionCwd(deps, asSessionId(input.sessionId))
-    return cwd ?? null
-  })
+  ipcMain.handle(
+    CHANNELS.sessionCwd,
+    async (_e, input: SessionCwdInput): Promise<string | null> => {
+      const cwd = await getSessionCwd(deps, asSessionId(input.sessionId))
+      return cwd ?? null
+    }
+  )
 
   // ── Window commands (V1.5, §6.7) ────────────────────────────────────────────
   ipcMain.handle(

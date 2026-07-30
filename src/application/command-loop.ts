@@ -27,6 +27,7 @@ import { startTaskSessions } from './use-cases/start-task-sessions'
 import { renameTask } from './use-cases/rename-task'
 import { reorderTask } from './use-cases/reorder-task'
 import { openSession } from './use-cases/open-session'
+import { switchSession } from './use-cases/switch-session'
 import { closeSession } from './use-cases/close-session'
 import { renameSession } from './use-cases/rename-session'
 import { reorderSession } from './use-cases/reorder-session'
@@ -110,6 +111,9 @@ export class CommandLoop {
         return OK
       case 'closeSession':
         await closeSession(this.deps, command.input)
+        return OK
+      case 'switchSession':
+        switchSession(this.deps, command.input)
         return OK
       case 'renameSession':
         renameSession(this.deps, command.input)

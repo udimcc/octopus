@@ -20,6 +20,7 @@ import type {
   SwitchTaskInput,
   CreateSessionInput,
   CloseSessionInput,
+  SwitchSessionInput,
   RenameSessionInput,
   ReorderSessionInput,
   SessionCwdInput,
@@ -55,6 +56,8 @@ const octopusAPI: OctopusAPI = {
       ipcRenderer.invoke(CHANNELS.sessionCreate, input),
     close: (input: CloseSessionInput): Promise<CommandAck> =>
       ipcRenderer.invoke(CHANNELS.sessionClose, input),
+    switch: (input: SwitchSessionInput): Promise<CommandAck> =>
+      ipcRenderer.invoke(CHANNELS.sessionSwitch, input),
     rename: (input: RenameSessionInput): Promise<CommandAck> =>
       ipcRenderer.invoke(CHANNELS.sessionRename, input),
     reorder: (input: ReorderSessionInput): Promise<CommandAck> =>

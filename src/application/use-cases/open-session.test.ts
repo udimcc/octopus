@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { createTask } from './create-task'
 import { openSession } from './open-session'
+import { closeSession } from './close-session'
 import { makeDeps, taskInput, type FakeDeps } from './test-fakes'
 import { asTaskId, asSessionId, asWindowId, MAIN_WINDOW_ID } from '../../domain/ids'
 import { SessionLifecycle } from '../../domain/lifecycle'
@@ -61,6 +62,38 @@ describe('openSession happy path (§3.6, §6.1)', () => {
 
     runtime.ctx.onExit(0, undefined)
     expect(exitCalls).toEqual([{ id: session.id, code: 0 }])
+  })
+})
+
+describe('openSession auto-naming (§6.1)', () => {
+  it('numbers sequentially by max-in-use + 1, not by session count (no reuse after a close)', async () => {
+    const fd = await seedReadyTask()
+
+    await openSession(fd.deps, { taskId: fd.taskId }) // Terminal 1
+    await openSession(fd.deps, { taskId: fd.taskId }) // Terminal 2
+    const task = fd.workspace.task(fd.taskId)!
+    expect(task.sessions().map((s) => s.title)).toEqual(['Terminal 1', 'Terminal 2'])
+
+    // Close "Terminal 1": the array shrinks back to one session.
+    const terminal1 = task.sessions().find((s) => s.title === 'Terminal 1')!
+    await closeSession(fd.deps, { sessionId: terminal1.id })
+    expect(task.sessions().map((s) => s.title)).toEqual(['Terminal 2'])
+
+    // The next session must be "Terminal 3" (max-in-use 2 + 1), NOT "Terminal 2"
+    // again — count + 1 would have collided (the original bug).
+    await openSession(fd.deps, { taskId: fd.taskId })
+    expect(
+      task
+        .sessions()
+        .map((s) => s.title)
+        .sort()
+    ).toEqual(['Terminal 2', 'Terminal 3'])
+  })
+
+  it('honors an explicit title over the auto-generated one', async () => {
+    const fd = await seedReadyTask()
+    await openSession(fd.deps, { taskId: fd.taskId, title: 'my shell' })
+    expect(fd.workspace.task(fd.taskId)!.sessions()[0].title).toBe('my shell')
   })
 })
 

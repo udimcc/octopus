@@ -82,6 +82,17 @@ export interface CloseSessionInput {
   readonly sessionId: SessionId
 }
 
+/**
+ * Switch a task's active session (visible tab) (§5.4). Unlike the renderer-local
+ * tab click, this runs on the loop so it can move the persisted active-session
+ * pointer and emit `activeSessionChanged` to ALL windows — the path that makes
+ * `Ctrl+Shift+Arrow` work across windows (a task's sessions can live in different
+ * windows; the hosting window raises itself on the event).
+ */
+export interface SwitchSessionInput {
+  readonly sessionId: SessionId
+}
+
 export interface RenameSessionInput {
   readonly sessionId: SessionId
   readonly title: string
@@ -201,6 +212,7 @@ export type Command =
   | { readonly kind: 'reorderTask'; readonly input: ReorderTaskInput }
   | { readonly kind: 'createSession'; readonly input: CreateSessionInput }
   | { readonly kind: 'closeSession'; readonly input: CloseSessionInput }
+  | { readonly kind: 'switchSession'; readonly input: SwitchSessionInput }
   | { readonly kind: 'renameSession'; readonly input: RenameSessionInput }
   | { readonly kind: 'reorderSession'; readonly input: ReorderSessionInput }
   | { readonly kind: 'writeToPty'; readonly input: WriteToPtyInput }

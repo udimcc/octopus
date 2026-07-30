@@ -73,6 +73,17 @@ export interface ActiveTaskChangedEventDTO {
   readonly type: 'activeTaskChanged'
   readonly taskId?: string
 }
+/**
+ * A task's active session (visible tab) changed (§5.4). Broadcast to all windows so
+ * session switching spans windows: the pointer updates everywhere and the hosting
+ * window (`windowId`) raises itself. The DTO mirror of `ActiveSessionChangedEvent`.
+ */
+export interface ActiveSessionChangedEventDTO {
+  readonly type: 'activeSessionChanged'
+  readonly taskId: string
+  readonly sessionId: string
+  readonly windowId: string
+}
 
 export interface ScriptProgressEventDTO {
   readonly type: 'scriptProgress'
@@ -100,7 +111,12 @@ export interface WindowCreatedEventDTO {
   readonly type: 'windowCreated'
   readonly windowId: string
   readonly role: 'main' | 'secondary'
-  readonly bounds: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
+  readonly bounds: {
+    readonly x: number
+    readonly y: number
+    readonly width: number
+    readonly height: number
+  }
 }
 export interface WindowClosedEventDTO {
   readonly type: 'windowClosed'
@@ -150,6 +166,7 @@ export type EventDTO =
   | TaskReorderedEventDTO
   | TaskStaleEventDTO
   | ActiveTaskChangedEventDTO
+  | ActiveSessionChangedEventDTO
   | ScriptProgressEventDTO
   | ScriptErrorEventDTO
   | ErrorEventDTO

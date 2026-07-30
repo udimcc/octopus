@@ -119,7 +119,9 @@ describe('useKeyboardShortcuts (§5.4 — Shift-gated)', () => {
     seed([t], 't1')
     render(<Host onNewTask={vi.fn()} />)
     chord('ArrowRight')
-    expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+    // Switching now round-trips through the backend so it can cross window
+    // boundaries (§5.4); the store re-points on the broadcast `activeSessionChanged`.
+    expect(window.octopusAPI.sessions.switch).toHaveBeenCalledWith({ sessionId: 's2' })
   })
 
   it('Ctrl+Shift+ArrowLeft cycles to the previous session, wrapping', () => {
@@ -130,13 +132,16 @@ describe('useKeyboardShortcuts (§5.4 — Shift-gated)', () => {
     seed([t], 't1')
     render(<Host onNewTask={vi.fn()} />)
     chord('ArrowLeft')
-    expect(useStore.getState().activeSessionByTask.t1).toBe('s2') // wrapped backwards
+    expect(window.octopusAPI.sessions.switch).toHaveBeenCalledWith({ sessionId: 's2' }) // wrapped
   })
 
   it('honors independently configured next/prev chords (no opposite inference)', () => {
+    // Three sessions with the MIDDLE one active so next/prev land on distinct
+    // neighbors — switching now round-trips through the backend, so the local active
+    // pointer doesn't advance between chords in this test (no broadcast).
     const t = task('t1', {
-      sessions: [session('s1'), session('s2', { order: 1 })],
-      activeSessionId: 's1'
+      sessions: [session('s1'), session('s2', { order: 1 }), session('s3', { order: 2 })],
+      activeSessionId: 's2'
     })
     seed([t], 't1')
     // Two arbitrary, non-mirrored chords: next = Ctrl+Shift+↑, prev = Ctrl+Shift+→.
@@ -149,18 +154,19 @@ describe('useKeyboardShortcuts (§5.4 — Shift-gated)', () => {
     }))
     render(<Host onNewTask={vi.fn()} />)
     chord('ArrowUp')
-    expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+    expect(window.octopusAPI.sessions.switch).toHaveBeenLastCalledWith({ sessionId: 's3' })
     chord('ArrowRight') // configured as PREV — not the opposite of ArrowUp
-    expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
+    expect(window.octopusAPI.sessions.switch).toHaveBeenLastCalledWith({ sessionId: 's1' })
     // The default arrows are no longer bound once overridden.
+    const callsBefore = vi.mocked(window.octopusAPI.sessions.switch).mock.calls.length
     chord('ArrowLeft')
-    expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
+    expect(vi.mocked(window.octopusAPI.sessions.switch).mock.calls.length).toBe(callsBefore)
   })
 
   it('matches a free-form (non-Ctrl+Shift) chord before the fixed gate', () => {
     const t = task('t1', {
-      sessions: [session('s1'), session('s2', { order: 1 })],
-      activeSessionId: 's1'
+      sessions: [session('s1'), session('s2', { order: 1 }), session('s3', { order: 2 })],
+      activeSessionId: 's2'
     })
     seed([t], 't1')
     // Alt+K would be dropped by the Ctrl+Shift gate; matching runs before it.
@@ -169,9 +175,9 @@ describe('useKeyboardShortcuts (§5.4 — Shift-gated)', () => {
     }))
     render(<Host onNewTask={vi.fn()} />)
     fireEvent.keyDown(window, { code: 'KeyK', altKey: true })
-    expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+    expect(window.octopusAPI.sessions.switch).toHaveBeenLastCalledWith({ sessionId: 's3' })
     fireEvent.keyDown(window, { code: 'KeyJ', altKey: true })
-    expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
+    expect(window.octopusAPI.sessions.switch).toHaveBeenLastCalledWith({ sessionId: 's1' })
   })
 
   it('Ctrl+Shift+N opens a new terminal in the active (ready) task (default binding)', () => {

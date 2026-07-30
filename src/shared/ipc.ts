@@ -23,6 +23,7 @@ import type {
   SwitchTaskInput,
   CreateSessionInput,
   CloseSessionInput,
+  SwitchSessionInput,
   RenameSessionInput,
   ReorderSessionInput,
   SessionCwdInput,
@@ -51,6 +52,7 @@ export const CHANNELS = {
   // Session commands (UI → backend, request/reply).
   sessionCreate: 'session:create',
   sessionClose: 'session:close',
+  sessionSwitch: 'session:switch',
   sessionRename: 'session:rename',
   sessionReorder: 'session:reorder',
   sessionMove: 'session:move',
@@ -158,6 +160,13 @@ export interface OctopusAPI {
   sessions: {
     create(input: CreateSessionInput): Promise<CommandAck>
     close(input: CloseSessionInput): Promise<CommandAck>
+    /**
+     * Switch a task's visible tab (§5.4). Routes through the loop so it can move
+     * the persisted active-session pointer and broadcast `activeSessionChanged` —
+     * the path that makes `Ctrl+Shift+Arrow` cross window boundaries (a task's
+     * sessions can live in different windows; the hosting window raises itself).
+     */
+    switch(input: SwitchSessionInput): Promise<CommandAck>
     rename(input: RenameSessionInput): Promise<CommandAck>
     reorder(input: ReorderSessionInput): Promise<CommandAck>
     /** Reassign a session to another open window (V1.5, §3.7). */

@@ -133,6 +133,65 @@ describe('reduceEvent (§5.2)', () => {
     expect(d.activeSessionByTask.t1).toBe('s1')
   })
 
+  it('activeSessionChanged re-points the tab in EVERY window; the host window also makes the task active (§5.4)', () => {
+    // `this` window is 'main'; the target session s2 is hosted in 'win-2'.
+    let d: StoreData = { ...initialData(), windowId: 'main' }
+    d = reduceEvent(d, { type: 'taskCreated', task: task('t1') })
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s1', 't1') })
+    d = reduceEvent(d, {
+      type: 'sessionCreated',
+      taskId: 't1',
+      session: session('s2', 't1', { windowId: 'win-2' })
+    })
+
+    // Non-host window: pointer updates, but the active TASK does not change here.
+    const notHost = reduceEvent(
+      { ...d, activeTaskId: undefined },
+      { type: 'activeSessionChanged', taskId: 't1', sessionId: 's2', windowId: 'win-2' }
+    )
+    expect(notHost.activeSessionByTask.t1).toBe('s2')
+    expect(notHost.activeTaskId).toBeUndefined()
+
+    // Host window ('main' hosting a session in it): switch to a main-hosted session
+    // makes the task active so its view is on screen when the OS raises the window.
+    const host = reduceEvent(
+      { ...d, activeTaskId: undefined },
+      { type: 'activeSessionChanged', taskId: 't1', sessionId: 's1', windowId: 'main' }
+    )
+    expect(host.activeSessionByTask.t1).toBe('s1')
+    expect(host.activeTaskId).toBe('t1')
+  })
+
+  it('activeSessionChanged clears the ready-for-review flag only in the hosting window (§9.5)', () => {
+    let d: StoreData = { ...initialData(), windowId: 'main' }
+    d = reduceEvent(d, { type: 'taskCreated', task: task('t1') })
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s1', 't1') })
+    // A second session becomes the active tab, so s1 is now UNFOCUSED — required for
+    // its working → waiting transition to raise the ready-for-review flag (§9.5).
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s2', 't1') })
+    d = reduceEvent(d, { type: 'sessionStateChanged', sessionId: 's1', state: 'working' })
+    d = reduceEvent(d, { type: 'sessionStateChanged', sessionId: 's1', state: 'waiting' })
+    expect(d.readyForReview.s1).toBe(true)
+
+    // Switching to it in a NON-host window must not clear it (the user hasn't looked).
+    const elsewhere = reduceEvent(d, {
+      type: 'activeSessionChanged',
+      taskId: 't1',
+      sessionId: 's1',
+      windowId: 'win-9'
+    })
+    expect(elsewhere.readyForReview.s1).toBe(true)
+
+    // Switching to it in the host window ('main') clears it.
+    const here = reduceEvent(d, {
+      type: 'activeSessionChanged',
+      taskId: 't1',
+      sessionId: 's1',
+      windowId: 'main'
+    })
+    expect(here.readyForReview.s1).toBeUndefined()
+  })
+
   it('sessionClosed recomputes the task worst-wins state, dropping the closed rank (§3.4)', () => {
     let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
     d = reduceEvent(d, {

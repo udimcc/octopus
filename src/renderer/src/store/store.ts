@@ -292,7 +292,12 @@ export function taskReadyForReview(data: StoreData, taskId: string): boolean {
  * may not import `domain`, so the lattice is duplicated here in wire values (the
  * enum VALUES the domain uses). Higher wins the reduction.
  */
-const AGG_RANK: Readonly<Record<string, number>> = { unknown: 0, waiting: 1, working: 2, blocked: 3 }
+const AGG_RANK: Readonly<Record<string, number>> = {
+  unknown: 0,
+  waiting: 1,
+  working: 2,
+  blocked: 3
+}
 
 /**
  * The state a session contributes to its task's worst-wins rollup (I12). A session
@@ -347,7 +352,11 @@ function removeSession(data: StoreData, taskId: string, sessionId: string): Stor
   const sessions = omit(data.sessions, sessionId)
   const task = data.tasks[taskId]
   // Drop any lingering ready-for-review flag for the gone session (§9.5).
-  let next: StoreData = { ...data, sessions, readyForReview: clearReady(data.readyForReview, sessionId) }
+  let next: StoreData = {
+    ...data,
+    sessions,
+    readyForReview: clearReady(data.readyForReview, sessionId)
+  }
   if (task) {
     const sessionIds = task.sessionIds.filter((id) => id !== sessionId)
     next = patchTask(next, taskId, { sessionIds })
@@ -425,6 +434,26 @@ export function reduceEvent(data: StoreData, event: EventDTO): StoreData {
 
     case 'activeTaskChanged':
       return { ...data, activeTaskId: event.taskId }
+
+    case 'activeSessionChanged': {
+      // Broadcast to every window so cross-window session switching works (§5.4):
+      // a task's sessions can live in different windows, so the cycle can land on a
+      // session hosted elsewhere. All windows move the tab pointer; the window that
+      // HOSTS the session (`event.windowId === thisWindowId`) also makes the task
+      // active so its `TaskView` is the one on screen when the OS raises it (the
+      // raise itself is done in main). Clear the session's ready-for-review flag on
+      // the hosting window — switching to it counts as "looking at it" (§9.5).
+      const hosting = event.windowId === data.windowId
+      const next: StoreData = {
+        ...data,
+        activeSessionByTask: { ...data.activeSessionByTask, [event.taskId]: event.sessionId },
+        activeTaskId: hosting ? event.taskId : data.activeTaskId,
+        readyForReview: hosting
+          ? clearReady(data.readyForReview, event.sessionId)
+          : data.readyForReview
+      }
+      return next
+    }
 
     case 'sessionCreated': {
       const s = event.session
@@ -616,7 +645,9 @@ export const useStore = create<Store>((set) => ({
       // the same clear path as an explicit tab click. Nothing to clear on blur.
       if (!focused) return next
       const activeTaskId = data.activeTaskId
-      const visible = activeTaskId ? activeSessionInWindow(next, activeTaskId, data.windowId) : undefined
+      const visible = activeTaskId
+        ? activeSessionInWindow(next, activeTaskId, data.windowId)
+        : undefined
       if (!visible) return next
       return { ...next, readyForReview: clearReady(data.readyForReview, visible) }
     }),

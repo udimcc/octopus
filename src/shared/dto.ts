@@ -248,6 +248,11 @@ export interface CloseSessionInput {
   readonly sessionId: string
 }
 
+/** Switch a task's visible tab (§5.4); wire mirror of the application command. */
+export interface SwitchSessionInput {
+  readonly sessionId: string
+}
+
 export interface RenameSessionInput {
   readonly sessionId: string
   readonly title: string

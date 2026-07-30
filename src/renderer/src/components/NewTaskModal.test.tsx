@@ -18,6 +18,7 @@ function stubOctopusAPI(): { api: OctopusAPI; emit: (event: EventDTO) => void } 
     sessions: {
       create: ack,
       close: ack,
+      switch: ack,
       rename: ack,
       reorder: ack,
       move: ack,

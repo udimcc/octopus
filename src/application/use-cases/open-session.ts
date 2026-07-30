@@ -57,7 +57,7 @@ export async function openSession(deps: AppDependencies, input: CreateSessionInp
   const id = deps.ids.newSessionId()
   const now = deps.clock.now()
   const order = task.sessions().length
-  const title = input.title ?? defaultTitle(provider.displayName, order)
+  const title = input.title ?? defaultTitle(provider.displayName, task.sessions())
 
   const session = Session.create({
     id,
@@ -89,6 +89,29 @@ export async function openSession(deps: AppDependencies, input: CreateSessionInp
   deps.bus.publish({ type: 'sessionCreated', taskId: input.taskId, session: session.toSnapshot() })
 }
 
-function defaultTitle(displayName: string, order: number): string {
-  return `${displayName} ${order + 1}`
+/**
+ * Auto-name a new session `${displayName} N`. N is `max(existing N) + 1` over the
+ * task's current sessions of this display name — NOT `count + 1`. Deriving it from
+ * the live count reused a number after a close: open "Terminal 1"/"Terminal 2",
+ * close "Terminal 1", and the next `count + 1` was "Terminal 2" again (duplicate).
+ * Scanning the highest suffix in use means a number is only reused when the highest
+ * was closed — never a live collision. `order` still drives tab position separately.
+ */
+function defaultTitle(displayName: string, siblings: readonly { title: string }[]): string {
+  // Match titles this provider auto-generates: `<displayName> <digits>`.
+  const pattern = new RegExp(`^${escapeRegExp(displayName)} (\\d+)$`)
+  let maxN = 0
+  for (const s of siblings) {
+    const m = pattern.exec(s.title)
+    if (m) {
+      const n = Number(m[1])
+      if (n > maxN) maxN = n
+    }
+  }
+  return `${displayName} ${maxN + 1}`
+}
+
+/** Escape a string for literal use inside a `RegExp` (displayName is provider-supplied). */
+function escapeRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }

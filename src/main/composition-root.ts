@@ -41,7 +41,10 @@ import { NativeGitWorktreeProvider } from '../adapters/worktree/native-git-workt
 import { SelectingWorktreeProvider } from '../adapters/worktree/selecting-worktree-provider'
 import { createSocketProvisioner } from '../adapters/state-socket/socket-provisioner'
 import { createDefaultDetectorRegistry } from '../shared/node/state/state-core'
-import { ensureShellIntegrationFiles, type ShellIntegrationFiles } from '../shared/node/shell-integration'
+import {
+  ensureShellIntegrationFiles,
+  type ShellIntegrationFiles
+} from '../shared/node/shell-integration'
 import { createStateLogFile } from '../adapters/observability/state-log-file'
 import { ensureClaudeHooks } from '../adapters/claude/claude-hooks'
 import { PtySessionManager } from '../adapters/session/pty-session-manager'
@@ -55,6 +58,7 @@ import { TerminalSessionTypeProvider } from '../adapters/session-types/terminal-
 import { existsDir } from '../adapters/fs/dir-exists'
 import { existsFile } from '../adapters/fs/file-exists'
 import { ElectronClipboard } from '../adapters/clipboard/electron-clipboard'
+import { BrowserWindow } from 'electron'
 import { createAjvConfigValidator } from '../application/config-validator'
 import { MapRuntimeRegistry, type AppDependencies } from '../application/dependencies'
 import { CommandLoop } from '../application/command-loop'
@@ -320,6 +324,24 @@ export function bootstrap(): AppContext {
   // webContents.id → WindowId, filled as windows open (backs windowAtPoint +
   // per-window markReady). Mutated by the entry point/window.ts as windows appear.
   const windowIds = new Map<number, WindowId>()
+
+  // Cross-window session switch (§5.4): when the active session moves to a session
+  // hosted in another window, bring THAT OS window to the foreground so the switch
+  // is visible. The renderer store already re-points the tab on the same broadcast;
+  // this is the OS-level raise the renderer can't do. Resolve the target window by
+  // reversing `windowIds` (webContents.id → WindowId). Kept here (composition root)
+  // because only main owns `BrowserWindow`; the registry stays transport-agnostic.
+  bus.subscribe((event) => {
+    if (event.type !== 'activeSessionChanged') return
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue
+      if (windowIds.get(win.webContents.id) !== event.windowId) continue
+      if (win.isMinimized()) win.restore()
+      win.show()
+      win.focus()
+      return
+    }
+  })
 
   // `onHydrate(windowId)` marks THAT window ready so its buffered startup events
   // flush exactly when its renderer can receive them (§6.7, generalizes §6.5).

@@ -62,6 +62,7 @@ export function makeStubBridge(options?: {
     sessions: {
       create: ack,
       close: ack,
+      switch: ack,
       rename: ack,
       reorder: ack,
       move: ack,

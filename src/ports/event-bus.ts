@@ -83,6 +83,19 @@ export interface ActiveTaskChangedEvent {
   readonly type: 'activeTaskChanged'
   readonly taskId?: TaskId
 }
+/**
+ * The active session (visible tab) of a task changed (§5.4). Broadcast to ALL
+ * windows so cross-window session switching works: sessions of one task can live in
+ * different windows, so a `Ctrl+Shift+Arrow` cycle can land on a session hosted
+ * elsewhere. Every window updates its `activeSessionByTask` pointer; the window that
+ * HOSTS the session (`windowId`) additionally raises itself to the OS foreground.
+ */
+export interface ActiveSessionChangedEvent {
+  readonly type: 'activeSessionChanged'
+  readonly taskId: TaskId
+  readonly sessionId: SessionId
+  readonly windowId: WindowId
+}
 
 // ── Script progress/error (worktree create/delete) (§6.4) ────────────────────────
 
@@ -113,7 +126,12 @@ export interface WindowCreatedEvent {
   readonly type: 'windowCreated'
   readonly windowId: WindowId
   readonly role: 'main' | 'secondary'
-  readonly bounds: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
+  readonly bounds: {
+    readonly x: number
+    readonly y: number
+    readonly width: number
+    readonly height: number
+  }
 }
 export interface WindowClosedEvent {
   readonly type: 'windowClosed'
@@ -156,6 +174,7 @@ export type DomainEvent =
   | TaskReorderedEvent
   | TaskStaleEvent
   | ActiveTaskChangedEvent
+  | ActiveSessionChangedEvent
   | ScriptProgressEvent
   | ScriptErrorEvent
   | ErrorEvent

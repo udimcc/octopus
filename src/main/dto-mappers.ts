@@ -198,6 +198,13 @@ export function toEventDTO(e: DomainEvent): EventDTO {
       return { type: 'taskStale', taskId: e.taskId }
     case 'activeTaskChanged':
       return { type: 'activeTaskChanged', taskId: e.taskId }
+    case 'activeSessionChanged':
+      return {
+        type: 'activeSessionChanged',
+        taskId: e.taskId,
+        sessionId: e.sessionId,
+        windowId: e.windowId
+      }
     case 'scriptProgress':
       return { type: 'scriptProgress', taskId: e.taskId, line: e.line }
     case 'scriptError':

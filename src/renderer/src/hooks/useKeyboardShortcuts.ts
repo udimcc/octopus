@@ -65,7 +65,13 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
         void window.octopusAPI.tasks.switch({ taskId: next })
       }
 
-      // Cycle the active session within the active task by `delta`, wrapping.
+      // Cycle the active session of the active task by `delta`, wrapping. Iterates
+      // the task's FULL `sessionIds` (which can include sessions hosted in OTHER
+      // windows, §6.7), so we dispatch `sessions.switch` to the backend rather than
+      // only mutating the local store: it moves the persisted pointer and broadcasts
+      // `activeSessionChanged` to every window, so a target in another window is made
+      // visible there and that window raises itself. A same-window target is updated
+      // by the same round-tripped event (no separate local mutation needed).
       const cycleSession = (delta: number): void => {
         if (!activeTaskId) return
         const task = store.tasks[activeTaskId]
@@ -74,7 +80,7 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
         const cur = curId ? task.sessionIds.indexOf(curId) : -1
         const next =
           task.sessionIds[(cur + delta + task.sessionIds.length) % task.sessionIds.length]
-        if (next) store.setActiveSession(activeTaskId, next)
+        if (next) void window.octopusAPI.sessions.switch({ sessionId: next })
       }
 
       // Create a new session (terminal) in the active task, if it is `ready`.

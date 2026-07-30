@@ -12,6 +12,7 @@ function stubOctopusAPI(activeTaskId: string | undefined = undefined): OctopusAP
     sessions: {
       create: ack,
       close: ack,
+      switch: ack,
       rename: ack,
       reorder: ack,
       move: ack,
