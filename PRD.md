@@ -45,11 +45,32 @@ When opening a session, the developer chooses the desired session type from a dr
 
 ### Session State (Phase 2+)
 
-Each session evaluates its state and displays a status icon:
+Each session continuously evaluates what it is doing and displays a **status icon** on its tab.
+There are three visible statuses (plus an invisible "unknown"):
 
-1. Waiting for user command
-2. Working
-3. Blocked
+1. **Idle** — the session is alive but doing nothing; it is waiting for the user to give it a command.
+2. **Working** — the session is actively doing something (a command is running, an agent is thinking).
+3. **Needs input** — the session has stopped and is waiting for the *user* to intervene before it can
+   continue (e.g. Claude Code is asking permission to run a tool). This is the highest-attention status.
+4. *(Unknown)* — the session cannot yet tell what it is doing; **no icon is shown** so an un-evaluated
+   session never masks a more urgent one.
+
+Status reflects **only a program that reports its own state.** In practice that means **Claude Code**:
+
+- **A plain terminal / shell:** always *Unknown* (no icon). Running an ordinary command, or sitting at the
+  prompt, never lights up a status — a bare terminal is not something Octopus tries to interpret.
+- **Claude Code:** *Working* while thinking/using tools, *Idle* when it finishes its turn, *Needs input*
+  when it is blocked asking the user (e.g. a permission prompt). As soon as Claude exits, the session goes
+  back to *Unknown*.
+- The status mapping is **pluggable** — a future program (or the Phase 3 Jenkins viewer) can supply its own
+  mapping and report the same statuses — but anything that does not report its own state stays *Unknown*.
+
+**"Ready for review" highlight.** Because the point of Octopus is to run many agents in parallel, a session
+that has **just finished** (transitioned Working → Idle) while you were not looking at it is shown with a
+distinct **ready-for-review** highlight (a checked/green icon) rather than a plain idle icon, so you can
+tell at a glance *which* of your parallel agents is done and awaiting your review. The highlight clears the
+moment you open (focus) that session; a session that was always idle, or that you have already seen, shows
+the plain idle icon. This highlight is a purely visual cue — it is not a new state a session "is in".
 
 Sessions report their state to the parent task.
 
@@ -60,11 +81,16 @@ A window listing all task names. Located on the left side of the screen.
 ### Behavior
 
 - Clicking a task switches to it and displays all its sessions.
-- Each task name shows a status icon on the left (Phase 2+):
-  1. Waiting for user command
-  2. Working
-  3. Blocked
-- Task state is derived from aggregating its sessions' states.
+- Each task name shows a **single status icon** (Phase 2+) summarizing all of its sessions:
+  1. **Idle** — every session is idle (waiting for a command).
+  2. **Working** — at least one session is working.
+  3. **Needs input** — at least one session needs the user (highest priority; demands attention).
+  4. *(Unknown)* — no session has a known status yet → no icon.
+- **A task shows one status derived from all its sessions by "worst wins":** if any session needs input the
+  task needs input; else if any is working the task is working; else idle. The most-urgent session decides
+  the task icon, so a single blocked agent inside a task is never hidden by its idle siblings.
+- The **ready-for-review** highlight (above) also aggregates up: a task whose sessions just finished (and you
+  haven't looked yet) is highlighted so you can spot completed work while scanning the task list.
 
 ### Controls
 
@@ -102,9 +128,14 @@ A window listing all task names. Located on the left side of the screen.
 
 ### Phase 2
 
-- Session state evaluation and display.
-- Task state derived from session states.
-- Status icons in progress window and session tabs.
+- **Session state evaluation** — a session shows Idle / Working / Needs input **only** when a program that
+  reports its own state is running inside it (Claude Code via its hooks); a plain terminal stays Unknown.
+- **Per-program status mapping is pluggable** — Claude Code ships in Phase 2; other programs and future
+  session types add their own mapping without changing the aggregation or the icons.
+- **Task state derived from session states** by worst-wins aggregation.
+- **Status icons** in the progress window (per task) and on session tabs (per session).
+- **Ready-for-review highlight** — sessions/tasks that just finished while unattended are visually flagged
+  until opened.
 
 ### Phase 3
 

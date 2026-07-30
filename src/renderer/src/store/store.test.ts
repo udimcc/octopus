@@ -5,6 +5,8 @@ import {
   useStore,
   sessionIdsInWindow,
   activeSessionInWindow,
+  isSessionFocused,
+  taskReadyForReview,
   type StoreData
 } from './store'
 import type { TaskDTO, SessionDTO, WindowedWorkspaceStateDTO } from '../../../shared/dto'
@@ -131,6 +133,52 @@ describe('reduceEvent (§5.2)', () => {
     expect(d.activeSessionByTask.t1).toBe('s1')
   })
 
+  it('sessionClosed recomputes the task worst-wins state, dropping the closed rank (§3.4)', () => {
+    let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
+    d = reduceEvent(d, {
+      type: 'sessionCreated',
+      taskId: 't1',
+      session: session('s1', 't1', { state: 'waiting' })
+    })
+    d = reduceEvent(d, {
+      type: 'sessionCreated',
+      taskId: 't1',
+      session: session('s2', 't1', { state: 'working' })
+    })
+    // Task rolls up to 'working' (worst of waiting + working).
+    d = reduceEvent(d, { type: 'sessionStateChanged', sessionId: 's2', state: 'working' })
+    expect(d.tasks.t1.state).toBe('working')
+    // Closing the working session drops the task back to its survivor's 'waiting'.
+    d = reduceEvent(d, { type: 'sessionClosed', taskId: 't1', sessionId: 's2' })
+    expect(d.tasks.t1.state).toBe('waiting')
+  })
+
+  it('sessionClosed on the last non-idle session returns the task to unknown', () => {
+    let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
+    d = reduceEvent(d, {
+      type: 'sessionCreated',
+      taskId: 't1',
+      session: session('s1', 't1', { state: 'working' })
+    })
+    d = reduceEvent(d, { type: 'sessionStateChanged', sessionId: 's1', state: 'working' })
+    expect(d.tasks.t1.state).toBe('working')
+    d = reduceEvent(d, { type: 'sessionClosed', taskId: 't1', sessionId: 's1' })
+    expect(d.tasks.t1.state).toBe('unknown')
+  })
+
+  it('sessionExited raises the task worst-wins state to blocked (exited aggregates as NeedsInput)', () => {
+    let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
+    d = reduceEvent(d, {
+      type: 'sessionCreated',
+      taskId: 't1',
+      session: session('s1', 't1', { state: 'waiting' })
+    })
+    d = reduceEvent(d, { type: 'sessionStateChanged', sessionId: 's1', state: 'waiting' })
+    expect(d.tasks.t1.state).toBe('waiting')
+    d = reduceEvent(d, { type: 'sessionExited', taskId: 't1', sessionId: 's1', exitCode: 0 })
+    expect(d.tasks.t1.state).toBe('blocked')
+  })
+
   it('sessionClosed on the last session drops the active-tab entry', () => {
     let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
     d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s1', 't1') })
@@ -221,6 +269,21 @@ describe('reduceEvent (§5.2)', () => {
     expect(d.tasks.t1.state).toBe('working')
     d = reduceEvent(d, { type: 'sessionStateChanged', sessionId: 's1', state: 'blocked' })
     expect(d.sessions.s1.state).toBe('blocked')
+  })
+
+  it('sessionStateChanged rolls the worst session state up into the task (§3.4, bug 2.1)', () => {
+    let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s1', 't1') })
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s2', 't1') })
+    // s1 goes idle, s2 needs input → the task must reflect the WORST (needs input),
+    // not the last-delivered session state, and without a separate taskStateChanged.
+    d = reduceEvent(d, { type: 'sessionStateChanged', sessionId: 's1', state: 'waiting' })
+    expect(d.tasks.t1.state).toBe('waiting')
+    d = reduceEvent(d, { type: 'sessionStateChanged', sessionId: 's2', state: 'blocked' })
+    expect(d.tasks.t1.state).toBe('blocked')
+    // s2 answered → both idle → task falls back to idle.
+    d = reduceEvent(d, { type: 'sessionStateChanged', sessionId: 's2', state: 'waiting' })
+    expect(d.tasks.t1.state).toBe('waiting')
   })
 
   it('sessionMovedToWindow patches only the session windowId (taskId untouched, I18)', () => {
@@ -383,5 +446,152 @@ describe('useStore hydrate + actions', () => {
     const id = useStore.getState().toasts[0].id
     useStore.getState().dismissToast(id)
     expect(useStore.getState().toasts).toEqual([])
+  })
+})
+
+/**
+ * Ready-for-review (§9.5): a pure renderer view-model derived from the state stream.
+ * Raised on `working → waiting` for an UNFOCUSED session; cleared only on focus.
+ */
+describe('ready-for-review (§9.5)', () => {
+  /** A store with one task `t1` holding sessions `s1`,`s2`, both in the main window. */
+  function base(): StoreData {
+    let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s1', 't1') })
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s2', 't1') })
+    // sessionCreated makes the last-created session the active tab; force a known focus.
+    return { ...d, activeTaskId: 't1', activeSessionByTask: { t1: 's1' }, windowFocused: true }
+  }
+
+  const setState = (d: StoreData, id: string, state: string): StoreData =>
+    reduceEvent(d, { type: 'sessionStateChanged', sessionId: id, state })
+
+  it('raises the flag on working → waiting for an unfocused session', () => {
+    let d = base() // s1 is focused, s2 is not
+    d = setState(d, 's2', 'working')
+    d = setState(d, 's2', 'waiting')
+    expect(d.readyForReview.s2).toBe(true)
+    expect(taskReadyForReview(d, 't1')).toBe(true)
+  })
+
+  it('does NOT raise for the focused session (the user is looking at it)', () => {
+    let d = base() // s1 focused
+    d = setState(d, 's1', 'working')
+    d = setState(d, 's1', 'waiting')
+    expect(d.readyForReview.s1).toBeUndefined()
+  })
+
+  it('does NOT raise on blocked → waiting (an answered prompt is not new finished work)', () => {
+    let d = base()
+    d = setState(d, 's2', 'blocked')
+    d = setState(d, 's2', 'waiting')
+    expect(d.readyForReview.s2).toBeUndefined()
+  })
+
+  it('does NOT raise on a straight-to-waiting with no prior working (fresh prompt)', () => {
+    let d = base()
+    d = setState(d, 's2', 'waiting')
+    expect(d.readyForReview.s2).toBeUndefined()
+  })
+
+  it('raises for the active tab when its OWN window is blurred', () => {
+    let d = { ...base(), windowFocused: false }
+    d = setState(d, 's1', 'working') // s1 is the active tab, but window is blurred
+    d = setState(d, 's1', 'waiting')
+    expect(d.readyForReview.s1).toBe(true)
+  })
+
+  it('isSessionFocused reflects active-tab + this-window + window-focus', () => {
+    const d = base()
+    expect(isSessionFocused(d, 's1')).toBe(true)
+    expect(isSessionFocused(d, 's2')).toBe(false)
+    expect(isSessionFocused({ ...d, windowFocused: false }, 's1')).toBe(false)
+  })
+
+  it('setActiveSession clears the flag on the newly-focused session', () => {
+    useStore.setState({ ...base(), readyForReview: { s2: true } })
+    useStore.getState().setActiveSession('t1', 's2')
+    expect(useStore.getState().readyForReview.s2).toBeUndefined()
+  })
+
+  it('regaining window focus clears the visible session flag', () => {
+    useStore.setState({ ...base(), windowFocused: false, readyForReview: { s1: true } })
+    useStore.getState().setWindowFocused(true)
+    expect(useStore.getState().readyForReview.s1).toBeUndefined()
+  })
+
+  it('closing a session drops any lingering flag', () => {
+    let d: StoreData = { ...base(), readyForReview: { s2: true } }
+    d = reduceEvent(d, { type: 'sessionClosed', taskId: 't1', sessionId: 's2' })
+    expect(d.readyForReview.s2).toBeUndefined()
+  })
+})
+
+describe('debug-overlay transition ring (§11)', () => {
+  function base(): StoreData {
+    let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s1', 't1') })
+    return d
+  }
+
+  it('appends each transition with from/to and forwarded layer/reason metadata', () => {
+    let d = base()
+    d = reduceEvent(d, {
+      type: 'sessionStateChanged',
+      sessionId: 's1',
+      state: 'working',
+      layer: 3,
+      confidence: 'authoritative',
+      reason: 'claude_working'
+    })
+    expect(d.debugTransitions).toHaveLength(1)
+    expect(d.debugTransitions[0]).toMatchObject({
+      sessionId: 's1',
+      from: 'unknown',
+      to: 'working',
+      layer: 3,
+      confidence: 'authoritative',
+      reason: 'claude_working'
+    })
+  })
+
+  it('assigns a monotonic seq and records the prior state as `from`', () => {
+    let d = base()
+    d = reduceEvent(d, { type: 'sessionStateChanged', sessionId: 's1', state: 'working' })
+    d = reduceEvent(d, { type: 'sessionStateChanged', sessionId: 's1', state: 'waiting' })
+    expect(d.debugTransitions.map((t) => ({ seq: t.seq, from: t.from, to: t.to }))).toEqual([
+      { seq: 1, from: 'unknown', to: 'working' },
+      { seq: 2, from: 'working', to: 'waiting' }
+    ])
+  })
+
+  it('caps the ring at DEBUG_RING_CAPACITY, evicting the oldest', () => {
+    let d = base()
+    for (let i = 0; i < 250; i++) {
+      d = reduceEvent(d, {
+        type: 'sessionStateChanged',
+        sessionId: 's1',
+        state: i % 2 === 0 ? 'working' : 'waiting'
+      })
+    }
+    expect(d.debugTransitions).toHaveLength(200)
+    // The oldest retained is seq 51 (250 total, keep the last 200).
+    expect(d.debugTransitions[0].seq).toBe(51)
+    expect(d.debugTransitions[d.debugTransitions.length - 1].seq).toBe(250)
+  })
+
+  it('does not record for an unknown session id', () => {
+    let d = base()
+    d = reduceEvent(d, { type: 'sessionStateChanged', sessionId: 'ghost', state: 'working' })
+    expect(d.debugTransitions).toHaveLength(0)
+  })
+
+  it('toggleDebugOverlay flips the flag', () => {
+    useStore.setState(initialData())
+    expect(useStore.getState().debugOverlayOpen).toBe(false)
+    useStore.getState().toggleDebugOverlay()
+    expect(useStore.getState().debugOverlayOpen).toBe(true)
+    useStore.getState().toggleDebugOverlay()
+    expect(useStore.getState().debugOverlayOpen).toBe(false)
   })
 })

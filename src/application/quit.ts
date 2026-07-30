@@ -14,9 +14,11 @@
  * We do NOT wait for the graceful window / SIGKILL escalation here: quit must be
  * prompt, the OS reaps the children (in-process), and I13 still forbids persisting
  * live *process* state in the Electron process — on the in-process path relaunch
- * opens FRESH shells regardless of how these died. A "Working/Blocked tasks — quit
- * anyway?" warning hook belongs above this (degenerate in V1: every task is
- * `Unknown`), so this function just tears down.
+ * opens FRESH shells regardless of how these died. The "Working/Blocked sessions —
+ * quit anyway?" warning is decided in the `before-quit` handler ABOVE this (§6.6,
+ * `confirmQuitWhileBusy` in `src/main/window.ts`, backed by the `busySessions`
+ * query); by the time `shutdown` runs the user has already chosen to proceed, so
+ * this function just tears down.
  *
  * Idempotent and best-effort: a release that throws must not block the store
  * checkpoint, and vice versa.

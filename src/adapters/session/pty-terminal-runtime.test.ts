@@ -117,6 +117,24 @@ describe('PtyTerminalRuntime.start (§6.1)', () => {
     expect(s.options.env.PATH).toBe('/usr/bin')
   })
 
+  it('honours custom args and layers envPatch onto the built env (§12.1 injection)', async () => {
+    const h = harness()
+    const rt = new PtyTerminalRuntime(h.ctx, {
+      spawn: h.spawn,
+      shell: '/bin/bash',
+      args: ['--rcfile', '/data/octopus.bashrc', '-i'],
+      envPatch: { OCTOPUS_USER_BASHRC: '/home/dev/.bashrc' }
+    })
+    await rt.start()
+
+    const s = h.spawned[0]
+    expect(s.args).toEqual(['--rcfile', '/data/octopus.bashrc', '-i'])
+    expect(s.options.env.OCTOPUS_USER_BASHRC).toBe('/home/dev/.bashrc')
+    // envPatch is layered on TOP of buildPtyEnv, not instead of it.
+    expect(s.options.env.TERM).toBe('xterm-256color')
+    expect(s.options.env.OCTOPUS_SESSION_ID).toBe('s1')
+  })
+
   it('rejects (→ StartFailed) when spawn throws', async () => {
     const h = harness()
     const spawn: PtySpawn = () => {

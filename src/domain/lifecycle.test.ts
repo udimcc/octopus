@@ -74,10 +74,10 @@ describe('canTransitionSession (DESIGN §3.6)', () => {
 describe('lifecycleToAggregationState (I12)', () => {
   it('maps Exited and StartFailed to Blocked regardless of state', () => {
     expect(lifecycleToAggregationState(SessionLifecycle.Exited, SessionState.Unknown)).toBe(
-      SessionState.Blocked
+      SessionState.NeedsInput
     )
     expect(lifecycleToAggregationState(SessionLifecycle.StartFailed, SessionState.Working)).toBe(
-      SessionState.Blocked
+      SessionState.NeedsInput
     )
   })
 

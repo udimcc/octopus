@@ -8,7 +8,10 @@ import type {
   AdoptWorktreeResult
 } from '../ports/worktree-provider'
 import { makeDeps, taskInput } from './use-cases/test-fakes'
-import { asTaskId } from '../domain/ids'
+import { asTaskId, asSessionId, asTypeId } from '../domain/ids'
+import { SessionLifecycle, TaskLifecycle } from '../domain/lifecycle'
+import { SessionState, TaskState } from '../domain/state'
+import type { WorkspaceSnapshot } from '../domain/snapshots'
 
 /** Yield the macrotask queue so queued microtask chains settle. */
 const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
@@ -122,5 +125,63 @@ describe('CommandLoop error translation (§7)', () => {
       input: { taskId: asTaskId('task-1'), name: 'renamed' }
     })
     expect(renamed.ok).toBe(true)
+  })
+})
+
+/** Two restored Ready tasks, each with one fresh `Created` session (boot state). */
+function twoTaskSnapshot(): WorkspaceSnapshot {
+  const mkTask = (taskId: string, sessionId: string, position: number): WorkspaceSnapshot['tasks'][number] => ({
+    id: asTaskId(taskId),
+    name: taskId,
+    worktree: {
+      path: `/wt/${taskId}`,
+      managed: true,
+      provisionedBy: { script: 'git', args: [taskId], repoRoot: '/repo', provisionedAt: 1 }
+    },
+    lifecycle: TaskLifecycle.Ready,
+    state: TaskState.Unknown,
+    sessions: [
+      {
+        id: asSessionId(sessionId),
+        taskId: asTaskId(taskId),
+        typeId: asTypeId('terminal'),
+        title: 'Terminal 1',
+        config: { kind: 'terminal' as const },
+        lifecycle: SessionLifecycle.Created,
+        state: SessionState.Unknown,
+        order: 0,
+        createdAt: 1
+      }
+    ],
+    activeSessionId: asSessionId(sessionId),
+    position,
+    createdAt: 1
+  })
+  return {
+    tasks: [mkTask('task-1', 'session-1', 0), mkTask('task-2', 'session-2', 1)],
+    activeTaskId: asTaskId('task-1')
+  }
+}
+
+describe('startTaskSessions command (Bug: status only shows on focus — §6.2, §9.6)', () => {
+  it('starts a task’s restored sessions WITHOUT moving the active pointer', async () => {
+    const { deps, workspace, bus } = makeDeps({ snapshot: twoTaskSnapshot() })
+    const loop = new CommandLoop(deps)
+
+    // Boot re-attach of the NON-active task-2 (task-1 is active).
+    const res = await loop.dispatch({
+      kind: 'startTaskSessions',
+      input: { taskId: asTaskId('task-2') }
+    })
+    expect(res.ok).toBe(true)
+
+    // task-2's session started (runtime → Running), so its state evaluator is now
+    // subscribed and will flush state without the user ever focusing the task.
+    expect(workspace.task(asTaskId('task-2'))!.session(asSessionId('session-2'))!.lifecycle).toBe(
+      SessionLifecycle.Running
+    )
+    // The active pointer did NOT move (unlike switchTask) — no activeTaskChanged.
+    expect(workspace.activeTaskId).toBe(asTaskId('task-1'))
+    expect(bus.ofType('activeTaskChanged')).toEqual([])
   })
 })

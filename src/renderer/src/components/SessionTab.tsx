@@ -18,6 +18,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { EditableLabel, type EditableLabelHandle } from './EditableLabel'
+import { StatusIcon } from './StatusIcon'
 import { color, radius, shadow } from '../style/tokens'
 import type { SessionDTO } from '../../../shared/dto'
 
@@ -37,12 +38,16 @@ export interface SessionTabProps {
   readonly onNewTerminalFromHere: (cwd: string) => void
   /** Reassign this session to another open window. */
   readonly onMoveToWindow: (targetWindowId: string) => void
+  /** Manually re-evaluate this session's state now (§5.4 R1). */
+  readonly onRefreshState: () => void
   /** Other open windows this session can move to (empty → the item is disabled). */
   readonly moveTargets: readonly MoveTarget[]
   /** Resolve this session's live cwd, or `null` if it can't be determined. */
   readonly resolveCwd: () => Promise<string | null>
   /** Whether "new terminal here" applies (terminal sessions only). */
   readonly canOpenHere: boolean
+  /** Ready-for-review highlight for this session (§9.5); decorates the status icon. */
+  readonly readyForReview: boolean
 }
 
 export function SessionTab({
@@ -53,9 +58,11 @@ export function SessionTab({
   onClose,
   onNewTerminalFromHere,
   onMoveToWindow,
+  onRefreshState,
   moveTargets,
   resolveCwd,
-  canOpenHere
+  canOpenHere,
+  readyForReview
 }: SessionTabProps): React.JSX.Element {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: session.id
@@ -133,6 +140,9 @@ export function SessionTab({
       onContextMenu={openMenu}
       style={style}
     >
+      {/* Live status glyph (§5.4, §9). Suppressed for a dead session — its "(exited)"
+          suffix already tells the story and no state is being evaluated anymore. */}
+      {exited ? null : <StatusIcon state={session.state} readyForReview={readyForReview} />}
       <EditableLabel
         ref={labelRef}
         value={session.title}
@@ -241,6 +251,22 @@ export function SessionTab({
                 Move to {t.label}
               </button>
             ))
+          )}
+          {/* Manually re-evaluate the live state (§5.4 R1). A dead session evaluates
+              no state (its icon is suppressed), so the item is only offered while alive. */}
+          {exited ? null : (
+            <button
+              type="button"
+              role="menuitem"
+              className="menu-item"
+              onClick={() => {
+                onRefreshState()
+                setMenu(null)
+              }}
+              style={menuItemStyle}
+            >
+              Refresh state
+            </button>
           )}
           <button
             type="button"

@@ -26,6 +26,7 @@ import type {
   RenameSessionInput,
   ReorderSessionInput,
   SessionCwdInput,
+  RefreshSessionStateInput,
   CreateWindowInput,
   CloseWindowInput,
   MoveSessionInput,
@@ -61,6 +62,14 @@ export const CHANNELS = {
    * path, or `null` if it can't be resolved (exited/non-terminal/non-Linux).
    */
   sessionCwd: 'session:cwd',
+
+  /**
+   * Manually re-evaluate a session's state (renderer → main, fire-and-forget). Like
+   * `pty:write` it's a `send` (no reply): the refreshed state, if any, comes back
+   * asynchronously as an ordinary `sessionStateChanged` event (§5.4 R1, §9.6). Still
+   * routed through the command loop so it orders against close/create.
+   */
+  sessionRefreshState: 'session:refreshState',
 
   // Window commands (UI → backend, request/reply) (V1.5, §6.7).
   windowCreate: 'window:create',
@@ -158,6 +167,11 @@ export interface OctopusAPI {
      * Powers "new terminal from this directory".
      */
     cwd(input: SessionCwdInput): Promise<string | null>
+    /**
+     * Fire-and-forget request to re-evaluate this session's state now (§5.4 R1).
+     * No reply: the result surfaces as a `sessionStateChanged` event if it changed.
+     */
+    refreshState(input: RefreshSessionStateInput): void
   }
 
   /** Multi-window control (V1.5, §5.6, §6.7). */

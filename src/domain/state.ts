@@ -6,20 +6,26 @@
  * signatures here do not change.
  */
 
-/** What a session is doing (V2+). Default and only V1 value: `Unknown`. */
+/**
+ * What a Claude session is doing (§9). The four states share ONE vocabulary with
+ * the UI — `Unknown` / `Idle` / `Working` / `NeedsInput` — so there is no
+ * domain-vs-label translation. The enum VALUES stay the original wire strings
+ * (`'waiting'`/`'blocked'`) so IPC, the daemon protocol, persistence and the Claude
+ * hook payloads need no migration; only the TypeScript member names changed.
+ */
 export enum SessionState {
   Unknown = 'unknown',
-  Waiting = 'waiting',
+  Idle = 'waiting',
   Working = 'working',
-  Blocked = 'blocked'
+  NeedsInput = 'blocked'
 }
 
 /** Aggregate task state — always DERIVED from child sessions, never assigned (I11). */
 export enum TaskState {
   Unknown = 'unknown',
-  Waiting = 'waiting',
+  Idle = 'waiting',
   Working = 'working',
-  Blocked = 'blocked'
+  NeedsInput = 'blocked'
 }
 
 /**
@@ -31,21 +37,19 @@ export enum SessionSubState {
   Initializing = 'initializing',
   WaitingAtPrompt = 'waiting/at_prompt',
   WaitingExplicit = 'waiting/explicit',
-  WorkingSubprocess = 'working/subprocess',
   WorkingExplicit = 'working/explicit',
   BlockedPermission = 'blocked/permission',
-  BlockedExplicit = 'blocked/explicit',
-  BlockedHeuristic = 'blocked/heuristic'
+  BlockedExplicit = 'blocked/explicit'
 }
 
 /**
- * The worst-status-wins lattice (§3.4): `Blocked > Working > Waiting > Unknown`.
+ * The worst-status-wins lattice (§3.4): `NeedsInput > Working > Idle > Unknown`.
  * A higher rank wins the `max` reduction. Exhaustive over {@link SessionState}
  * and {@link TaskState} (identical members).
  */
 export const STATE_RANK: Readonly<Record<SessionState, number>> = Object.freeze({
   [SessionState.Unknown]: 0,
-  [SessionState.Waiting]: 1,
+  [SessionState.Idle]: 1,
   [SessionState.Working]: 2,
-  [SessionState.Blocked]: 3
+  [SessionState.NeedsInput]: 3
 })

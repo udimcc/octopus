@@ -25,6 +25,7 @@ import type { WindowId } from '../domain/ids'
 import { asWindowId, MAIN_WINDOW_ID } from '../domain/ids'
 import type { WindowRecord } from '../ports/workspace-persistence'
 import type { AppContext } from './composition-root'
+import { busySessions, isBusy, type BusySessionsSummary } from '../application/queries/busy-sessions'
 
 /** How long to wait after the last move/resize before persisting bounds (§6.3). */
 const BOUNDS_SAVE_DEBOUNCE_MS = 500
@@ -243,10 +244,45 @@ async function promptCloseDisposition(
 }
 
 /**
+ * Modal "you have work in progress — quit anyway?" confirmation (§6.6, R4). Uses
+ * the SYNCHRONOUS dialog because `before-quit` can't await: the answer must be known
+ * before we decide whether to `preventDefault()`. Returns true to proceed with quit.
+ * Parented to the focused window so it centers on-screen (falls back to modeless).
+ */
+function confirmQuitWhileBusy(summary: BusySessionsSummary): boolean {
+  const parts: string[] = []
+  if (summary.working > 0) {
+    parts.push(`${summary.working} working`)
+  }
+  if (summary.blocked > 0) {
+    parts.push(`${summary.blocked} needing input`)
+  }
+  const taskPlural = summary.tasks === 1 ? 'task' : 'tasks'
+  const parent = BrowserWindow.getFocusedWindow() ?? undefined
+  const response = dialog.showMessageBoxSync(parent as BrowserWindow, {
+    type: 'warning',
+    buttons: ['Quit anyway', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    title: 'Quit Octopus?',
+    message: `You have running sessions (${parts.join(', ')}) across ${summary.tasks} ${taskPlural}.`,
+    detail: 'Quitting closes their shells and loses any unsaved work in progress.'
+  })
+  return response === 0
+}
+
+/**
  * Register the app-level quit sequence exactly once (§6.3, I13). `before-quit`
  * fires before windows close, giving `shutdown` a chance to release runtimes and
  * checkpoint the store, and sets `isQuitting` so secondary windows skip their
  * close dialog. Guarded so a re-entrant quit runs teardown only once.
+ *
+ * Work-in-progress warning (§6.6, R4, I13): on the IN-PROCESS backend quitting
+ * SIGHUPs every live shell, so an agent mid-task or a shell blocked on input loses
+ * its work. Before committing to quit we count the live `Working`/`Blocked` sessions
+ * and, if any, ask for confirmation — cancelling `preventDefault()`s the quit and
+ * leaves `isQuitting` unset. The DAEMON backend keeps its PTYs running for re-attach
+ * (§6.2), so there is nothing to lose and the warning is skipped.
  *
  * Daemon backend (§6.2): before the synchronous `shutdown` detaches and drops the
  * socket we must first query the live roster to persist each session's `last_cwd` —
@@ -259,10 +295,21 @@ export function registerQuitHandler(ctx: AppContext): void {
   let didShutdown = false
   let didFlushCwds = false
   app.on('before-quit', (event) => {
-    ctx.isQuitting = true
     if (didShutdown) {
+      ctx.isQuitting = true
       return
     }
+    // In-process backend only: quitting kills live shells, so warn if any session
+    // is Working/Blocked and let the user back out. Daemon PTYs survive quit (§6.2),
+    // so skip. Runs before `isQuitting` is set so a cancel leaves windows intact.
+    if (!ctx.daemonActive()) {
+      const summary = busySessions(ctx.deps.workspace)
+      if (isBusy(summary) && !confirmQuitWhileBusy(summary)) {
+        event.preventDefault()
+        return
+      }
+    }
+    ctx.isQuitting = true
     // Daemon path: defer once to persist cwds while the socket is still up.
     if (ctx.daemonActive() && !didFlushCwds) {
       event.preventDefault()

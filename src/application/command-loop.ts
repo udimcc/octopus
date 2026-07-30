@@ -23,6 +23,7 @@ import { DomainError } from '../domain/errors'
 import { createTask } from './use-cases/create-task'
 import { deleteTask } from './use-cases/delete-task'
 import { switchTask } from './use-cases/switch-task'
+import { startTaskSessions } from './use-cases/start-task-sessions'
 import { renameTask } from './use-cases/rename-task'
 import { reorderTask } from './use-cases/reorder-task'
 import { openSession } from './use-cases/open-session'
@@ -33,6 +34,7 @@ import { writeToPty, resizePty } from './use-cases/pty-io'
 import { updateSettings } from './use-cases/update-settings'
 import { handleRuntimeExit } from './use-cases/handle-runtime-exit'
 import { ingestSessionState } from './use-cases/ingest-session-state'
+import { refreshSessionState } from './use-cases/refresh-session-state'
 import { createWindow } from './use-cases/create-window'
 import { closeWindow } from './use-cases/close-window'
 import { moveSessionToWindow } from './use-cases/move-session-to-window'
@@ -94,6 +96,9 @@ export class CommandLoop {
       case 'switchTask':
         await switchTask(this.deps, command.input)
         return OK
+      case 'startTaskSessions':
+        await startTaskSessions(this.deps, command.input.taskId)
+        return OK
       case 'renameTask':
         renameTask(this.deps, command.input)
         return OK
@@ -125,8 +130,12 @@ export class CommandLoop {
         handleRuntimeExit(this.deps, command.input)
         return OK
       case 'ingestSessionState':
-        // §10 V1 seam: dispatched by nobody in V1. Recomputes TaskState in V2.
+        // A runtime state signal (§9.6); recomputes TaskState + emits the events.
         ingestSessionState(this.deps, command.input)
+        return OK
+      case 'refreshSessionState':
+        // Manual re-evaluation (§5.4 R1); nudges the runtime's evaluator, no-op if none.
+        refreshSessionState(this.deps, command.input)
         return OK
       case 'createWindow':
         return { ok: true, windowId: createWindow(this.deps, command.input) }

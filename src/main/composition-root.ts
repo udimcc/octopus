@@ -40,6 +40,10 @@ import { ScriptWorktreeProvider } from '../adapters/worktree/script-worktree-pro
 import { NativeGitWorktreeProvider } from '../adapters/worktree/native-git-worktree-provider'
 import { SelectingWorktreeProvider } from '../adapters/worktree/selecting-worktree-provider'
 import { createSocketProvisioner } from '../adapters/state-socket/socket-provisioner'
+import { createDefaultDetectorRegistry } from '../shared/node/state/state-core'
+import { ensureShellIntegrationFiles, type ShellIntegrationFiles } from '../shared/node/shell-integration'
+import { createStateLogFile } from '../adapters/observability/state-log-file'
+import { ensureClaudeHooks } from '../adapters/claude/claude-hooks'
 import { PtySessionManager } from '../adapters/session/pty-session-manager'
 import { DaemonClient } from '../adapters/session/daemon-client'
 import { DaemonSessionManager } from '../adapters/session/daemon-session-manager'
@@ -58,6 +62,7 @@ import { reconcileOnStartup } from '../application/reconcile'
 import { shutdown } from '../application/quit'
 import { worstStatusWins } from '../domain/task-state-aggregator'
 import { Workspace } from '../domain/workspace'
+import { TaskLifecycle } from '../domain/lifecycle'
 import type { Settings } from '../ports/settings-store'
 import type { EventBus } from '../ports/event-bus'
 import { MAIN_WINDOW_ID, asSessionId, type SessionId, type WindowId } from '../domain/ids'
@@ -159,6 +164,45 @@ export function bootstrap(): AppContext {
 
   const socketProvisioner = createSocketProvisioner(getUid())
 
+  // State-detection wiring (§9). The pluggable per-program detector registry (§9.3)
+  // is built once and shared by every backend: the in-process PTY manager below and
+  // — separately, inside `octopusd` — the daemon. Adding a program is a new
+  // `register()` HERE (composition root), with zero change downstream (§8/§9.3).
+  const detectorRegistry = createDefaultDetectorRegistry()
+
+  // OSC 133 shell-integration files (§12.1): generate the bash/zsh rc files once at
+  // boot so every terminal launches against them (opt-out auto-injection). Best-effort
+  // — an I/O failure just means no injection (a plain login shell); the at-prompt
+  // sentinel then relies on tcgetpgrp alone rather than breaking session startup.
+  let shellIntegration: ShellIntegrationFiles | undefined
+  try {
+    shellIntegration = ensureShellIntegrationFiles(paths.shellIntegrationDir)
+    console.log(`[octopus] shell integration written to ${paths.shellIntegrationDir}`)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.warn(`[octopus] shell integration unavailable, using plain login shells: ${message}`)
+  }
+
+  // State-transition log (§11, R1): append one JSONL line per state change to
+  // `logs/state.log` (dir ensured by `ensureAppDirs`). Best-effort — the adapter
+  // swallows its own I/O errors and warns once, so a persistently-unwritable log
+  // never derails the command loop or spams stderr.
+  const stateLog = createStateLogFile({
+    path: paths.stateLogPath,
+    onError: (err) => {
+      const message = err instanceof Error ? err.message : String(err)
+      console.warn(`[octopus] state log unavailable, transitions will not be recorded: ${message}`)
+    }
+  })
+
+  // Claude Code hooks (§9.2, §12.1): merge-safe ensure so Claude sessions get
+  // authoritative Layer-3 state out of the box for ANY Octopus user. Opt-out via
+  // `terminal.injectClaudeHooks === false`. Best-effort: never blocks boot.
+  if (getSettings().terminal.injectClaudeHooks !== false) {
+    const hooks = ensureClaudeHooks(homedir())
+    console.log(`[octopus] claude hooks: ${hooks.action} (${hooks.path})`)
+  }
+
   // Session backend (§6.2). We ALWAYS start on the in-process PTY manager and,
   // unless `terminal.backend === 'in-process'`, swap to the durable daemon backend
   // during the async `warmupSessions()` below — but only once a reachable `octopusd`
@@ -166,14 +210,22 @@ export function bootstrap(): AppContext {
   // This honors the chosen fallback: if the daemon can be neither reached nor launched,
   // the switchable manager simply stays in-process for the run. Wiring the daemon
   // client here (not connecting) keeps `bootstrap()` synchronous.
-  const inProcessSessions = new PtySessionManager({ getSettings })
+  const inProcessSessions = new PtySessionManager({
+    getSettings,
+    detectorRegistry,
+    shellIntegration
+  })
   const sessions = new SwitchableSessionManager(inProcessSessions)
   const daemonClient = new DaemonClient({
     socketPath: controlSocketPath(currentUid()),
     daemonEntry: join(__dirname, 'daemon.js'),
     daemonVersion: CURRENT_VERSION.toString()
   })
-  const daemonSessions = new DaemonSessionManager({ client: daemonClient, getSettings })
+  const daemonSessions = new DaemonSessionManager({
+    client: daemonClient,
+    getSettings,
+    shellIntegration
+  })
   // Filled by `warmupSessions()` from the daemon's live roster; empty on the
   // in-process path (→ every restored session spawns fresh, V1 behavior).
   const liveDaemonSessions = new Set<SessionId>()
@@ -226,6 +278,7 @@ export function bootstrap(): AppContext {
     clock,
     aggregator,
     configValidator,
+    stateLog,
     socketProvisioner,
     scrollbacks,
     currentVersion: CURRENT_VERSION,
@@ -243,6 +296,15 @@ export function bootstrap(): AppContext {
     void commandLoop.dispatch({
       kind: 'handleRuntimeExit',
       input: { sessionId, exitCode, signal }
+    })
+  }
+  // Route each evaluated session-state change through the loop as `ingestSessionState`
+  // (§9.6), so `setState` + the task re-derivation run on the single writer, never
+  // inline in the evaluator's push callback (§6.6). Same late-bind pattern as above.
+  deps.onSessionState = (sessionId, state, meta): void => {
+    void commandLoop.dispatch({
+      kind: 'ingestSessionState',
+      input: { sessionId, state, meta }
     })
   }
 
@@ -310,6 +372,19 @@ export function bootstrap(): AppContext {
       console.log(
         `[octopus] daemon backend active: ${liveDaemonSessions.size} live session(s) to re-attach`
       )
+      // Re-attach EVERY Ready task's sessions at boot, not just the one the first
+      // window will focus. Each re-attach subscribes a state evaluator that flushes
+      // the daemon's buffered live state → `ingestSessionState` → `taskStateChanged`,
+      // so a task shows its true status immediately instead of only once the user
+      // focuses it (Bug: "status appears only when I focus the task"). We dispatch
+      // `startTaskSessions` (NOT `switchTask`) so no active-task pointer moves and no
+      // `activeTaskChanged` fires; it's idempotent with the later focus switch (§6.2,
+      // §9.6, §6.6 — runs on the single writer).
+      for (const task of workspace.tasks()) {
+        if (task.lifecycle === TaskLifecycle.Ready) {
+          void commandLoop.dispatch({ kind: 'startTaskSessions', input: { taskId: task.id } })
+        }
+      }
     } catch (err) {
       // Connected but the roster query failed — safest is to spawn fresh in-process
       // rather than half-adopt the daemon. Leave the delegate as-is.

@@ -17,6 +17,7 @@
 import type { TaskId, SessionId, WindowId } from '../domain/ids'
 import type { SessionState, TaskState } from '../domain/state'
 import type { TaskSnapshot, SessionSnapshot } from '../domain/snapshots'
+import type { StateChangeMeta } from './session-runtime'
 
 /** High-frequency terminal output for one session (§6.5, §5.2). */
 export interface PtyDataEvent {
@@ -132,6 +133,8 @@ export interface SessionStateChangedEvent {
   readonly type: 'sessionStateChanged'
   readonly sessionId: SessionId
   readonly state: SessionState
+  /** Layer/confidence/reason of the deciding signal (§9.1) — feeds the debug overlay. */
+  readonly meta?: StateChangeMeta
 }
 export interface TaskStateChangedEvent {
   readonly type: 'taskStateChanged'

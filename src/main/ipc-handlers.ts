@@ -31,6 +31,7 @@ import type {
   RenameSessionInput,
   ReorderSessionInput,
   SessionCwdInput,
+  RefreshSessionStateInput,
   CreateWindowInput,
   CloseWindowInput,
   MoveSessionInput,
@@ -339,6 +340,15 @@ export function registerIpcHandlers(
     void loop.dispatch({
       kind: 'resizePty',
       input: { sessionId: asSessionId(input.sessionId), cols: input.cols, rows: input.rows }
+    })
+  })
+
+  // Manual state refresh (§5.4 R1): fire-and-forget, like PTY I/O. The refreshed
+  // state, if any, surfaces asynchronously as a `sessionStateChanged` event.
+  ipcMain.on(CHANNELS.sessionRefreshState, (_e, input: RefreshSessionStateInput) => {
+    void loop.dispatch({
+      kind: 'refreshSessionState',
+      input: { sessionId: asSessionId(input.sessionId) }
     })
   })
 }

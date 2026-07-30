@@ -124,7 +124,7 @@ describe('sessionToRow (§6.3, §10)', () => {
       sessionSnapshot({
         lifecycle: SessionLifecycle.Exited,
         exitedAt: 999,
-        state: SessionState.Blocked
+        state: SessionState.NeedsInput
       })
     )
     expect(row.exited_at).toBe(999)

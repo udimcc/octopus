@@ -32,17 +32,92 @@
 import type {
   SessionRuntime,
   SessionRuntimeContext,
-  StateEvaluator
+  StateEvaluator,
+  StateChangeMeta
 } from '../../ports/session-runtime'
+import type { SessionState } from '../../domain/state'
 import type { SpawnParams } from '../../shared/node/daemon-protocol'
-import type { DaemonClient, DaemonSessionSink } from './daemon-client'
+import type { DaemonClient, DaemonSessionSink, DaemonStateUpdate } from './daemon-client'
+import { coreToSessionState } from './composite-state-evaluator'
+
+/**
+ * Bridges the daemon's unsolicited `state` frames (§9.6) into the ports
+ * {@link StateEvaluator} the Application subscribes to. The daemon runs the actual
+ * {@link CompositeStateProvider}; this side just maps each {@link DaemonStateUpdate}
+ * (plain `CoreState` string + metadata) to the domain {@link SessionState} and
+ * forwards it — the mirror of {@link CompositeStateEvaluator}, whose composite is
+ * local. `refresh()` asks the daemon to re-emit.
+ */
+class DaemonStateEvaluator implements StateEvaluator {
+  private listener: ((state: SessionState, meta?: StateChangeMeta) => void) | null = null
+  /**
+   * The most recent update seen BEFORE a listener subscribed. On a re-attach the
+   * daemon replays its last state inside `start()` — which runs before
+   * `startSessionRuntime` subscribes — so buffer it and flush on subscribe, else a
+   * resumed session's initial (possibly stable) state would never reach the loop.
+   */
+  private buffered: DaemonStateUpdate | null = null
+
+  constructor(
+    private readonly client: DaemonClient,
+    private readonly sessionId: string
+  ) {}
+
+  onStateChange(listener: (state: SessionState, meta?: StateChangeMeta) => void): void {
+    this.listener = listener
+    if (this.buffered) {
+      const update = this.buffered
+      this.buffered = null
+      this.emit(update)
+    }
+  }
+
+  /** Called from the session sink for each daemon `state` frame. */
+  push(update: DaemonStateUpdate): void {
+    if (!this.listener) {
+      this.buffered = update
+      return
+    }
+    this.emit(update)
+  }
+
+  private emit(update: DaemonStateUpdate): void {
+    this.listener?.(coreToSessionState(update.state), {
+      layer: update.layer,
+      confidence: update.confidence,
+      reason: update.reason
+    })
+  }
+
+  refresh(): void {
+    this.client.refreshState(this.sessionId)
+  }
+
+  dispose(): void {
+    this.listener = null
+  }
+}
 
 export interface DaemonSessionRuntimeOptions {
   readonly client: DaemonClient
   /** Fully-resolved shell (the manager runs `resolveShell`, which needs settings). */
   readonly shell: string
-  /** Login-shell args (`-l`), matching the in-process runtime (§6.1). */
+  /** Login-shell args (`-l`) by default, or the OSC 133 integration args (§6.1, §12.1). */
   readonly args?: readonly string[]
+  /**
+   * Extra env for the child (§12.1) — e.g. `ZDOTDIR`/`OCTOPUS_USER_BASHRC` for shell
+   * integration — forwarded to the daemon in `spawn` and layered onto its child env.
+   */
+  readonly envPatch?: Readonly<Record<string, string>>
+  /**
+   * Whether to surface a {@link StateEvaluator} (§9). The daemon ALWAYS runs its
+   * composite and pushes `state` frames (cheap, unconditional — see daemon/index.ts),
+   * so the per-user opt-out is enforced HERE: when `false`, `stateEvaluator()`
+   * returns null, `startSessionRuntime` never subscribes, and the pushed frames are
+   * simply dropped by the (still-registered) sink into a detached evaluator. Mirrors
+   * the in-process gate in `PtySessionManager` (no registry → no evaluator).
+   */
+  readonly stateDetection?: boolean
 }
 
 const DEFAULT_ARGS = ['-l'] as const
@@ -52,18 +127,24 @@ export class DaemonSessionRuntime implements SessionRuntime {
   private readonly client: DaemonClient
   private readonly shell: string
   private readonly args: readonly string[]
+  private readonly envPatch?: Readonly<Record<string, string>>
   private readonly sessionId: string
+  private readonly stateDetection: boolean
 
   private started = false
   private exited = false
   private stopping = false
+  private readonly evaluator: DaemonStateEvaluator
 
   constructor(ctx: SessionRuntimeContext, opts: DaemonSessionRuntimeOptions) {
     this.ctx = ctx
     this.client = opts.client
     this.shell = opts.shell
     this.args = opts.args ?? DEFAULT_ARGS
+    this.envPatch = opts.envPatch
     this.sessionId = ctx.sessionId
+    this.stateDetection = opts.stateDetection ?? true
+    this.evaluator = new DaemonStateEvaluator(this.client, this.sessionId)
   }
 
   /**
@@ -131,9 +212,15 @@ export class DaemonSessionRuntime implements SessionRuntime {
     }
   }
 
-  /** V2 seam: null in V1 (Terminal has no `EvaluatesState`) (§10). */
+  /**
+   * The daemon-fed state evaluator (§9.6): the daemon runs the composite and pushes
+   * `state` frames, which the sink routes into this evaluator. Returns null when the
+   * user opted out (`terminal.stateDetection === false`) so `startSessionRuntime`
+   * never subscribes — the mirror of the in-process gate (§9). The daemon still pushes
+   * frames (cheap); the sink drops them into an unsubscribed evaluator.
+   */
   stateEvaluator(): StateEvaluator | null {
-    return null
+    return this.stateDetection ? this.evaluator : null
   }
 
   /**
@@ -166,7 +253,8 @@ export class DaemonSessionRuntime implements SessionRuntime {
         if (!this.stopping) {
           this.ctx.onExit(exitCode, signal)
         }
-      }
+      },
+      onState: (update) => this.evaluator.push(update)
     }
   }
 
@@ -179,7 +267,8 @@ export class DaemonSessionRuntime implements SessionRuntime {
       cwd: this.ctx.worktreePath,
       cols: this.ctx.cols,
       rows: this.ctx.rows,
-      stateSocketPath: this.ctx.stateSocketPath
+      stateSocketPath: this.ctx.stateSocketPath,
+      envPatch: this.envPatch
     }
   }
 }

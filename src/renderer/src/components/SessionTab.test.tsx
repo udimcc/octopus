@@ -33,9 +33,11 @@ function renderTab(over: Partial<SessionTabProps> = {}): {
     onClose: vi.fn(),
     onNewTerminalFromHere: vi.fn(),
     onMoveToWindow: vi.fn(),
+    onRefreshState: vi.fn(),
     moveTargets: [],
     resolveCwd: vi.fn().mockResolvedValue(null),
     canOpenHere: true,
+    readyForReview: false,
     ...over
   }
   render(
@@ -131,5 +133,20 @@ describe('<SessionTab> context menu', () => {
     openMenu()
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close session' }))
     expect(onClose).toHaveBeenCalled()
+  })
+
+  it('"Refresh state" fires onRefreshState and dismisses the menu', () => {
+    const onRefreshState = vi.fn()
+    renderTab({ onRefreshState })
+    openMenu()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Refresh state' }))
+    expect(onRefreshState).toHaveBeenCalled()
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('hides "Refresh state" for a dead session (no state is evaluated)', () => {
+    renderTab({ session: session({ lifecycle: 'exited' }) })
+    openMenu()
+    expect(screen.queryByRole('menuitem', { name: 'Refresh state' })).not.toBeInTheDocument()
   })
 })

@@ -59,12 +59,16 @@ interface Harness {
   timers: Array<() => void>
   launchFn: ReturnType<typeof vi.fn>
   connectFn: ReturnType<typeof vi.fn>
+  killFn: ReturnType<typeof vi.fn>
+  isAliveFn: ReturnType<typeof vi.fn>
 }
 
 function makeClient(overrides: Record<string, unknown> = {}): Harness {
   const sockets: FakeSocket[] = []
   const timers: Array<() => void> = []
   const launchFn = vi.fn(() => true)
+  const killFn = vi.fn(() => true)
+  const isAliveFn = vi.fn(() => false) // default: a killed daemon is immediately gone.
   const connectFn = vi.fn(() => {
     const sock = new FakeSocket()
     sockets.push(sock)
@@ -77,6 +81,8 @@ function makeClient(overrides: Record<string, unknown> = {}): Harness {
     connectRetryMs: 10,
     connectFn,
     launchFn,
+    killFn,
+    isAliveFn,
     setTimer: (fn: () => void) => {
       timers.push(fn)
       return timers.length
@@ -84,11 +90,15 @@ function makeClient(overrides: Record<string, unknown> = {}): Harness {
     clearTimer: () => {},
     ...overrides
   })
-  return { client, sockets, timers, launchFn, connectFn }
+  return { client, sockets, timers, launchFn, connectFn, killFn, isAliveFn }
 }
 
 /** Reply to the (already-sent) `hello` on `sock` with a matching-requestId helloAck. */
-function ackHello(sock: FakeSocket, protocolVersion: number = PROTOCOL_VERSION): void {
+function ackHello(
+  sock: FakeSocket,
+  protocolVersion: number = PROTOCOL_VERSION,
+  pid?: number
+): void {
   const hello = sock.controls().find((m) => m.type === 'hello')
   if (!hello || hello.type !== 'hello') {
     throw new Error('test bug: no hello frame was sent')
@@ -99,7 +109,8 @@ function ackHello(sock: FakeSocket, protocolVersion: number = PROTOCOL_VERSION):
       type: 'helloAck',
       requestId: hello.requestId,
       protocolVersion,
-      daemonVersion: '1.2.3'
+      daemonVersion: '1.2.3',
+      pid
     })
   )
 }
@@ -185,13 +196,83 @@ describe('DaemonClient', () => {
     await expect(Promise.all([p1, p2])).resolves.toEqual([undefined, undefined])
   })
 
-  it('rejects when helloAck carries a mismatched protocol version', async () => {
+  it('retires an incompatible daemon (by pid) and relaunches a fresh one', async () => {
+    const h = makeClient()
+    const p = h.client.ensureReady()
+
+    // A stale pre-upgrade daemon answers the first connect but reports an OLD protocol
+    // version, along with its pid (§6.2 auto-restart path).
+    h.sockets[0].emit('connect')
+    await flush()
+    ackHello(h.sockets[0], PROTOCOL_VERSION - 1, 4242)
+    await flush()
+
+    // It must be SIGTERM'd and its socket torn down — never adopted.
+    expect(h.killFn).toHaveBeenCalledWith(4242)
+    expect(h.sockets[0].destroyed).toBe(true)
+    // isAliveFn defaults to false → confirmed dead → a fresh daemon is launched.
+    expect(h.launchFn).toHaveBeenCalledTimes(1)
+
+    // Fire the backoff timer → the post-launch connect attempt, which reaches the
+    // fresh (compatible) daemon.
+    h.timers[0]()
+    await flush()
+    h.sockets[1].emit('connect')
+    await flush()
+    ackHello(h.sockets[1])
+    await expect(p).resolves.toBeUndefined()
+  })
+
+  it('waits for the retired daemon to die before relaunching', async () => {
+    // Alive on the first two probes, then gone — the relaunch must not race ahead.
+    const isAliveFn = vi.fn().mockReturnValueOnce(true).mockReturnValueOnce(true).mockReturnValue(false)
+    const h = makeClient({ isAliveFn })
+    const p = h.client.ensureReady()
+    h.sockets[0].emit('connect')
+    await flush()
+    ackHello(h.sockets[0], PROTOCOL_VERSION - 1, 4242)
+    await flush()
+
+    // Not yet confirmed dead → not launched; a poll timer is pending.
+    expect(h.launchFn).not.toHaveBeenCalled()
+    // Drain the death-poll backoff timers until isAliveFn reports gone.
+    for (let i = 0; i < 3 && h.launchFn.mock.calls.length === 0; i++) {
+      const timer = h.timers.shift()
+      if (timer) timer()
+      await flush()
+    }
+    expect(h.launchFn).toHaveBeenCalledTimes(1)
+
+    h.timers[0]?.()
+    await flush()
+    h.sockets[1].emit('connect')
+    await flush()
+    ackHello(h.sockets[1])
+    await expect(p).resolves.toBeUndefined()
+  })
+
+  it('degrades (rejects) on a protocol mismatch when the daemon reports no pid', async () => {
     const h = makeClient()
     const p = h.client.ensureReady()
     h.sockets[0].emit('connect')
     await flush()
-    ackHello(h.sockets[0], PROTOCOL_VERSION + 999)
+    // No pid ⇒ we can't retire it ⇒ surface the mismatch so the caller falls back to
+    // in-process. The socket is still torn down so a later ensureReady won't reuse it.
+    ackHello(h.sockets[0], PROTOCOL_VERSION - 1)
     await expect(p).rejects.toThrow(/protocol/)
+    expect(h.killFn).not.toHaveBeenCalled()
+    expect(h.launchFn).not.toHaveBeenCalled()
+    expect(h.sockets[0].destroyed).toBe(true)
+  })
+
+  it('rejects when an incompatible daemon cannot be killed', async () => {
+    const h = makeClient({ killFn: vi.fn(() => false) })
+    const p = h.client.ensureReady()
+    h.sockets[0].emit('connect')
+    await flush()
+    ackHello(h.sockets[0], PROTOCOL_VERSION - 1, 4242)
+    await expect(p).rejects.toThrow(/protocol/)
+    expect(h.launchFn).not.toHaveBeenCalled()
   })
 
   it('spawn sends a spawn control frame and resolves with the pid on spawned', async () => {

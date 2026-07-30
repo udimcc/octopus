@@ -47,6 +47,26 @@ export interface Toast {
   readonly message: string
 }
 
+/**
+ * One entry in the keyboard-toggled debug overlay's ring (§11). A pure renderer
+ * view-model of the `sessionStateChanged` stream — the deciding-signal metadata
+ * (layer/confidence/reason) the backend forwards, kept only for on-screen
+ * diagnostics. Not persisted, not part of any DTO. `seq` is a monotonic id
+ * (no wall clock in the reducer) so React keys stay stable and order is total.
+ */
+export interface DebugTransition {
+  readonly seq: number
+  readonly sessionId: string
+  readonly from: string
+  readonly to: string
+  readonly layer?: 1 | 2 | 3
+  readonly confidence?: string
+  readonly reason?: string
+}
+
+/** How many transitions the overlay ring retains (newest wins; oldest evicted). */
+export const DEBUG_RING_CAPACITY = 200
+
 /** The plain data the store holds (no actions) — the unit the reducer operates on. */
 export interface StoreData {
   readonly tasks: Readonly<Record<string, TaskEntry>>
@@ -67,6 +87,30 @@ export interface StoreData {
   readonly windowRole: 'main' | 'secondary'
   /** All open windows (V1.5, §6.7); patched by window lifecycle events. */
   readonly windows: readonly WindowDTO[]
+  /**
+   * Ready-for-review highlight (§9.5): session id → true once it went `Working →
+   * Waiting` while UNFOCUSED, cleared on focus. A pure renderer view-model derived
+   * from the `sessionStateChanged` stream — NOT a domain state, not persisted, not
+   * in any DTO. Absent/false → not flagged.
+   */
+  readonly readyForReview: Readonly<Record<string, boolean>>
+  /**
+   * Whether THIS window currently has OS focus (§9.5). A session in a blurred window
+   * counts as unfocused, so a `Working → Waiting` there raises ready-for-review even
+   * if it is the active tab. Patched by `App`'s focus/blur listeners; defaults true.
+   */
+  readonly windowFocused: boolean
+  /**
+   * Rolling ring of recent state transitions for the debug overlay (§11), newest
+   * last, capped at {@link DEBUG_RING_CAPACITY}. Populated from every
+   * `sessionStateChanged` event regardless of overlay visibility, so opening it
+   * shows immediate history.
+   */
+  readonly debugTransitions: readonly DebugTransition[]
+  /** Monotonic sequence source for {@link DebugTransition.seq} (survives without a clock). */
+  readonly nextDebugSeq: number
+  /** Whether the debug overlay is currently shown in THIS window (keyboard-toggled). */
+  readonly debugOverlayOpen: boolean
 }
 
 export interface StoreActions {
@@ -83,6 +127,10 @@ export interface StoreActions {
   setGroupTasksByRepo(value: boolean): void
   pushToast(kind: ToastKind, message: string): void
   dismissToast(id: number): void
+  /** Record this window's OS focus (§9.5); regaining focus clears the active tab's flag. */
+  setWindowFocused(focused: boolean): void
+  /** Toggle the keyboard-triggered debug overlay for this window (§11). */
+  toggleDebugOverlay(): void
 }
 
 export type Store = StoreData & StoreActions
@@ -121,7 +169,12 @@ export function initialData(): StoreData {
     // (V1.5, §5.6). A pre-hydration render shows the main-window layout.
     windowId: 'main',
     windowRole: 'main',
-    windows: []
+    windows: [],
+    readyForReview: {},
+    windowFocused: true,
+    debugTransitions: [],
+    nextDebugSeq: 1,
+    debugOverlayOpen: false
   }
 }
 
@@ -206,6 +259,73 @@ export function activeSessionInWindow(
   return ids[0]
 }
 
+/**
+ * Is `sessionId` currently FOCUSED from this renderer's vantage (§9.5)? True only
+ * when it is the active tab of its task, hosted in THIS window, and this window has
+ * OS focus. A session in another window (or when this window is blurred, or that
+ * isn't the active tab) counts as unfocused — so a `Working → Waiting` there raises
+ * ready-for-review. Each renderer knows its own OS focus only; that is exactly the
+ * per-window view memory §9.5 describes.
+ */
+export function isSessionFocused(data: StoreData, sessionId: string): boolean {
+  const session = data.sessions[sessionId]
+  if (!session) return false
+  if (!data.windowFocused) return false
+  if (session.windowId !== data.windowId) return false
+  return data.activeSessionByTask[session.taskId] === sessionId
+}
+
+/**
+ * Does `taskId` have ANY session flagged ready-for-review (§9.5)? The task rollup is
+ * an OR over its sessions — the mirror of how the task's `state` is a worst-wins
+ * aggregate over session states (derived backend-side, §3.4). A selector, not stored.
+ */
+export function taskReadyForReview(data: StoreData, taskId: string): boolean {
+  const task = data.tasks[taskId]
+  if (!task) return false
+  return task.sessionIds.some((id) => data.readyForReview[id] === true)
+}
+
+/**
+ * Worst-status-wins rank over the wire state strings, mirroring the domain
+ * `STATE_RANK` lattice (§3.4): `blocked > working > waiting > unknown`. The renderer
+ * may not import `domain`, so the lattice is duplicated here in wire values (the
+ * enum VALUES the domain uses). Higher wins the reduction.
+ */
+const AGG_RANK: Readonly<Record<string, number>> = { unknown: 0, waiting: 1, working: 2, blocked: 3 }
+
+/**
+ * The state a session contributes to its task's worst-wins rollup (I12). A session
+ * that has exited or failed to start counts as `blocked` — it needs the user's
+ * attention (restart/dismiss) exactly like a permission prompt — regardless of the
+ * last detection state it carried. Mirrors the domain `lifecycleToAggregationState`.
+ */
+function sessionAggregationState(session: SessionDTO): string {
+  if (session.lifecycle === 'exited' || session.lifecycle === 'start_failed') return 'blocked'
+  return session.state
+}
+
+/**
+ * Recompute a task's derived `state` from its sessions' worst-wins aggregate (§3.4,
+ * I11). Called from the `sessionStateChanged` reducer so a session flip updates the
+ * task rollup in the SAME transition — the backend also emits a `taskStateChanged`,
+ * but relying on that separate message left the two momentarily desynced (bug 2.1:
+ * a session showing `needs input` while its task still showed `idle`).
+ */
+function recomputeTaskState(data: StoreData, taskId: string): StoreData {
+  const task = data.tasks[taskId]
+  if (!task) return data
+  let worst = 'unknown'
+  for (const id of task.sessionIds) {
+    const session = data.sessions[id]
+    if (!session) continue
+    const s = sessionAggregationState(session)
+    if ((AGG_RANK[s] ?? 0) > (AGG_RANK[worst] ?? 0)) worst = s
+  }
+  if (worst === task.state) return data
+  return patchTask(data, taskId, { state: worst })
+}
+
 /** Immutably patch one task entry; no-op if the task is unknown. */
 function patchTask(data: StoreData, taskId: string, patch: Partial<TaskEntry>): StoreData {
   const existing = data.tasks[taskId]
@@ -226,7 +346,8 @@ function omit<T>(record: Readonly<Record<string, T>>, key: string): Record<strin
 function removeSession(data: StoreData, taskId: string, sessionId: string): StoreData {
   const sessions = omit(data.sessions, sessionId)
   const task = data.tasks[taskId]
-  let next: StoreData = { ...data, sessions }
+  // Drop any lingering ready-for-review flag for the gone session (§9.5).
+  let next: StoreData = { ...data, sessions, readyForReview: clearReady(data.readyForReview, sessionId) }
   if (task) {
     const sessionIds = task.sessionIds.filter((id) => id !== sessionId)
     next = patchTask(next, taskId, { sessionIds })
@@ -237,6 +358,10 @@ function removeSession(data: StoreData, taskId: string, sessionId: string): Stor
       else delete activeSessionByTask[taskId]
       next = { ...next, activeSessionByTask }
     }
+    // The removed session no longer contributes to the task rollup — recompute its
+    // worst-wins state so a closed `Working`/`NeedsInput` session stops pinning the
+    // task icon to a stale rank (§3.4).
+    next = recomputeTaskState(next, taskId)
   }
   return next
 }
@@ -321,10 +446,16 @@ export function reduceEvent(data: StoreData, event: EventDTO): StoreData {
       const s = data.sessions[event.sessionId]
       if (!s) return data
       const updated: SessionDTO = { ...s, lifecycle: 'exited' }
-      const next: StoreData = {
-        ...data,
-        sessions: { ...data.sessions, [event.sessionId]: updated }
-      }
+      // An exited session aggregates as `NeedsInput` (I12, `sessionAggregationState`) —
+      // recompute the task rollup so the icon reflects the exit immediately rather than
+      // waiting for a later `sessionStateChanged` (§3.4).
+      const next = recomputeTaskState(
+        {
+          ...data,
+          sessions: { ...data.sessions, [event.sessionId]: updated }
+        },
+        s.taskId
+      )
       // Surface an unexpected exit as a toast (§5.4): a non-zero (or missing) exit
       // code is a failure worth flagging; a clean `exit 0` is silent.
       const clean = event.exitCode === 0
@@ -370,13 +501,42 @@ export function reduceEvent(data: StoreData, event: EventDTO): StoreData {
       return data // surfaced by the New-Task modal, not the global store
 
     case 'sessionStateChanged': {
-      // Dormant seam (§10): patch the session's state field. Nobody emits this in V1.
+      // Patch the session's state field (§9). Also derive the ready-for-review
+      // highlight (§9.5): a `working → waiting` transition on an UNFOCUSED session
+      // means "just finished, and the user hasn't looked". `blocked → waiting`
+      // (an answered prompt) and a straight-to-waiting (fresh prompt, no prior
+      // `working`) do NOT raise it.
       const s = data.sessions[event.sessionId]
       if (!s) return data
-      return {
-        ...data,
-        sessions: { ...data.sessions, [event.sessionId]: { ...s, state: event.state } }
+      const prev = s.state
+      // Append to the debug-overlay ring (§11), evicting the oldest past capacity.
+      const transition: DebugTransition = {
+        seq: data.nextDebugSeq,
+        sessionId: event.sessionId,
+        from: prev,
+        to: event.state,
+        layer: event.layer,
+        confidence: event.confidence,
+        reason: event.reason
       }
+      const ring = [...data.debugTransitions, transition].slice(-DEBUG_RING_CAPACITY)
+      const withSession: StoreData = {
+        ...data,
+        sessions: { ...data.sessions, [event.sessionId]: { ...s, state: event.state } },
+        debugTransitions: ring,
+        nextDebugSeq: data.nextDebugSeq + 1
+      }
+      // Roll the change up into the task's derived state in the same transition
+      // (§3.4, bug 2.1) — don't wait for the separate taskStateChanged message.
+      const next = recomputeTaskState(withSession, s.taskId)
+      const justFinished = prev === 'working' && event.state === 'waiting'
+      if (justFinished && !isSessionFocused(next, event.sessionId)) {
+        return {
+          ...next,
+          readyForReview: { ...next.readyForReview, [event.sessionId]: true }
+        }
+      }
+      return next
     }
 
     case 'taskStateChanged':
@@ -436,7 +596,9 @@ export const useStore = create<Store>((set) => ({
 
   setActiveSession: (taskId, sessionId) =>
     set((data) => ({
-      activeSessionByTask: { ...data.activeSessionByTask, [taskId]: sessionId }
+      activeSessionByTask: { ...data.activeSessionByTask, [taskId]: sessionId },
+      // Focusing a session is the ONLY clear path for its ready-for-review flag (§9.5).
+      readyForReview: clearReady(data.readyForReview, sessionId)
     })),
 
   setGroupTasksByRepo: (value) =>
@@ -444,5 +606,29 @@ export const useStore = create<Store>((set) => ({
 
   pushToast: (kind, message) => set((data) => pushToastData(data, kind, message)),
 
-  dismissToast: (id) => set((data) => ({ toasts: data.toasts.filter((t) => t.id !== id) }))
+  dismissToast: (id) => set((data) => ({ toasts: data.toasts.filter((t) => t.id !== id) })),
+
+  setWindowFocused: (focused) =>
+    set((data) => {
+      if (data.windowFocused === focused) return data
+      const next = { ...data, windowFocused: focused }
+      // Regaining focus counts as "looking at" the currently-visible session (§9.5) —
+      // the same clear path as an explicit tab click. Nothing to clear on blur.
+      if (!focused) return next
+      const activeTaskId = data.activeTaskId
+      const visible = activeTaskId ? activeSessionInWindow(next, activeTaskId, data.windowId) : undefined
+      if (!visible) return next
+      return { ...next, readyForReview: clearReady(data.readyForReview, visible) }
+    }),
+
+  toggleDebugOverlay: () => set((data) => ({ debugOverlayOpen: !data.debugOverlayOpen }))
 }))
+
+/** Return `map` with `sessionId` cleared, or `map` unchanged if it wasn't set (§9.5). */
+function clearReady(
+  map: Readonly<Record<string, boolean>>,
+  sessionId: string
+): Readonly<Record<string, boolean>> {
+  if (!map[sessionId]) return map
+  return omit(map, sessionId)
+}

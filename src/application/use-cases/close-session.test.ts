@@ -38,6 +38,18 @@ describe('closeSession — user-driven close (§3.6, §6.1)', () => {
     expect(fd.bus.ofType('sessionExited')).toEqual([])
   })
 
+  it('announces the recomputed task state after removing the session (§3.4, §6.6)', async () => {
+    const fd = await seedWithSession()
+
+    await closeSession(fd.deps, { sessionId: fd.sessionId })
+
+    // The last session is gone → the task rolls up to Unknown; a taskStateChanged
+    // keeps late-joining windows consistent even though the store also recomputes.
+    const taskEvents = fd.bus.ofType('taskStateChanged')
+    expect(taskEvents.length).toBeGreaterThanOrEqual(1)
+    expect(taskEvents.at(-1)).toMatchObject({ taskId: fd.taskId })
+  })
+
   it('frees the in-memory scrollback buffer on close; the persisted row cascades away (§6.6)', async () => {
     const fd = await seedWithSession()
     // Simulate captured output, and a persisted row from a prior flush.
@@ -75,6 +87,11 @@ describe('handleRuntimeExit — spontaneous death (§6.1, §6.6, I13)', () => {
     const exited = fd.bus.ofType('sessionExited')
     expect(exited).toHaveLength(1)
     expect(exited[0]).toMatchObject({ sessionId: fd.sessionId, exitCode: 137 })
+
+    // An exit aggregates as NeedsInput → the task rollup is announced (§3.4).
+    const taskEvents = fd.bus.ofType('taskStateChanged')
+    expect(taskEvents).toHaveLength(1)
+    expect(taskEvents[0]).toMatchObject({ taskId: fd.taskId, state: 'blocked' })
 
     // I13: no row write on exit — the persisted definition columns are unchanged.
     expect(fd.persistence.upsertedSessions.some((s) => s.id === fd.sessionId && s.lifecycle === SessionLifecycle.Exited)).toBe(false)

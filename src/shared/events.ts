@@ -120,6 +120,15 @@ export interface SessionStateChangedEventDTO {
   readonly type: 'sessionStateChanged'
   readonly sessionId: string
   readonly state: string
+  /**
+   * Layer/confidence/reason of the deciding signal (§9.1, §9.3) — powers the
+   * keyboard-toggled debug overlay (§11) and low-confidence dimming. All optional
+   * strings so the wire contract stays transport-agnostic (no domain enums leak).
+   */
+  readonly layer?: 1 | 2 | 3
+  readonly confidence?: string
+  readonly reason?: string
+  readonly subState?: string
 }
 export interface TaskStateChangedEventDTO {
   readonly type: 'taskStateChanged'

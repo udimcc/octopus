@@ -106,6 +106,18 @@ export async function startSessionRuntime(
   session.markRunning()
   deps.runtimes.set(id, runtime)
 
+  // Subscribe to the runtime's state evaluator (§9.6), if its type evaluates state
+  // (Terminal via `EvaluatesState`; null otherwise). Each pushed change is routed
+  // through the single-writer loop via `deps.onSessionState` — never applied inline
+  // — so `setState` + the task re-derivation stay serialized with all other
+  // mutations (§6.6). The evaluator's own lifetime is the runtime's: it is disposed
+  // in `runtime.dispose()` by the adapter, so no explicit teardown is needed here.
+  const evaluator = runtime.stateEvaluator()
+  if (evaluator && deps.onSessionState) {
+    const sink = deps.onSessionState
+    evaluator.onStateChange((state, meta) => sink(id, state, meta))
+  }
+
   // Deliver an initial command to the fresh shell, if configured (§3.2). Skipped on
   // a re-attach: the shell already exists (and likely already ran it), so re-running
   // would inject a spurious command into a live session (§6.2).

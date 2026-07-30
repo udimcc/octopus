@@ -23,6 +23,7 @@ import { TaskWorkspace } from './components/TaskWorkspace'
 import { SecondaryWorkspace } from './components/SecondaryWorkspace'
 import { Toaster } from './components/Toaster'
 import { NewTaskModal } from './components/NewTaskModal'
+import { DebugOverlay } from './components/DebugOverlay'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 
 const shellStyle: React.CSSProperties = {
@@ -32,6 +33,26 @@ const shellStyle: React.CSSProperties = {
   background: 'var(--bg-app)',
   color: 'var(--text-primary)',
   fontFamily: 'var(--font-sans)'
+}
+
+/**
+ * Track this window's OS focus (§9.5) so ready-for-review raises only for sessions
+ * the user isn't looking at, and regaining focus clears the visible one. Seeded from
+ * `document.hasFocus()` for a window that opens already-focused.
+ */
+function useWindowFocus(): void {
+  const setWindowFocused = useStore((s) => s.setWindowFocused)
+  useEffect(() => {
+    setWindowFocused(document.hasFocus())
+    const onFocus = (): void => setWindowFocused(true)
+    const onBlur = (): void => setWindowFocused(false)
+    window.addEventListener('focus', onFocus)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      window.removeEventListener('blur', onBlur)
+    }
+  }, [setWindowFocused])
 }
 
 /** Subscribe to events + hydrate the store once on mount (shared by both roles). */
@@ -76,6 +97,7 @@ function MainWindowApp(): React.JSX.Element {
       <ProgressPanel onNewTask={openNewTask} />
       <TaskWorkspace />
       <Toaster />
+      <DebugOverlay />
       {showNewTask ? <NewTaskModal onClose={() => setShowNewTask(false)} /> : null}
     </main>
   )
@@ -90,12 +112,14 @@ function SecondaryWindowApp(): React.JSX.Element {
     <main style={shellStyle}>
       <SecondaryWorkspace />
       <Toaster />
+      <DebugOverlay />
     </main>
   )
 }
 
 export function App(): React.JSX.Element {
   useBoot()
+  useWindowFocus()
   const windowRole = useStore((s) => s.windowRole)
   return windowRole === 'secondary' ? <SecondaryWindowApp /> : <MainWindowApp />
 }

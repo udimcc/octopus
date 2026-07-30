@@ -56,6 +56,7 @@ import {
   type SocketProvisioner,
   type ScrollbackBuffers
 } from '../dependencies'
+import type { StateLog, StateTransition } from '../../ports/state-log'
 import type { CreateTaskInput, CreateTaskFromNewInput } from '../commands'
 import { createAjvConfigValidator } from '../config-validator'
 
@@ -90,6 +91,8 @@ export class FakeRuntime implements SessionRuntime {
   failStartWith?: Error
   /** Value returned by `currentCwd()` (undefined → cwd unavailable). */
   cwdValue?: string
+  /** Returned by `stateEvaluator()`; null → no evaluator (the default). */
+  evaluator: StateEvaluator | null = null
 
   constructor(ctx: SessionRuntimeContext) {
     this.ctx = ctx
@@ -116,7 +119,7 @@ export class FakeRuntime implements SessionRuntime {
     this.disposed = true
   }
   stateEvaluator(): StateEvaluator | null {
-    return null
+    return this.evaluator
   }
   currentCwd(): Promise<string | undefined> {
     return Promise.resolve(this.cwdValue)
@@ -375,6 +378,14 @@ export class FakeScrollbackStore implements ScrollbackBuffers {
   }
 }
 
+/** Recording {@link StateLog}: keeps every recorded transition for assertions (§11). */
+export class RecordingStateLog implements StateLog {
+  readonly records: StateTransition[] = []
+  record(transition: StateTransition): void {
+    this.records.push(transition)
+  }
+}
+
 /** Recording event bus (synchronous fan-out), used to assert emitted events. */
 export class RecordingBus implements EventBus {
   readonly events: DomainEvent[] = []
@@ -431,6 +442,7 @@ export interface FakeDeps {
   readonly sessions: FakeSessionManager
   readonly socketProvisioner: FakeSocketProvisioner
   readonly scrollbacks: FakeScrollbackStore
+  readonly stateLog: RecordingStateLog
   readonly ids: SeqIdGenerator
   readonly clock: FakeClock
   readonly workspace: Workspace
@@ -450,6 +462,7 @@ export function makeDeps(
   const sessions = new FakeSessionManager()
   const socketProvisioner = new FakeSocketProvisioner()
   const scrollbacks = new FakeScrollbackStore()
+  const stateLog = new RecordingStateLog()
   const ids = new SeqIdGenerator()
   const clock = new FakeClock()
   const registry = new FakeRegistry()
@@ -474,6 +487,7 @@ export function makeDeps(
     configValidator: createAjvConfigValidator(),
     socketProvisioner,
     scrollbacks,
+    stateLog,
     currentVersion: 1,
     liveDaemonSessions: opts.liveDaemonSessions
   }
@@ -487,6 +501,7 @@ export function makeDeps(
     sessions,
     socketProvisioner,
     scrollbacks,
+    stateLog,
     ids,
     clock,
     workspace

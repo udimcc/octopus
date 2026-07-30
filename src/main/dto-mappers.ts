@@ -98,7 +98,7 @@ function toSessionTypeDTO(v: SessionTypeView): SessionTypeDTO {
 export function toSettingsDTO(s: Settings): SettingsDTO {
   return {
     worktree: { location: s.worktree.location },
-    terminal: { shell: s.terminal.shell },
+    terminal: { shell: s.terminal.shell, stateDetection: s.terminal.stateDetection },
     defaultSessionTypeId: s.defaultSessionTypeId,
     worktreeCreateTimeoutMs: s.worktreeCreateTimeoutMs,
     groupTasksByRepo: s.groupTasksByRepo,
@@ -228,7 +228,17 @@ export function toEventDTO(e: DomainEvent): EventDTO {
         toWindowId: e.toWindowId
       }
     case 'sessionStateChanged':
-      return { type: 'sessionStateChanged', sessionId: e.sessionId, state: e.state }
+      return {
+        type: 'sessionStateChanged',
+        sessionId: e.sessionId,
+        state: e.state,
+        // Forward the deciding-signal metadata for the debug overlay (§11); each
+        // field is independently optional (a provider may supply only some).
+        layer: e.meta?.layer,
+        confidence: e.meta?.confidence,
+        reason: e.meta?.reason,
+        subState: e.meta?.subState
+      }
     case 'taskStateChanged':
       return { type: 'taskStateChanged', taskId: e.taskId, state: e.state }
     default: {

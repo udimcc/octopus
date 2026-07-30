@@ -102,6 +102,17 @@ export class Session {
     this._title = title
   }
 
+  /**
+   * Apply a freshly-evaluated {@link SessionState} (§3.3, phase 2). Orthogonal to
+   * lifecycle — this is "what is it doing?", set by the runtime's state evaluator
+   * via the `ingestSessionState` command. A no-op-shaped setter: aggregation reads
+   * it through {@link aggregationState}, which still honors the I12 lifecycle
+   * overrides (an Exited session contributes `Blocked` regardless of `_state`).
+   */
+  setState(state: SessionState): void {
+    this._state = state
+  }
+
   setOrder(order: number): void {
     this._order = order
   }

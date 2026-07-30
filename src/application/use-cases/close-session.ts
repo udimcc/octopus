@@ -79,4 +79,8 @@ function finishClose(deps: AppDependencies, task: Task, sessionId: CloseSessionI
   })
 
   deps.bus.publish({ type: 'sessionClosed', taskId, sessionId })
+  // The removed session no longer contributes to the task rollup; announce the
+  // recomputed worst-wins state so a late-joining window (or one that missed the
+  // close→recompute in its own store) stays consistent (§3.4, §6.6).
+  deps.bus.publish({ type: 'taskStateChanged', taskId, state: task.deriveState(deps.aggregator) })
 }

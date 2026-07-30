@@ -20,12 +20,12 @@ export interface TaskStateAggregator {
 /** Map a {@link SessionState} to the identically-named {@link TaskState}. */
 function toTaskState(s: SessionState): TaskState {
   switch (s) {
-    case SessionState.Blocked:
-      return TaskState.Blocked
+    case SessionState.NeedsInput:
+      return TaskState.NeedsInput
     case SessionState.Working:
       return TaskState.Working
-    case SessionState.Waiting:
-      return TaskState.Waiting
+    case SessionState.Idle:
+      return TaskState.Idle
     case SessionState.Unknown:
       return TaskState.Unknown
   }

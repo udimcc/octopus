@@ -304,3 +304,30 @@ button:focus-visible {
   border-color: var(--error-fg);
   color: var(--error-fg);
 }
+
+/* Session/task status icon (§5.4, §9). The "working" glyph gently pulses to read as
+   in-progress; other states are static. `prefers-reduced-motion` disables the pulse.
+   No transform/filter — a plain opacity fade is cheap under SwiftShader (no GPU). */
+.status-icon {
+  user-select: none;
+}
+
+.status-pulse {
+  animation: status-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-pulse {
+    animation: none;
+  }
+}

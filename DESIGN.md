@@ -34,6 +34,10 @@ sessions while **all sessions keep running in the background**.
 | Quit semantics (was open) | **Persist metadata + gracefully terminate processes; do not resurrect live process state.** Reconcile worktrees on startup. | §7, §8 |
 | PTY hosting: in-process vs daemon vs tmux | **Phase 1: node-pty in-process behind a `SessionManager` port.** Durable backend (daemon or tmux) is a phase 2+ migration with the same message protocol. | §6.2 |
 | Task-state aggregation rule | **Worst-status-wins:** `Blocked > Working > Waiting > Unknown`. | §3.4, §9.3 |
+| Status vocabulary (one, shared) | **UI and domain share ONE vocabulary: `Unknown` / `Idle` / `Working` / `NeedsInput`** — no domain-vs-label translation. The enum *member names* are these; the enum **values** stay the original wire strings (`'waiting'`/`'blocked'`) so IPC, the daemon protocol, persistence, and hook payloads need no migration (§10's "signatures never change" holds — only TS member identifiers changed). `Unknown → no icon`. | §3.3, §5.4 |
+| "Just finished" signal (many parallel agents) | **Ready-for-review is a renderer view-model flag, not a domain state.** A `Working→Waiting` transition observed while a session is unfocused raises a highlight that clears on focus. Adds **no** enum member, no port change. | §3.4, §5.4, §9.5 |
+| Per-program status mapping | **Pluggable `ProgramStateDetector` registry keyed by foreground-process `comm`.** Status is Claude-only: Phase 2 ships a Claude Code detector + a default that stays `Unknown` (no heuristic); more programs are new registry entries, not rewrites. Fits the existing `CompositeStateProvider` seam. | §9.2, §9.3 |
+| Where state is *detected* (daemon vs main) | **Signal collection runs where the PTY master fd lives:** in `octopusd` for the daemon backend (default), in Electron main for `in-process`. Both surface state through the unchanged `SessionRuntime.stateEvaluator()` seam; the daemon ships it as a new protocol `CONTROL` message. | §6.2, §9.6 |
 | Worktree provisioning | **Repo-local script if present, else native git.** If `<repoDir>/create_worktree.sh` (resp. `delete_worktree.sh`) exists, Octopus runs it (script owns the location); otherwise Octopus provisions the worktree itself via `git worktree`. Detected **per task** on each create/delete. | §6.4, §12.4 |
 | Worktree location | **Octopus-owned by default**, under a configurable base dir `worktree.location` (default `~/octopus_repos/`). A repo-local create script may return any location instead; Octopus stores the path verbatim. `repo_root` stored per task, so multi-repo works with no special support. | §6.3, §6.4, §12.4 |
 | State-signal injection (OSC 133 + Claude hooks) | **Opt-out auto-injection** (rcfile sources user's rc; `.claude/settings.json` merged, never clobbered). Lands in phase 2. | §12.1 |
@@ -67,7 +71,7 @@ sessions while **all sessions keep running in the background**.
 │     WorktreeProvider → SelectingWorktreeProvider (Script | NativeGit)         │
 │     SessionManager / SessionRuntime → PtyTerminalRuntime (node-pty)           │
 │     WorkspacePersistence → SqliteStore (better-sqlite3)                        │
-│     StateEvaluator (phase 2) → Terminal heuristic + ClaudeCode explicit            │
+│     StateEvaluator (phase 2) → structural sentinel + ClaudeCode explicit           │
 │     JenkinsClient (phase 3) → JenkinsHttpClient                                     │
 │     EventBus, Clock, IdGenerator, CredentialsProvider                         │
 └───────────────────────────────────────────────────────────────────────────────┘
@@ -137,35 +141,58 @@ persistence, event routing, and any future multi-window refactor clean.
 ### 3.3 State enums
 
 ```
-enum SessionState { Unknown, Waiting, Working, Blocked }   // + internal sub-states, §9.1
-enum TaskState    { Unknown, Waiting, Working, Blocked }   // derived only
+enum SessionState { Unknown, Idle, Working, NeedsInput }   // + internal sub-states, §9.1
+enum TaskState    { Unknown, Idle, Working, NeedsInput }   // derived only
 ```
 
+The domain and the UI share **one** vocabulary — there is no relabeling layer. The mental model is *many
+parallel agents, which one needs me?*:
+
+| `SessionState`/`TaskState` | Meaning | Icon (§5.4) |
+|---|---|---|
+| `Idle` | alive, at a prompt, no command running | hollow/pause, gray |
+| `Working` | a command is running / an agent is thinking | spinner, blue |
+| `NeedsInput` | stopped, waiting on the *user* to continue (e.g. permission prompt) | warning, amber |
+| `Unknown` | not yet evaluated / not Claude | no icon (transparent) |
+
+The enum **member names** are this shared vocabulary; the enum **values** stay the original wire strings
+(`Idle = 'waiting'`, `NeedsInput = 'blocked'`, plus `'working'`/`'unknown'`), so the `sessionStateChanged` wire
+payload, the daemon protocol, persistence, the hook payloads, and the aggregation lattice are all untouched —
+only the TypeScript identifiers changed (§10 holds).
+
 Internal-only session sub-states (feed confidence scoring, not the UI): `Waiting/AtPrompt`,
-`Waiting/Explicit`, `Working/Subprocess`, `Working/Explicit`, `Blocked/Permission`, `Blocked/Explicit`,
-`Blocked/Heuristic`, `Initializing` (mapped to `Working` for display). See §9.
+`Waiting/Explicit`, `Working/Explicit`, `Blocked/Permission`, `Blocked/Explicit`, `Initializing` (mapped to
+`Working` for display). See §9.
 
 ### 3.4 Task-state aggregation (phase 2+)
 
-**Rule — worst-status-wins**, a pure `max` over the lattice `Blocked > Working > Waiting > Unknown`:
+**Rule — worst-status-wins**, a pure `max` over the lattice `NeedsInput > Working > Idle > Unknown`:
 
 ```
 aggregate(sessions):
     known = [s for s in sessions if s.state != Unknown]
     if known is empty: return Unknown          # empty task or all-unknown → Unknown (no icon)
-    if any s.state == Blocked: return Blocked
+    if any s.state == NeedsInput: return NeedsInput
     if any s.state == Working: return Working
-    return Waiting
+    return Idle
 ```
 
-**Justification.** The icon exists to direct attention across many parallel tasks. `Blocked` demands action
-(highest); `Working` means "in flight, no action" (middle); `Waiting` means idle-needs-command (low);
+**Justification.** The icon exists to direct attention across many parallel tasks. `NeedsInput` demands action
+(highest); `Working` means "in flight, no action" (middle); `Idle` means idle-needs-command (low);
 `Unknown` is transparent so an un-evaluated terminal never masks a blocked build. The reduction is total,
 associative, and commutative → order-independent, incrementally recomputable, trivially testable.
 
-**Pluggability.** Implement as a `TaskStateAggregator` strategy so the alternative "Waiting > Working"
+**Pluggability.** Implement as a `TaskStateAggregator` strategy so the alternative "Idle > Working"
 precedence can be offered as a setting without touching the `Task` entity. Empty task → no icon (never
-`Waiting`, which would imply the user has something to act on).
+`Idle`, which would imply the user has something to act on).
+
+**Ready-for-review (a view concept, not a state, §9.5).** The `SessionState` lattice deliberately has **no**
+"just finished" member — a finished agent is simply `Idle`. "This agent completed while I wasn't
+looking" is instead a **renderer-side view-model flag** derived from the *transition* `Working → Idle`
+observed while the session is **not focused**. It is not persisted, not aggregated by the domain, and never
+enters `sessionStateChanged`; it is pure UI memory (§9.5). The flag clears on focus. A task inherits the flag
+if **any** of its sessions carries it (an OR over children, independent of the worst-wins `TaskState`), so the
+progress panel can highlight a task with freshly-finished work even while its aggregate state is plain `Idle`.
 
 ### 3.5 Task lifecycle
 
@@ -262,16 +289,22 @@ All `TaskView`s and their `SessionPane`s stay mounted; only the active ones are 
 
 ### 5.2 State management & data flow
 
-Zustand store holds: `tasks`, `sessions`, `activeTaskId`, `activeSessionId` (per task), and (phase 2)
-`sessionStatuses` + derived `taskStatuses` (selector applying §3.4). **High-frequency `ptyData` bypasses the
-store** — it is delivered by IPC directly to the target `TerminalPane`'s `terminal.write(data)`. On startup
-the renderer calls `app:getState` (§6.5) to hydrate; thereafter lifecycle/status events patch the store.
+Zustand store holds: `tasks`, `sessions`, `activeTaskId`, `activeSessionId` (per task), and (phase 2) each
+session's `state` (already a field on `SessionDTO`/`TaskEntry` — the phase-1 seam, always `'unknown'` in
+phase 1) plus a derived `taskStatuses` selector applying §3.4 and a `readyForReview` map + `taskReadyForReview`
+selector (§9.5). **High-frequency `ptyData` bypasses the store** — it is delivered by IPC directly to the
+target `TerminalPane`'s `terminal.write(data)`. On startup the renderer calls `app:getState` (§6.5) to
+hydrate; thereafter lifecycle/status events patch the store. The store already has `reduceEvent` cases for the
+dormant `sessionStateChanged`/`taskStateChanged` events (patching `sessions[id].state` / `tasks[id].state`) —
+phase 2 only makes them fire and adds the `readyForReview` bookkeeping off the same `sessionStateChanged`.
 
 ```
 Keystroke:  xterm onData → octopusAPI.pty.input → ipcMain → pty.write
 Output:     pty onData → (batched, §6.5) → webContents.send('pty:data') → terminal.write   [not via store]
 New task:   modal → octopusAPI.tasks.create → provision worktree (script or native git) → persist → resolve → store.createTask
-Status(phase 2): evaluator → send('session:status') → store.updateSessionStatus → icons re-render
+Status(phase 2): evaluator (main, or octopusd→CONTROL) → ingest → sessionStateChanged → store patches
+                 session.state (+ taskStateChanged) → TaskStatusIcon/SessionStatusIcon re-render;
+                 Working→Idle on an unfocused session → store.readyForReview[id]=true → green check
 ```
 
 ### 5.3 Keep-alive on task switch (critical)
@@ -322,9 +355,18 @@ restore complexity). The serialize-and-replay path is kept available for a futur
   sessions and removes the worktree", an adopted repo (`managed: false`) "closes all sessions" but leaves
   the directory on disk; on dirty worktree, an extra "uncommitted changes — delete anyway?" confirmation
   (the dirty gate still fires for adopted repos, even though nothing is removed from disk).
-- **Status icons (phase 2):** shape **and** color (accessibility): Waiting = hollow/pause, gray; Working =
-  spinner/filled, blue; Blocked = warning triangle, amber. Low-confidence heuristic states render dimmed or
-  pulsing. Tooltips give plain-text descriptions.
+- **Status icons (phase 2):** shape **and** color (accessibility), rendered per session on its tab
+  (`SessionStatusIcon`) and per task in the progress panel (`TaskStatusIcon`). Icons follow the §3.3
+  vocabulary: **Idle** = hollow/pause, gray; **Working** = spinner/filled, blue;
+  **NeedsInput** = warning triangle, amber; **Unknown** = no icon at all (transparent, never a
+  placeholder glyph — an un-evaluated session must not draw attention). Tooltips give the plain-text label +
+  reason (e.g. "Needs input — Claude is asking permission to run a tool").
+  - **Ready-for-review highlight (§3.4, §9.5):** a session flagged ready-for-review shows a distinct
+    **green check** in place of the plain gray idle icon; on a task the same green accent decorates the task
+    icon. It is the "which of my agents finished?" scan signal. Clearing is on **focus** of that session
+    (opening its tab in its window). Because it is a renderer view-model flag it survives task switches (still
+    in the store) but not an app restart (a restored session starts un-flagged — a finished-long-ago agent is
+    just idle).
 - **Keyboard:** eight actions are **fully user-configurable chords** in Settings — next/prev session
   (`sessionNextKey` / `sessionPrevKey`, defaults `Ctrl+Shift+→`/`←`), next/prev task (`taskNextKey` /
   `taskPrevKey`, defaults `Ctrl+Shift+↓`/`↑`), new session (`newSessionKey`, default `Ctrl+Shift+N`), new task
@@ -704,7 +746,9 @@ additive behind this registry.
 
 ## 9. Session-State-Detection Subsystem (phase 2 core)
 
-This is the hardest part of phase 2. Terminal state is inferred from **layered signals, highest-confidence wins**.
+Status reflects **only a program that reports its own state** — in practice Claude Code (§9.2). A bare shell,
+or any other foreground command, is `Unknown` (no icon). State is fused from just two signals: an explicit
+application signal, and a structural sentinel that decides whether that signal still applies.
 
 ### 9.1 Signal layers
 
@@ -712,24 +756,37 @@ This is the hardest part of phase 2. Terminal state is inferred from **layered s
 Layer 3 (AUTHORITATIVE): explicit application signals
    • Claude Code hooks → per-session Unix socket   (§9.2)
    • OSC 9000 in-band state escape sequence
-   → accurate Waiting / Working / Blocked
-Layer 2 (HIGH): OS-structural signals
+   → accurate Idle (Waiting) / Working / Needs input (Blocked)
+Layer 2 (STRUCTURAL SENTINEL): is the shell at its own prompt?
    • OSC 133 semantic prompt marks (A/B prompt, C command-start, D;exit command-end)
    • tcgetpgrp(master_fd) vs shell PGID  (shell foreground = at prompt; child = running)
-   → reliable Waiting / Working; cannot see Blocked
-Layer 1 (LOW): PTY output-activity timing
-   → tie-breaker / sanity check only (false positives on silent compiles & blocked prompts)
+   → the ONLY structural fact consumed: "the tracked program is gone" vs "a child is running"
 ```
 
-**Decision logic:** use Layer 3 if a signal arrived within `T_explicit` (30 s, refreshed per signal); else
-Layer 2; else Layer 1. `Blocked/Heuristic` is emitted only when Layer 2 says Working, the foreground process
-is identified as Claude Code (`/proc/<pgid>/comm`), and the PTY has been silent >8 s — meaningful
-false-positive rate, so render it dimmed/pulsing. **Conflict:** Layer 3 wins on freshness, but a fresh Layer 2
-structural signal (shell returned to foreground, i.e. an OSC 133 `D`) overrides a **stale** Layer 3 Working
-(handles Claude Code exiting without a Stop hook). Degrade Layer 3 → Layer 2 after `T_stale` = 60 s.
+**Decision logic (Claude-only):**
+1. No `/proc` read (dead pid / non-Linux) → `Unknown`.
+2. Shell at its own prompt (`tpgid == pgrp`, refined by a fresh OSC 133 `A`/`D`) → `Unknown`, and the stored
+   explicit signal is **cleared**: the tracked program has exited or been suspended. This sentinel is robust to
+   Claude's tool subprocesses — while Claude runs a shell tool the foreground `comm` is `bash`/`git`/… but the
+   shell is *not* at its prompt, so the last explicit state is held.
+3. A child holds the foreground **and** we have a stored explicit signal → report it verbatim. The signal
+   **never goes stale** while a child runs; it persists until the next explicit signal or until the shell
+   returns to its prompt.
+4. A child holds the foreground but no explicit signal has arrived yet → `Unknown` (show nothing rather than
+   guess before the first hook fires).
+
+There is **no** Layer-1 activity timing, **no** silence-based `Blocked` heuristic, and **no** staleness window
+— these were the sources of the "idle Claude flaps to Working/Needs-input on focus" bug, and are removed. The
+`Notification` hook (§9.2) is Claude's authoritative "needs the user" event, so no heuristic backstop is
+needed.
+
+**The at-prompt tradeoff.** An explicit signal that arrives in the same instant the shell is at its prompt is
+dropped (rule 2 clears it) rather than shown — the structural truth "nothing is running" wins over a
+straggling hook. In practice the `Stop` hook fires while Claude still owns the foreground, so `Idle` is
+reported correctly; only a hook racing an actual Claude exit is discarded, which is right.
 
 **Baseline for any terminal:** Octopus injects OSC 133 shell integration into its own terminals (via an
-`--rcfile`/profile snippet) so Waiting/Working are reliable even without app-specific hooks.
+`--rcfile`/profile snippet) so the at-prompt sentinel is precise even before `tcgetpgrp` settles.
 
 ### 9.2 Claude Code explicit signal (the only reliable `Blocked`)
 
@@ -738,13 +795,22 @@ has printed a prompt, and is reading stdin — indistinguishable from Waiting fr
 
 - Octopus creates a per-session socket `/tmp/octopus-<uid>/session-<uuid>.sock` (dir `chmod 700`), exports
   `OCTOPUS_STATE_SOCKET`, and listens async on it.
-- Octopus writes `.claude/settings.json` into the worktree wiring hooks to tiny one-liners:
-  - `Stop` → `{"state":"waiting","reason":"claude_stop"}`
-  - `PreToolUse` (permission) → `{"state":"blocked","reason":"permission_request","tool":"…"}`
-  - `PostToolUse` → `{"state":"working","reason":"tool_use","tool":"…"}`
-- The `ClaudeCodeProvider` treats socket messages as authoritative. **Graceful degradation:** socket
-  unset/gone → `nc` fails silently → fall back to heuristic. Messages are validated (≤1 KB, valid JSON, known
-  state values); nothing from a message is ever executed.
+- Octopus merges hooks into the user-global `~/.claude/settings.json` (one global entry serves every session
+  via the per-session `$OCTOPUS_STATE_SOCKET` env var; merge-safe + idempotent — see
+  `src/adapters/claude/claude-hooks.ts`), each a tiny one-liner:
+  - `Stop` → `{"state":"waiting","reason":"claude_stop"}` (turn finished → Idle)
+  - `Notification` → `{"state":"blocked","reason":"notification"}` (permission / attention → Needs input)
+  - `PreToolUse` → `{"state":"working","reason":"pre_tool_use"}`
+  - `PostToolUse` → `{"state":"working","reason":"tool_use"}`
+  - `UserPromptSubmit` → `{"state":"working","reason":"user_prompt"}`
+  `Notification` — not `PreToolUse` — is Claude's real "needs the user" event; permission prompts do not fire
+  `PreToolUse` with a distinct signal, so the accurate Needs-input source is `Notification`.
+- The hook one-liner sends one newline-delimited frame via `nc -N -q0 -w1 -U`. The `-N -q0` flags are
+  **critical for latency**: OpenBSD `nc` (the Debian default) does not close a Unix socket on stdin EOF, so
+  without them the `Stop` hook lingers ~2 min on the half-open connection. The `ClaudeCodeProvider` treats
+  socket messages as authoritative. **Graceful degradation:** socket unset/gone or `nc` absent → the guarded
+  `|| true` keeps the hook a silent no-op and the session stays `Unknown`. Messages are validated (≤1 KB,
+  valid JSON, known state values); nothing from a message is ever executed.
 
 Alternatives (inferior): parsing Claude Code's terminal output (brittle, version-coupled) or an Octopus MCP
 server (richer but heavier — defer).
@@ -754,13 +820,27 @@ server (richer but heavier — defer).
 - **`StateProvider` interface:** `initialize(ctx)`, `poll()`, `get_state() → StateSnapshot{state,
   confidence, assessed_at, reason, layer}`, `teardown()`. Confidence ∈ {Authoritative, High, Medium, Low,
   None}; Medium/Low set a `low_confidence` flag the UI dims.
-- **Composition:** a Claude-Code terminal uses a `CompositeStateProvider` = `TerminalHeuristicProvider`
-  (Layers 1+2) + `ClaudeCodeProvider` (Layer 3), applying §9.1 logic. Jenkins (phase 3) uses `JenkinsProvider`.
-- **Delivery:** OSC parsing and socket reads are event-driven (in the PTY read loop / async socket);
-  `tcgetpgrp` polled at 200 ms; PTY-activity checked at 1 s.
-- **Debounce/hysteresis (anti-flicker):** min 500 ms hold; `Working→Waiting` requires 1 s stability;
-  `Waiting→Working` immediate; **`Blocked` immediate, no debounce**; `Unknown` emitted once at start.
-  Task-level aggregation also debounced 300 ms (except Blocked).
+- **Composition:** a terminal session uses a `CompositeStateProvider` = the structural sentinel (§9.1) +
+  **a per-program Layer-3 detector chosen from a `ProgramStateDetectorRegistry`**, applying §9.1 logic. Jenkins
+  (phase 3) uses `JenkinsProvider`.
+- **Pluggable per-program mapping — `ProgramStateDetectorRegistry`.** *Which* detector's vocabulary is applied
+  to an explicit signal is not hard-wired to Claude: the composite looks up the **foreground process** (from
+  `tcgetpgrp` → `/proc/<pgid>/comm`) in a registry keyed by program name. Phase 2 registers exactly one entry —
+  **`claude` → `ClaudeCodeDetector`** (§9.2) — and a **default** (no entry) that trusts an explicit signal
+  verbatim. There is no heuristic path: a program that never emits an explicit signal stays `Unknown`, so a
+  bare shell — running a command or at the prompt — is always `Unknown` (no icon). A `ProgramStateDetector`
+  exposes `matches(comm): boolean` and `interpret(signal): CoreState | undefined`; adding a new program (a
+  build tool that emits OSC 9000, a `git rebase --continue` prompt, etc.) is a **new registry entry at the
+  composition root**, with **zero** change to the composite, the aggregator, the icons, or the ports — the same
+  additive rule as the session-type registry (§8). The registry is consulted per explicit signal, keyed on the
+  current foreground `comm`.
+- **Delivery:** OSC parsing and socket reads are event-driven (in the PTY read loop / async socket); the
+  structural sentinel (`tcgetpgrp`/`/proc`) is polled at 200 ms.
+- **No debounce/hysteresis.** Explicit transitions are event-driven — already debounced by discrete hook
+  events — so they emit immediately; the only poll-driven transition is to/from `Unknown` as the shell
+  enters/leaves its prompt, which also emits immediately so the icon clears the instant Claude exits. `Unknown`
+  is the resting state. (The former min-hold / `Working→Waiting` stability window is removed with the Layer-1
+  activity signal it existed to smooth.)
 
 ### 9.4 Phase 3 Jenkins state mapping
 
@@ -769,6 +849,66 @@ Poll `<job>/lastBuild/api/json` every ~10 s (configurable):
 needs the user but isn't *asking* Octopus for anything → not Blocked); a pipeline **Input step**
 (`PAUSED_PENDING_INPUT`, via `/wfapi/describe`) → **Blocked**. Never `Unknown` after the first successful
 poll.
+
+### 9.5 Ready-for-review (renderer view-model, not a domain state)
+
+The product's core scan — *"ten agents running, which one just finished and wants my eyes?"* — is served
+**without** adding a state to the lattice. A finished agent is `Waiting` (Idle) like any other idle shell; the
+distinction "*just* finished, and I haven't looked" is **derived in the renderer from the state-change
+stream** and lives only in the Zustand store:
+
+- **Raise.** On a `sessionStateChanged` reducing to `Working → Waiting` (Working→Idle) for a session that is
+  **not currently focused** (not the active tab of its window, or its window unfocused), set
+  `readyForReview[sessionId] = true`. `Blocked → Waiting` does **not** raise it (the user was already being
+  asked; resolving it isn't "new finished work"). A session that goes straight to `Waiting` without a prior
+  `Working` (e.g. freshly spawned at a prompt) never raises it.
+- **Clear.** On focusing that session (its tab becomes active in a focused window) → `readyForReview[sessionId]
+  = false`. This is the only clear path.
+- **Task rollup.** `taskReadyForReview(taskId) = OR over its sessions` — a selector, exactly like
+  `taskStatuses` (§5.2) is a selector over `sessionStatuses`. Independent of `TaskState`.
+- **Non-goals / bounds.** Not persisted (§5.4 — restart starts clean), not in any DTO, not aggregated by the
+  domain, never in `sessionStateChanged`. It is pure UI memory keyed off events the store already receives, so
+  it needs **no** backend, port, or protocol change — only store reducer logic + the icon variant (§5.4). The
+  focus signal it needs (which session is active in which window) is already in the store (§5.2, §5.6).
+
+### 9.6 Where detection runs: daemon vs in-process (a backend split, one seam)
+
+State **detection reads the PTY**: the structural sentinel needs `tcgetpgrp(master_fd)` and `/proc/<pgid>/comm`;
+Layer 3's OSC 133 / OSC 9000 parsing taps the PTY output byte stream. **The PTY master
+fd's owner differs by backend (§6.2), so detection is hosted differently — but both expose it through the one
+unchanged `SessionRuntime.stateEvaluator()` seam (§8, §10), so the Application, aggregator, and UI never learn
+which backend produced a signal:**
+
+- **In-process backend (`PtyTerminalRuntime`, Electron main owns the fd).** The `CompositeStateProvider` runs
+  **in main**, next to the PTY: it taps the existing `onData` for OSC parsing, polls `tcgetpgrp` on
+  the master fd at 200 ms (§9.3), and listens on the per-session `OCTOPUS_STATE_SOCKET` (the phase-1 seam,
+  §9.2). `stateEvaluator()` returns this composite; it emits `sessionStateChanged` on the `EventBus` directly.
+- **Daemon backend (`octopusd` owns the fd, the default — §6.2).** Electron main **cannot** call `tcgetpgrp`
+  or read `/proc/<pgid>/comm` for a PTY it doesn't own, and shipping every raw byte to main just to parse OSC
+  would duplicate the hot path. So **the composite runs inside `octopusd`**, alongside `DaemonPty`: the daemon
+  already sees every output chunk (it batches + ring-buffers them, §6.2) and holds the fd for `tcgetpgrp`. The
+  daemon computes the session's `SessionState` and pushes it to the app as a **new `CONTROL` message**
+  `{type:'state', sessionId, state, subState?, confidence, reason, layer}` on the existing length-prefixed
+  protocol (`daemon-protocol.ts`) — **not** a `DATA` frame (state is low-frequency control, not terminal
+  bytes). `DaemonSessionRuntime.stateEvaluator()` returns an adapter that surfaces these messages; the app-side
+  ingest re-emits them as the same `sessionStateChanged` `EventBus` event. The **Claude Code socket also moves
+  into the daemon** for this backend (the daemon exports `OCTOPUS_STATE_SOCKET` when it spawns the PTY, §6.2 /
+  `pty-registry.ts`, and listens there), so authoritative Layer-3 signals are collected fd-side too.
+- **Consequence for the protocol (§6.2, transport-agnostic).** One additive `CONTROL` variant (`state`) and,
+  symmetrically, a client→daemon `refreshState{sessionId}` control for the manual "refresh state" affordance
+  (R1, §5.4). No `DATA`-path change, so the <5 ms terminal budget (§11) is untouched. The `windowId` echo
+  (§10 phase 1.5) is unaffected — state events are session-scoped and routed by the `WindowRegistry` to the
+  hosting window like any session event (§6.7).
+- **Protocol-version coupling (the durable-daemon upgrade trap).** Because `octopusd` is detached it outlives
+  not just an app restart but a **rebuild**: a daemon spawned by the pre-phase-2 build keeps holding the socket,
+  and the app reconnects to it. Adding the `state`/`refreshState` messages therefore **bumps `PROTOCOL_VERSION`
+  (1 → 2)** — otherwise the stale daemon passes the `hello` handshake and silently never emits `state` (no
+  status icons, though every downstream layer is wired). The `hello` handshake now carries the daemon's `pid`,
+  so on a version mismatch the app **retires the stale daemon** (SIGTERM by pid, waits for it to release the
+  socket) and launches a fresh one; a compatible daemon is left untouched. Any future daemon protocol addition
+  must bump `PROTOCOL_VERSION` for the same reason.
+- **Fallback.** If the daemon launch fails and the app degrades to in-process for that run (§6.2), detection
+  transparently uses the in-process path above — same seam, same events.
 
 ---
 
@@ -819,15 +959,26 @@ is untouched: a `JenkinsPane` carries a `windowId` like any session and moves be
 
 ### Phase 2 — Session state + aggregation + icons
 
-- Implement `TerminalHeuristicProvider` (OSC 133 + tcgetpgrp + activity) and `ClaudeCodeProvider`
-  (socket/OSC 9000); flip Terminal's `EvaluatesState` on; inject OSC 133 integration into Octopus terminals.
-- Wire the existing `sessionStateChanged` → ingest → `TaskStateAggregator` → view-model → icons in the
-  progress window and on tabs. Debounce/hysteresis (§9.3). Add the state transition log + debug overlay.
-- **No new ports, no domain signature changes.** Optionally expose the alternate aggregation precedence as a
-  setting. *(Durable-session infra — **done ahead of phase 2**:* `SessionManager` has a durable `octopusd` daemon
-  backend, the default `terminal.backend` (opt out with `'in-process'`), that survives an app restart and
-  re-attaches live PTYs — cwd + foreground program + scrollback intact (§6.2). Renderer unaffected, exactly as
-  the port boundary reserved.)*
+- Implement the structural sentinel (OSC 133 + tcgetpgrp/`/proc`, §9.1) and a **pluggable
+  `ProgramStateDetectorRegistry`** (§9.3) with a `ClaudeCodeDetector` (socket/OSC 9000, Layer 3) registered
+  for `comm == claude`; a `CompositeStateProvider` combines them per §9.1 (Claude-only — no heuristic). Flip
+  Terminal's `EvaluatesState` on; `SessionRuntime.stateEvaluator()` now returns the composite. Inject OSC 133
+  integration into Octopus terminals (§12.1).
+- **Host detection where the fd lives (§9.6):** in Electron main for the in-process backend; **inside
+  `octopusd` for the daemon backend (the default)**, shipping state as one additive `CONTROL` message on the
+  existing protocol (+ a `refreshState` control for the manual refresh affordance). `DaemonSessionRuntime.
+  stateEvaluator()` surfaces those messages so the ingest path is backend-agnostic.
+- Wire the existing `sessionStateChanged` → ingest (single-writer loop) → `TaskStateAggregator` → view-model
+  → icons in the progress window and on tabs. No debounce (§9.3 — transitions are immediate). **Shared
+  vocabulary Unknown/Idle/Working/NeedsInput** (§3.3); **ready-for-review** highlight as a renderer view-model
+  flag (§9.5 — store-only, no backend). Add the state transition log + debug overlay.
+- **No new ports, no domain signature changes.** New pieces are all additive: the detector *registry* (a
+  composition-root concern, like §8), one `CONTROL` protocol variant, and renderer store/selectors. Optionally
+  expose the alternate aggregation precedence as a setting. *(Durable-session infra — **done ahead of phase
+  2**:* `SessionManager` has a durable `octopusd` daemon backend, the default `terminal.backend` (opt out with
+  `'in-process'`), that survives an app restart and re-attaches live PTYs — cwd + foreground program +
+  scrollback intact (§6.2). Renderer unaffected, exactly as the port boundary reserved. Phase 2's detection
+  running *inside* that daemon (§9.6) is the reason the durable backend was pulled ahead.)*
 
 ### Phase 3 — Jenkins Pipeline Viewer
 
@@ -843,13 +994,13 @@ is untouched: a `JenkinsPane` carries a `windowId` like any session and moves be
 
 | # | Risk | Sev | Mitigation |
 |---|---|---|---|
-| R1 | Terminal state-detection reliability (heuristics misfire) | High | OSC 133 injected by default; Claude Code hooks for authoritative Blocked; manual "refresh state" affordance; log every transition w/ layer+confidence to tune thresholds. |
+| R1 | State-detection reliability | High | Status is Claude-only — authoritative hook signals (§9.2), no misfiring heuristic. OSC 133 injected by default sharpens the at-prompt sentinel; manual "refresh state" affordance; log every transition w/ layer+confidence. |
 | R2 | PTY performance with many sessions | Med | Single epoll loop; output batching (leading-edge + 3 ms trailing coalesce, §6.6); 200 ms tcgetpgrp off the hot path; O(1)/byte OSC parse; 20 sessions ≈ 100 syscalls/s — negligible. |
 | R3 | Worktree provisioning safety (repo-local script **or** native git) | High | Validate the resulting path (absolute, exists, is a directory; warn if not a git worktree); containment check before delete (exactly the stored path, not `/`/`repoDir`/an ancestor); 30 s timeout; show command output; **all inputs passed as argv — no shell interpolation** for both scripts and native git (I17). |
 | R4 | Keeping many sessions alive / crash loses agent work | Med | Phase 1 accepts loss + fresh-shell restore; durable backend (tmux/daemon) is the phase 2+ mitigation behind `SessionManager`; warn on quit if Working/Blocked. |
 | R5 | Security (air-gapped on-prem): socket spoofing, secrets | Med | Per-user `chmod 700` socket dir; validate/size-cap socket messages; secrets only via keychain (`credentialsRef`), never in the store/JSON. |
 | R6 | OSC parsing correctness on adversarial output | Low–Med | Reuse a hardened parser (xterm.js's); cap param length (1 KB) + sequence timeout; never propagate parse errors to the renderer. |
-| R7 | State flicker | Med | Debounce/hysteresis (§9.3); Blocked exempt (must be instant). |
+| R7 | State flicker | Low | Claude-only model with sticky explicit signals (§9.1): no activity/staleness timers to flap between; the only transition is to/from `Unknown` on the structural at-prompt sentinel. |
 | R8 | (phase 1.5) Cross-window move race — window moved between drop and `windowAtPoint`, or overlapping unmount/mount | Low | Hit-test is best-effort; worst case the session lands in the wrong window and is re-draggable. Source/target renderers are separate processes, so a brief double-sink during the move overlap cannot collide; the `pty-router` pending buffer covers the pre-mount gap (§6.7). |
 | R9 | (phase 1.5) Quit blocked by the secondary-window close dialog | Low | `before-quit` sets an `isQuitting` flag; the secondary `close` handler skips its dialog when quitting, so `Ctrl+Q` runs the normal graceful shutdown (§6.7). |
 | R10 | (phase 1.5) Persisted window off-screen after a monitor change | Low | On restore, clamp any window intersecting no display work area to the nearest display (`screen.getAllDisplays()`), preserving size (§6.3). |
@@ -863,8 +1014,9 @@ socket writes → assert Blocked); e2e (real Claude Code with hooks → assert W
 injection (socket disconnect, no OSC 133 → assert graceful fallback). Worktree scripts tested against a
 throwaway repo with a fake create/delete script.
 
-**Performance targets:** PTY read→render <5 ms; OSC 133→state <10 ms; hook→state <20 ms; Blocked→task icon
-<50 ms (debounce-exempt); Working→Waiting <1.5 s; Jenkins poll 10 s; state subsystem <1 MB/session.
+**Performance targets:** PTY read→render <5 ms; OSC 133→state <10 ms; hook→state <20 ms; state→task icon
+<50 ms (all transitions immediate, §9.3); Claude-exit→icon-clear ≤1 poll (200 ms); Jenkins poll 10 s; state
+subsystem <1 MB/session.
 
 ---
 

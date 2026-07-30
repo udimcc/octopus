@@ -31,7 +31,7 @@ export function handleRuntimeExit(deps: AppDependencies, input: HandleRuntimeExi
     }
     return
   }
-  const { session } = located
+  const { task, session } = located
 
   // Only a live (Running/Stopping) session can transition to Exited (§3.6). A
   // user close that already reached Closed, or a StartFailed session, is terminal
@@ -75,5 +75,13 @@ export function handleRuntimeExit(deps: AppDependencies, input: HandleRuntimeExi
     taskId: session.taskId,
     sessionId: input.sessionId,
     exitCode: input.exitCode
+  })
+  // An exited session aggregates as `NeedsInput` (I12); announce the recomputed
+  // worst-wins task state so the task icon reflects the exit even in a window that
+  // didn't derive it from the `sessionExited` event itself (§3.4, §6.6).
+  deps.bus.publish({
+    type: 'taskStateChanged',
+    taskId: session.taskId,
+    state: task.deriveState(deps.aggregator)
   })
 }

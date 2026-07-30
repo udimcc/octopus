@@ -102,7 +102,7 @@ describe('<SettingsModal>', () => {
 
     expect(bridge.api.app.updateSettings).toHaveBeenCalledWith({
       worktree: { location: '/new/loc' },
-      terminal: { shell: '/bin/zsh' },
+      terminal: { shell: '/bin/zsh', stateDetection: true },
       sessionNextKey: 'Ctrl+Shift+ArrowRight',
       sessionPrevKey: 'Ctrl+Shift+ArrowLeft',
       taskNextKey: 'Ctrl+Shift+ArrowDown',
@@ -126,7 +126,7 @@ describe('<SettingsModal>', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(bridge.api.app.updateSettings).toHaveBeenCalledWith({
       worktree: { location: '/repos' },
-      terminal: { shell: undefined },
+      terminal: { shell: undefined, stateDetection: true },
       sessionNextKey: 'Ctrl+Shift+ArrowRight',
       sessionPrevKey: 'Ctrl+Shift+ArrowLeft',
       taskNextKey: 'Ctrl+Shift+ArrowDown',
@@ -138,6 +138,35 @@ describe('<SettingsModal>', () => {
       copyKey: 'Ctrl+Shift+KeyC',
       pasteKey: 'Ctrl+Shift+KeyV'
     })
+  })
+
+  it('defaults state detection ON and sends the opt-out when unchecked', () => {
+    const bridge = installStubBridge({ state: seededState })
+    render(<SettingsModal onClose={vi.fn()} />)
+    // Seeded settings omit `stateDetection` → the checkbox reflects the default (on).
+    const box = screen.getByLabelText('session state detection')
+    expect(box).toBeChecked()
+    fireEvent.click(box)
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(bridge.api.app.updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        terminal: expect.objectContaining({ stateDetection: false })
+      })
+    )
+  })
+
+  it('reflects an explicit opt-out from the stored settings', () => {
+    const off: WindowedWorkspaceStateDTO = {
+      ...seededState,
+      settings: {
+        ...seededState.settings,
+        terminal: { shell: '/bin/bash', stateDetection: false }
+      }
+    }
+    useStore.getState().hydrate(off)
+    installStubBridge({ state: off })
+    render(<SettingsModal onClose={vi.fn()} />)
+    expect(screen.getByLabelText('session state detection')).not.toBeChecked()
   })
 
   it('captures an arbitrary modifier chord for each direction and saves both', () => {

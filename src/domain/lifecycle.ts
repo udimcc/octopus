@@ -102,7 +102,7 @@ export function lifecycleToAggregationState(
   state: SessionState
 ): SessionState {
   if (lifecycle === SessionLifecycle.Exited || lifecycle === SessionLifecycle.StartFailed) {
-    return SessionState.Blocked
+    return SessionState.NeedsInput
   }
   return state
 }

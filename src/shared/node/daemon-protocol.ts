@@ -26,8 +26,23 @@
  * `exit`) carry none.
  */
 
-/** Bumped when the wire format changes incompatibly; checked in the `hello` handshake. */
-export const PROTOCOL_VERSION = 1
+/**
+ * Bumped when the wire format changes incompatibly; checked in the `hello` handshake.
+ *
+ * Because `octopusd` is DETACHED and durable (§6.2) it outlives not just an app
+ * restart but a rebuild: a daemon spawned by a pre-upgrade build keeps holding the
+ * per-uid socket, and the next app launch CONNECTS to it rather than spawning a
+ * fresh one. So every protocol addition must bump this — otherwise a stale daemon
+ * running old code passes the handshake and silently omits the new behavior.
+ *
+ * - v1: initial spawn/attach/detach/resize/close/exit/data protocol.
+ * - v2 (Phase 2, §9.6): added the unsolicited `state` frame and the `refreshState`
+ *   command. A v1 daemon speaks the same core protocol but NEVER emits `state`, so
+ *   its sessions would show no status icon. Bumping forces the handshake to reject
+ *   it; the app then relaunches a fresh (v2) daemon — or falls back to in-process,
+ *   which runs the identical composite and does emit state.
+ */
+export const PROTOCOL_VERSION = 2
 
 /** Frame kind discriminator (first byte after the length prefix). */
 export const FRAME_KIND = { control: 0x01, data: 0x02 } as const
@@ -69,6 +84,12 @@ export interface SpawnParams {
   readonly rows: number
   /** Provisioned-not-bound state socket path (§9.2 seam), forwarded into the child env. */
   readonly stateSocketPath?: string
+  /**
+   * Extra env layered onto the daemon-built child env (§12.1) — e.g. `ZDOTDIR` /
+   * `OCTOPUS_USER_BASHRC` for OSC 133 shell integration. Applied last so it wins.
+   * Absent ⇒ no extra env (a plain login shell, or the user opted out).
+   */
+  readonly envPatch?: Readonly<Record<string, string>>
 }
 
 /** Commands the client (app) sends to the daemon. */
@@ -81,6 +102,12 @@ export type ClientMessage =
   | { readonly type: 'resize'; readonly sessionId: string; readonly cols: number; readonly rows: number }
   | { readonly type: 'close'; readonly requestId: number; readonly sessionId: string }
   | { readonly type: 'shutdown'; readonly requestId: number }
+  /**
+   * Ask the daemon to re-evaluate a session's state now and push a fresh `state`
+   * frame (the "refresh state" affordance, §9.6/§5.4). Fire-and-forget like
+   * `resize`/`detach` — no requestId; the answer arrives as an unsolicited `state`.
+   */
+  | { readonly type: 'refreshState'; readonly sessionId: string }
 
 /** Replies + events the daemon sends to the client. */
 export type DaemonMessage =
@@ -89,6 +116,14 @@ export type DaemonMessage =
       readonly requestId: number
       readonly protocolVersion: number
       readonly daemonVersion: string
+      /**
+       * The daemon's own pid (§6.2). Lets a connecting app RETIRE an incompatible
+       * daemon left by a pre-upgrade build: on a `protocolVersion` mismatch the app
+       * signals this pid, waits for the socket to free, then launches a fresh daemon.
+       * Optional so a v1 daemon (which never sends it) still parses — its absence
+       * simply means the app can't auto-restart it and degrades to in-process.
+       */
+      readonly pid?: number
     }
   | { readonly type: 'sessions'; readonly requestId: number; readonly sessions: readonly DaemonSessionInfo[] }
   | { readonly type: 'spawned'; readonly requestId: number; readonly sessionId: string; readonly pid: number }
@@ -98,6 +133,23 @@ export type DaemonMessage =
   | { readonly type: 'shutdownAck'; readonly requestId: number; readonly accepted: boolean }
   /** Spontaneous process death (NOT caused by a `close`); routes to `ctx.onExit`. */
   | { readonly type: 'exit'; readonly sessionId: string; readonly exitCode: number; readonly signal?: number }
+  /**
+   * An evaluated session-state change (§9.6). Unsolicited like `exit`: the daemon
+   * runs the SAME {@link CompositeStateProvider} where its PTYs live and pushes a
+   * frame on every debounced transition, so the app's `DaemonSessionRuntime`
+   * surfaces it through `stateEvaluator()` identically to the in-process backend.
+   * `state` is the plain `CoreState` string (mapped to the domain enum main-side);
+   * layer/confidence/reason are the same optional debug metadata as §9.1/§9.3.
+   */
+  | {
+      readonly type: 'state'
+      readonly sessionId: string
+      readonly state: 'unknown' | 'waiting' | 'working' | 'blocked'
+      readonly layer?: 1 | 2 | 3
+      readonly confidence?: 'authoritative' | 'high' | 'medium' | 'low' | 'none'
+      readonly reason?: string
+      readonly subState?: string
+    }
 
 /** Any JSON control-frame message, either direction. */
 export type ControlMessage = ClientMessage | DaemonMessage

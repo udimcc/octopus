@@ -28,6 +28,22 @@ export interface TerminalSettings {
    * an explicit opt-out for anyone who needs it. Rollback is a one-line setting flip.
    */
   readonly backend?: 'in-process' | 'daemon'
+  /**
+   * Whether the per-session status detection subsystem runs (§9). `true` (default
+   * when unset) evaluates each terminal's state (Idle/Working/Needs-input) and
+   * renders the tab + task status icons; `false` is the opt-out — no evaluator is
+   * built, no `/proc` polling or state socket, and the UI shows no icons (the
+   * pre-phase-2 behavior). A pure kill-switch for anyone who doesn't want it.
+   */
+  readonly stateDetection?: boolean
+  /**
+   * Whether Octopus auto-injects its Claude Code hooks into the user's
+   * `~/.claude/settings.json` at startup (§9.2). `true` (default when unset) runs a
+   * merge-safe ensure so ANY Octopus user gets working Layer-3 Claude detection out
+   * of the box; `false` opts out (Claude sessions then fall back to the Layer-2
+   * heuristic). Never clobbers existing user hooks — it only adds the Octopus ones.
+   */
+  readonly injectClaudeHooks?: boolean
 }
 
 export interface Settings {

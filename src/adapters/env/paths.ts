@@ -27,8 +27,12 @@ export interface AppPaths {
   dbPath: string
   /** Global settings.json sibling file (DESIGN §6.3, §6.4). */
   settingsPath: string
-  /** Directory for logs, incl. the V2 state-transition log (DESIGN §11). */
+  /** Directory for logs, incl. the state-transition log (DESIGN §11). */
   logsDir: string
+  /** State-transition log file (JSONL, §11/R1) — one line per session-state change. */
+  stateLogPath: string
+  /** Dir holding the generated OSC 133 shell-integration rc files (§12.1). */
+  shellIntegrationDir: string
 }
 
 export interface ResolveContext {
@@ -46,7 +50,9 @@ export function resolveAppPaths({ env, platform, home }: ResolveContext): AppPat
     dataDir,
     dbPath: join(dataDir, 'octopus.db'),
     settingsPath: join(dataDir, 'settings.json'),
-    logsDir: join(dataDir, 'logs')
+    logsDir: join(dataDir, 'logs'),
+    stateLogPath: join(dataDir, 'logs', 'state.log'),
+    shellIntegrationDir: join(dataDir, 'shell-integration')
   }
 }
 

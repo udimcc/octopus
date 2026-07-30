@@ -39,6 +39,7 @@ const OVERFLOW_MENU_THRESHOLD = 8
 export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element {
   const task = useStore((s) => s.tasks[taskId])
   const sessions = useStore((s) => s.sessions)
+  const readyForReview = useStore((s) => s.readyForReview)
   const windowId = useStore((s) => s.windowId)
   const windows = useStore((s) => s.windows)
   const activeSessionId = useStore((s) => s.activeSessionByTask[taskId])
@@ -226,6 +227,7 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
                   onRename={(title) => window.octopusAPI.sessions.rename({ sessionId: sid, title })}
                   onClose={() => window.octopusAPI.sessions.close({ sessionId: sid })}
                   canOpenHere={s.config.kind === 'terminal'}
+                  readyForReview={readyForReview[sid] === true}
                   resolveCwd={() => window.octopusAPI.sessions.cwd({ sessionId: sid })}
                   onNewTerminalFromHere={(cwd) =>
                     window.octopusAPI.sessions.create({
@@ -237,6 +239,7 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
                   onMoveToWindow={(targetWindowId) =>
                     window.octopusAPI.sessions.move({ sessionId: sid, targetWindowId })
                   }
+                  onRefreshState={() => window.octopusAPI.sessions.refreshState({ sessionId: sid })}
                   moveTargets={moveTargets}
                 />
               )

@@ -119,7 +119,7 @@ describe('Task derived state (§3.4, I11)', () => {
     s.markRunning()
     s.markExited(2)
     expect(s.lifecycle).toBe(SessionLifecycle.Exited)
-    expect(t.deriveState(worstStatusWins)).toBe(TaskState.Blocked)
+    expect(t.deriveState(worstStatusWins)).toBe(TaskState.NeedsInput)
   })
 })
 

@@ -34,6 +34,14 @@ import { useEffect } from 'react'
 import { useStore } from '../store/store'
 import { matchesChord } from '../keybindings/chords'
 
+/**
+ * The FIXED chord that toggles the state-detection debug overlay (§11). Not a
+ * user-configurable binding (it's a diagnostic, not a workflow action), so it lives
+ * here as a constant rather than in `settings`. Guaranteed ≥1 modifier, so it never
+ * shadows a bare terminal keystroke (§5.4).
+ */
+export const DEBUG_OVERLAY_CHORD = 'Ctrl+Shift+KeyD'
+
 export interface KeyboardShortcutHandlers {
   /** Open the New-Task modal (owned by `ProgressPanel`). */
   readonly onNewTask: () => void
@@ -134,6 +142,12 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
       if (matchesChord(e, searchKey)) {
         e.preventDefault()
         onSearch?.()
+        return
+      }
+      // Fixed diagnostic chord (§11): toggle the state-detection debug overlay.
+      if (matchesChord(e, DEBUG_OVERLAY_CHORD)) {
+        e.preventDefault()
+        store.toggleDebugOverlay()
         return
       }
     }

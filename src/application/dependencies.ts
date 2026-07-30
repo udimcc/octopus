@@ -19,7 +19,9 @@ import type { EventBus } from '../ports/event-bus'
 import type { IdGenerator } from '../ports/id-generator'
 import type { Clock } from '../ports/clock'
 import type { SessionId } from '../domain/ids'
-import type { SessionRuntime } from '../ports/session-runtime'
+import type { SessionRuntime, StateChangeMeta } from '../ports/session-runtime'
+import type { SessionState } from '../domain/state'
+import type { StateLog } from '../ports/state-log'
 import type { ConfigValidator } from './config-validator'
 
 /** Provisions the (dormant in V1) per-session state socket path (§9.2, §10). */
@@ -80,6 +82,12 @@ export interface AppDependencies {
   readonly clock: Clock
   readonly aggregator: TaskStateAggregator
   readonly configValidator: ConfigValidator
+  /**
+   * Best-effort state-transition log (§11, R1). Each `ingestSessionState` records
+   * the transition here for threshold tuning and the debug overlay; a no-op
+   * implementation (or absence) disables logging. Never throws into the loop.
+   */
+  readonly stateLog?: StateLog
   /** Dormant state-socket provisioner (§9.2, §10 V1 seam). */
   readonly socketProvisioner: SocketProvisioner
   /** Per-session output accumulator for scrollback persistence (§6.6, §6.2). */
@@ -103,6 +111,17 @@ export interface AppDependencies {
    * callback (§6.6). Mutable by design (chicken-and-egg with the loop).
    */
   onRuntimeExit?: (sessionId: SessionId, exitCode?: number, signal?: number) => void
+  /**
+   * Late-bound sink for a runtime's evaluated STATE change (§9.6). Bound by the
+   * composition root — like {@link onRuntimeExit} — to
+   * `(sessionId, state) => loop.dispatch({ kind: 'ingestSessionState', … })`, so
+   * the `setState` + task re-derivation run on the single writer, never inline in
+   * the evaluator's push callback (§6.6). `startSessionRuntime` subscribes each
+   * runtime's `stateEvaluator()` to it; a runtime whose type lacks `EvaluatesState`
+   * returns null and is simply not subscribed. Absent ⇒ state ingestion is off
+   * (preserves the pre-phase-2 no-icons behavior exactly).
+   */
+  onSessionState?: (sessionId: SessionId, state: SessionState, meta?: StateChangeMeta) => void
 }
 
 /** Simple `Map`-backed runtime registry (composition-root default). */

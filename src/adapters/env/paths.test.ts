@@ -12,6 +12,8 @@ describe('resolveAppPaths', () => {
     expect(paths.dbPath).toBe('/custom/data/octopus/octopus.db')
     expect(paths.settingsPath).toBe('/custom/data/octopus/settings.json')
     expect(paths.logsDir).toBe('/custom/data/octopus/logs')
+    expect(paths.stateLogPath).toBe('/custom/data/octopus/logs/state.log')
+    expect(paths.shellIntegrationDir).toBe('/custom/data/octopus/shell-integration')
   })
 
   it('falls back to ~/.local/share on Linux when XDG_DATA_HOME is unset', () => {

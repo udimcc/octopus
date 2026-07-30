@@ -91,6 +91,8 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
   const hydrate = useStore((s) => s.hydrate)
   const [location, setLocation] = useState(settings.worktree.location)
   const [shell, setShell] = useState(settings.terminal.shell ?? '')
+  // State detection defaults ON; only an explicit `false` opts out (§9).
+  const [stateDetection, setStateDetection] = useState(settings.terminal.stateDetection !== false)
   // Current value of every configurable chord, keyed by its settings field.
   const [chords, setChords] = useState<Record<ChordKey, string>>(() =>
     CHORD_FIELDS.reduce(
@@ -182,7 +184,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
     setError(null)
     const patch: SettingsPatchDTO = {
       worktree: { location: location.trim() },
-      terminal: { shell: shell.trim() || undefined },
+      terminal: { shell: shell.trim() || undefined, stateDetection },
       sessionNextKey: chords.sessionNextKey,
       sessionPrevKey: chords.sessionPrevKey,
       taskNextKey: chords.taskNextKey,
@@ -317,6 +319,22 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
                   disabled={busy}
                   onChange={(e) => setShell(e.target.value)}
                 />
+              </label>
+
+              <label style={{ ...field, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="checkbox"
+                  aria-label="session state detection"
+                  checked={stateDetection}
+                  disabled={busy}
+                  onChange={(e) => setStateDetection(e.target.checked)}
+                />
+                <span>
+                  Detect session status (Working / Idle / Needs input)
+                  <span style={{ display: 'block', color: color.muted, fontSize: fontSize.sm }}>
+                    Applies to newly-created sessions.
+                  </span>
+                </span>
               </label>
             </div>
           ) : (

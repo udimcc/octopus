@@ -88,7 +88,7 @@ describe('snapshot → DTO mappers (§5.2)', () => {
   it('maps settings', () => {
     const settings: Settings = {
       worktree: { location: '/home/u/octopus_repos' },
-      terminal: { shell: '/bin/zsh' },
+      terminal: { shell: '/bin/zsh', stateDetection: false },
       defaultSessionTypeId: 'terminal',
       worktreeCreateTimeoutMs: 45000,
       groupTasksByRepo: false,
@@ -99,7 +99,7 @@ describe('snapshot → DTO mappers (§5.2)', () => {
     }
     expect(toSettingsDTO(settings)).toEqual({
       worktree: { location: '/home/u/octopus_repos' },
-      terminal: { shell: '/bin/zsh' },
+      terminal: { shell: '/bin/zsh', stateDetection: false },
       defaultSessionTypeId: 'terminal',
       worktreeCreateTimeoutMs: 45000,
       groupTasksByRepo: false,
@@ -260,7 +260,24 @@ describe('toEventDTO (§6.5) — total over the DomainEvent union', () => {
           expect(d).toEqual({ type: 'sessionStateChanged', sessionId: 's1', state: 'working' })
       },
       {
-        event: { type: 'taskStateChanged', taskId: asTaskId('t1'), state: TaskState.Blocked },
+        event: {
+          type: 'sessionStateChanged',
+          sessionId: asSessionId('s1'),
+          state: SessionState.NeedsInput,
+          meta: { layer: 3, confidence: 'authoritative', reason: 'claude_permission' }
+        },
+        expect: (d) =>
+          expect(d).toEqual({
+            type: 'sessionStateChanged',
+            sessionId: 's1',
+            state: 'blocked',
+            layer: 3,
+            confidence: 'authoritative',
+            reason: 'claude_permission'
+          })
+      },
+      {
+        event: { type: 'taskStateChanged', taskId: asTaskId('t1'), state: TaskState.NeedsInput },
         expect: (d) =>
           expect(d).toEqual({ type: 'taskStateChanged', taskId: 't1', state: 'blocked' })
       }

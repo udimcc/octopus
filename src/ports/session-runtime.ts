@@ -4,15 +4,49 @@
  * only to this interface, so a V2 durable backend (daemon/tmux) is a drop-in
  * `SessionManager` swap with no renderer change (§6.2).
  *
- * `stateEvaluator()` is the §10 V1 seam: it returns null for a terminal (which
- * lacks `EvaluatesState`). V2 returns a real evaluator here; the signature does
- * not change.
+ * `stateEvaluator()` is the §8/§10 seam: it returns null for a runtime whose type
+ * lacks `EvaluatesState`, else a {@link StateEvaluator} that PUSHES state changes.
+ * The signature does not change across backends — both the in-process composite
+ * and the daemon's `state`-message adapter satisfy it (§9.6), so the Application
+ * never learns which backend produced a signal.
  */
 
 import type { TaskId, SessionId } from '../domain/ids'
+import type { SessionState, SessionSubState } from '../domain/state'
 
-/** An opaque per-session state evaluator (V2). Shape defined later; null in V1. */
-export type StateEvaluator = unknown
+/**
+ * Metadata accompanying a state change (§9.1, §9.3). All optional: the aggregation
+ * lattice only needs the {@link SessionState}, but the sub-state / confidence /
+ * layer feed the debug overlay and the UI's low-confidence dimming (R1).
+ */
+export interface StateChangeMeta {
+  readonly subState?: SessionSubState
+  /** Which signal layer decided this (§9.1): 1 = activity, 2 = structural, 3 = explicit. */
+  readonly layer?: 1 | 2 | 3
+  /** Provider-supplied confidence (§9.3); the UI dims Medium/Low. */
+  readonly confidence?: 'authoritative' | 'high' | 'medium' | 'low' | 'none'
+  /** Free-form reason for the transition log (e.g. `claude_stop`, `subprocess`). */
+  readonly reason?: string
+}
+
+/**
+ * A per-session state evaluator (§9.3, §9.6). It OWNS the timers/socket/OSC parsing
+ * that produce state signals and pushes each freshly-evaluated {@link SessionState}
+ * to the subscriber (which routes it through the single-writer `ingestSessionState`
+ * command). Push, not poll: the composite already runs its own 200 ms / 1 s cadence
+ * internally, so the Application just subscribes once and disposes on session exit.
+ */
+export interface StateEvaluator {
+  /** Register the sink for state changes. Called once by the start-runtime use case. */
+  onStateChange(listener: (state: SessionState, meta?: StateChangeMeta) => void): void
+  /**
+   * Manually re-evaluate now (the "refresh state" affordance, R1/§5.4). Optional:
+   * a backend that can't force a re-poll (or hasn't wired it) simply omits it.
+   */
+  refresh?(): void
+  /** Stop all timers/listeners and release the socket. Called on session teardown. */
+  dispose(): void
+}
 
 /** Everything a runtime needs to start a session (DESIGN §6.1). */
 export interface SessionRuntimeContext {

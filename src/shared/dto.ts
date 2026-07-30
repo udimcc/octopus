@@ -92,6 +92,8 @@ export interface SettingsDTO {
   }
   readonly terminal: {
     readonly shell?: string
+    /** Session state detection (§9); default on. Applies to newly-created sessions. */
+    readonly stateDetection?: boolean
   }
   readonly defaultSessionTypeId: string
   readonly worktreeCreateTimeoutMs?: number
@@ -122,6 +124,7 @@ export interface SettingsPatchDTO {
   }
   readonly terminal?: {
     readonly shell?: string
+    readonly stateDetection?: boolean
   }
   readonly defaultSessionTypeId?: string
   readonly worktreeCreateTimeoutMs?: number
@@ -252,6 +255,11 @@ export interface RenameSessionInput {
 
 /** Query a session's live current working directory (§6.5, "new terminal here"). */
 export interface SessionCwdInput {
+  readonly sessionId: string
+}
+
+/** Ask a session to manually re-evaluate its state now (§5.4 R1, fire-and-forget). */
+export interface RefreshSessionStateInput {
   readonly sessionId: string
 }
 

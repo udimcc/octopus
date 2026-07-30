@@ -12,6 +12,7 @@
 import type { TaskId, SessionId, TypeId, WindowId } from '../domain/ids'
 import type { SessionConfig } from '../domain/session-config'
 import type { SessionState } from '../domain/state'
+import type { StateChangeMeta } from '../ports/session-runtime'
 
 /** Provision a brand-new worktree (New-Task modal "From New Worktree", §5.4). */
 export interface CreateTaskFromNewInput {
@@ -53,6 +54,18 @@ export interface ReorderTaskInput {
 }
 
 export interface SwitchTaskInput {
+  readonly taskId: TaskId
+}
+
+/**
+ * Start a task's restored (`Created`) sessions WITHOUT making it the active task
+ * (unlike `switchTask`, which also moves the pointer + emits `activeTaskChanged`).
+ * Dispatched at boot on the daemon path so every Ready task re-attaches its live
+ * PTYs — and thus subscribes a state evaluator that flushes the daemon's buffered
+ * state — instead of only the focused task getting its status (§6.2, §9.6). Bounded
+ * to Ready tasks; idempotent (already-Running sessions are skipped).
+ */
+export interface StartTaskSessionsInput {
   readonly taskId: TaskId
 }
 
@@ -110,10 +123,25 @@ export interface HandleRuntimeExitInput {
   readonly signal?: number
 }
 
-/** §10 V1 seam: a runtime state signal ingested by the loop (V2). Dormant. */
+/**
+ * Manually re-evaluate a session's state now (the "Refresh state" affordance,
+ * R1/§5.4). Touches a live runtime's evaluator, not the aggregate; a session with
+ * no evaluator (Terminal without integration, or opted-out) is a silent no-op.
+ */
+export interface RefreshSessionStateInput {
+  readonly sessionId: SessionId
+}
+
+/** A runtime state signal ingested by the loop (§9.6). */
 export interface IngestSessionStateInput {
   readonly sessionId: SessionId
   readonly state: SessionState
+  /**
+   * Layer/confidence/reason accompanying the transition (§9.1, §9.3). Threaded
+   * through to the state-transition log (§11) and the debug overlay (R1); the
+   * aggregation lattice itself needs only `state`.
+   */
+  readonly meta?: StateChangeMeta
 }
 
 /** Pixel geometry for a new OS window (V1.5, §6.7). Optional → OS default placement. */
@@ -168,6 +196,7 @@ export type Command =
   | { readonly kind: 'createTask'; readonly input: CreateTaskInput }
   | { readonly kind: 'deleteTask'; readonly input: DeleteTaskInput }
   | { readonly kind: 'switchTask'; readonly input: SwitchTaskInput }
+  | { readonly kind: 'startTaskSessions'; readonly input: StartTaskSessionsInput }
   | { readonly kind: 'renameTask'; readonly input: RenameTaskInput }
   | { readonly kind: 'reorderTask'; readonly input: ReorderTaskInput }
   | { readonly kind: 'createSession'; readonly input: CreateSessionInput }
@@ -179,6 +208,7 @@ export type Command =
   | { readonly kind: 'updateSettings'; readonly input: SettingsPatch }
   | { readonly kind: 'handleRuntimeExit'; readonly input: HandleRuntimeExitInput }
   | { readonly kind: 'ingestSessionState'; readonly input: IngestSessionStateInput }
+  | { readonly kind: 'refreshSessionState'; readonly input: RefreshSessionStateInput }
   | { readonly kind: 'createWindow'; readonly input: CreateWindowInput }
   | { readonly kind: 'closeWindow'; readonly input: CloseWindowInput }
   | { readonly kind: 'moveSessionToWindow'; readonly input: MoveSessionToWindowInput }

@@ -17,36 +17,36 @@ describe('worstStatusWins (DESIGN §3.4)', () => {
     expect(
       worstStatusWins.aggregate([
         SessionState.Unknown,
-        SessionState.Waiting,
+        SessionState.Idle,
         SessionState.Working,
-        SessionState.Blocked
+        SessionState.NeedsInput
       ])
-    ).toBe(TaskState.Blocked)
+    ).toBe(TaskState.NeedsInput)
   })
 
   it('Working beats Waiting and Unknown', () => {
     expect(
-      worstStatusWins.aggregate([SessionState.Waiting, SessionState.Working, SessionState.Unknown])
+      worstStatusWins.aggregate([SessionState.Idle, SessionState.Working, SessionState.Unknown])
     ).toBe(TaskState.Working)
   })
 
   it('Waiting beats Unknown but nothing else present', () => {
-    expect(worstStatusWins.aggregate([SessionState.Unknown, SessionState.Waiting])).toBe(
-      TaskState.Waiting
+    expect(worstStatusWins.aggregate([SessionState.Unknown, SessionState.Idle])).toBe(
+      TaskState.Idle
     )
   })
 
   it('is order-independent (commutative)', () => {
-    const a = worstStatusWins.aggregate([SessionState.Working, SessionState.Blocked])
-    const b = worstStatusWins.aggregate([SessionState.Blocked, SessionState.Working])
+    const a = worstStatusWins.aggregate([SessionState.Working, SessionState.NeedsInput])
+    const b = worstStatusWins.aggregate([SessionState.NeedsInput, SessionState.Working])
     expect(a).toBe(b)
-    expect(a).toBe(TaskState.Blocked)
+    expect(a).toBe(TaskState.NeedsInput)
   })
 
   it('ignores Unknown sessions when a known state is present (transparency)', () => {
     // A blocked build is not masked by an un-evaluated (Unknown) terminal.
     expect(
-      worstStatusWins.aggregate([SessionState.Unknown, SessionState.Blocked, SessionState.Unknown])
-    ).toBe(TaskState.Blocked)
+      worstStatusWins.aggregate([SessionState.Unknown, SessionState.NeedsInput, SessionState.Unknown])
+    ).toBe(TaskState.NeedsInput)
   })
 })

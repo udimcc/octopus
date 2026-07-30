@@ -5,14 +5,15 @@ import { Capability } from '../../ports/session-type-provider'
 import type { SessionManager, SessionRuntime, SessionRuntimeContext } from '../../ports/session-runtime'
 import { asTypeId } from '../../domain/ids'
 
-describe('TerminalSessionTypeProvider (§8, §10 V1)', () => {
-  it('is the terminal type, available from V1, with an EMPTY capability set (no EvaluatesState)', () => {
+describe('TerminalSessionTypeProvider (§8, §9)', () => {
+  it('is the terminal type, available from V1, and now advertises EvaluatesState (§9)', () => {
     const p = new TerminalSessionTypeProvider()
     expect(p.typeId).toBe(TERMINAL_TYPE_ID)
     expect(p.displayName).toBe('Terminal')
     expect(p.availableFromVersion).toBe(1)
-    expect(p.capabilities.has(Capability.EvaluatesState)).toBe(false)
-    expect(p.capabilities.size).toBe(0)
+    // Phase 2 flips the dormant seam on: the terminal type evaluates state (§9.6/§10).
+    expect(p.capabilities.has(Capability.EvaluatesState)).toBe(true)
+    expect(p.capabilities.size).toBe(1)
   })
 
   it('defaultConfig points cwd at the worktree', () => {
