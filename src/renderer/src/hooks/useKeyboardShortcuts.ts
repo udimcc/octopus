@@ -65,21 +65,32 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
         void window.octopusAPI.tasks.switch({ taskId: next })
       }
 
-      // Cycle the active session of the active task by `delta`, wrapping. Iterates
-      // the task's FULL `sessionIds` (which can include sessions hosted in OTHER
-      // windows, §6.7), so we dispatch `sessions.switch` to the backend rather than
-      // only mutating the local store: it moves the persisted pointer and broadcasts
-      // `activeSessionChanged` to every window, so a target in another window is made
-      // visible there and that window raises itself. A same-window target is updated
-      // by the same round-tripped event (no separate local mutation needed).
+      // Cycle the active session of the active task by `delta`, wrapping. Cycling spans
+      // ALL windows (§5.4) but is GROUPED by window: we take the task's global tab order
+      // (`task.sessionIds`, already ordered by each session's `order`) and STABLE-sort it
+      // by the hosting window's rank — its index in `store.windows`, which is creation
+      // order (hydrated ORDER BY created_at, then append-on-`windowCreated`). A stable sort
+      // keeps each window's tabs in their tab order, so the cycle walks window 1's tabs,
+      // then window 2's, etc., and wraps across the whole set. We anchor "current" on the
+      // GLOBAL `activeSessionByTask` pointer (switching crosses windows and updates it
+      // everywhere) and dispatch `sessions.switch`, which round-trips, moves the persisted
+      // pointer, raises the hosting window, and broadcasts `activeSessionChanged`.
       const cycleSession = (delta: number): void => {
         if (!activeTaskId) return
         const task = store.tasks[activeTaskId]
-        if (!task || task.sessionIds.length === 0) return
+        if (!task) return
+        // Window rank = index in `store.windows` (creation order). Orphans (window not
+        // tracked) sort to the end deterministically rather than jumping to the front.
+        const windowRank = (id: string): number => {
+          const w = store.sessions[id]?.windowId
+          const idx = w === undefined ? -1 : store.windows.findIndex((win) => win.id === w)
+          return idx === -1 ? store.windows.length : idx
+        }
+        const ids = [...task.sessionIds].sort((a, b) => windowRank(a) - windowRank(b))
+        if (ids.length === 0) return
         const curId = store.activeSessionByTask[activeTaskId]
-        const cur = curId ? task.sessionIds.indexOf(curId) : -1
-        const next =
-          task.sessionIds[(cur + delta + task.sessionIds.length) % task.sessionIds.length]
+        const cur = curId ? ids.indexOf(curId) : -1
+        const next = ids[(cur + delta + ids.length) % ids.length]
         if (next) void window.octopusAPI.sessions.switch({ sessionId: next })
       }
 

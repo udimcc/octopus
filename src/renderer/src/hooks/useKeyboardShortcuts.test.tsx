@@ -3,7 +3,7 @@ import { render, fireEvent } from '@testing-library/react'
 import { useKeyboardShortcuts, type KeyboardShortcutHandlers } from './useKeyboardShortcuts'
 import { useStore, initialData } from '../store/store'
 import { installStubBridge } from '../test-support/stub-bridge'
-import type { SessionDTO, TaskDTO } from '../../../shared/dto'
+import type { SessionDTO, TaskDTO, WindowDTO } from '../../../shared/dto'
 
 function Host(props: KeyboardShortcutHandlers): React.JSX.Element {
   useKeyboardShortcuts(props)
@@ -39,7 +39,22 @@ function task(id: string, over: Partial<TaskDTO> = {}): TaskDTO {
   }
 }
 
-function seed(tasks: TaskDTO[], activeTaskId?: string): void {
+function win(id: string, over: Partial<WindowDTO> = {}): WindowDTO {
+  return {
+    id,
+    role: id === 'main' ? 'main' : 'secondary',
+    bounds: { x: 0, y: 0, width: 800, height: 600 },
+    createdAt: 1000,
+    ...over
+  }
+}
+
+function seed(
+  tasks: TaskDTO[],
+  activeTaskId?: string,
+  thisWindowId = 'main',
+  windows: WindowDTO[] = []
+): void {
   useStore.getState().hydrate({
     tasks,
     activeTaskId,
@@ -59,9 +74,9 @@ function seed(tasks: TaskDTO[], activeTaskId?: string): void {
       searchKey: 'Ctrl+Shift+KeyF'
     },
     version: 1,
-    thisWindowId: 'main',
-    thisWindowRole: 'main',
-    windows: []
+    thisWindowId,
+    thisWindowRole: thisWindowId === 'main' ? 'main' : 'secondary',
+    windows
   })
 }
 
@@ -161,6 +176,81 @@ describe('useKeyboardShortcuts (§5.4 — Shift-gated)', () => {
     const callsBefore = vi.mocked(window.octopusAPI.sessions.switch).mock.calls.length
     chord('ArrowLeft')
     expect(vi.mocked(window.octopusAPI.sessions.switch).mock.calls.length).toBe(callsBefore)
+  })
+
+  it('cycles across windows GROUPED by window: main\'s tabs, then win-2\'s, then wraps (§5.4)', () => {
+    // The user's scenario: window `main` hosts T1, T3; window `win-2` hosts T2. Global
+    // tab order interleaves them ([s1, s2, s3]) but cycling groups by window rank, so the
+    // walk is s1 → s3 (main's tabs) → s2 (win-2) → wrap → s1.
+    const t = task('t1', {
+      sessions: [
+        session('s1', { windowId: 'main' }),
+        session('s2', { order: 1, windowId: 'win-2' }),
+        session('s3', { order: 2, windowId: 'main' })
+      ],
+      activeSessionId: 's1'
+    })
+    seed([t], 't1', 'main', [win('main'), win('win-2')])
+    render(<Host onNewTask={vi.fn()} />)
+    chord('ArrowRight')
+    expect(window.octopusAPI.sessions.switch).toHaveBeenLastCalledWith({ sessionId: 's3' })
+    // The store re-points on the broadcast `activeSessionChanged`; the stub bridge does
+    // not round-trip, so advance the global pointer manually to simulate it.
+    useStore.setState((s) => ({ activeSessionByTask: { ...s.activeSessionByTask, t1: 's3' } }))
+    chord('ArrowRight')
+    expect(window.octopusAPI.sessions.switch).toHaveBeenLastCalledWith({ sessionId: 's2' })
+    useStore.setState((s) => ({ activeSessionByTask: { ...s.activeSessionByTask, t1: 's2' } }))
+    chord('ArrowRight')
+    expect(window.octopusAPI.sessions.switch).toHaveBeenLastCalledWith({ sessionId: 's1' }) // wrapped
+  })
+
+  it('wraps only after the last window\'s tabs, not within a single window', () => {
+    const t = task('t1', {
+      sessions: [
+        session('s1', { windowId: 'main' }),
+        session('s2', { order: 1, windowId: 'win-2' }),
+        session('s3', { order: 2, windowId: 'main' })
+      ],
+      activeSessionId: 's3' // last of main's tabs; next crosses into win-2, not wrap
+    })
+    seed([t], 't1', 'main', [win('main'), win('win-2')])
+    render(<Host onNewTask={vi.fn()} />)
+    chord('ArrowRight')
+    expect(window.octopusAPI.sessions.switch).toHaveBeenLastCalledWith({ sessionId: 's2' })
+  })
+
+  it('anchors on the GLOBAL active session, wherever it is hosted', () => {
+    // Global activeSessionByTask points at s2 (in win-2), while this renderer is `main`.
+    // Grouped order is [s1, s3, s2]; from s2 (last), ArrowRight wraps to s1.
+    const t = task('t1', {
+      sessions: [
+        session('s1', { windowId: 'main' }),
+        session('s2', { order: 1, windowId: 'win-2' }),
+        session('s3', { order: 2, windowId: 'main' })
+      ],
+      activeSessionId: 's2'
+    })
+    seed([t], 't1', 'main', [win('main'), win('win-2')])
+    render(<Host onNewTask={vi.fn()} />)
+    chord('ArrowRight')
+    expect(window.octopusAPI.sessions.switch).toHaveBeenLastCalledWith({ sessionId: 's1' })
+  })
+
+  it('cycles from a secondary window across into the main window', () => {
+    // Same layout, but the focused renderer IS win-2 (hosting only s2). Cycling still
+    // spans all windows off the shared global pointer; from s2, ArrowRight wraps to s1.
+    const t = task('t1', {
+      sessions: [
+        session('s1', { windowId: 'main' }),
+        session('s2', { order: 1, windowId: 'win-2' }),
+        session('s3', { order: 2, windowId: 'main' })
+      ],
+      activeSessionId: 's2'
+    })
+    seed([t], 't1', 'win-2', [win('main'), win('win-2')])
+    render(<Host onNewTask={vi.fn()} />)
+    chord('ArrowRight')
+    expect(window.octopusAPI.sessions.switch).toHaveBeenLastCalledWith({ sessionId: 's1' })
   })
 
   it('matches a free-form (non-Ctrl+Shift) chord before the fixed gate', () => {
