@@ -31,10 +31,17 @@
  * validates + never executes it). Mapping (refines §9.2 with the accurate attention
  * signal — `Notification` is Claude's real "needs the user" event; there is no
  * silence-heuristic backstop, the hooks are the sole source of Claude's state, §9):
- *   - `Stop`          → waiting (turn finished)
+ *   - `Stop`          → waiting (turn finished cleanly)
+ *   - `StopFailure`   → waiting (turn ended ABNORMALLY — the user interrupted it with
+ *     Ctrl-C / ESC, or it errored. `Stop` does NOT fire in this case, so without this
+ *     hook a user-interrupted turn stays stuck on Working until Claude actually exits
+ *     and the /proc sentinel clears it. This is the interrupt signal that closes that
+ *     gap — Claude stays alive at its own prompt, so the sentinel never fires).
  *   - `Notification`  → blocked (permission / attention request) — but the idle
  *     "waiting for your input" reminder Claude fires AFTER a turn already ended is
  *     suppressed (it is not a real input need; see {@link notificationHookCommand}).
+ *   - `PermissionRequest` → blocked (a first-class tool-approval prompt — the clean
+ *     Needs-input signal, distinct from the overloaded `Notification` event).
  *   - `SubagentStop`  → working (a delegated subagent finished; the MAIN agent is
  *     still mid-turn — do NOT let this read as Idle).
  *   - `PreToolUse`    → working (a tool is starting)
@@ -86,7 +93,9 @@ interface HookSpec {
 
 const HOOK_SPECS: readonly HookSpec[] = [
   { event: 'Stop', json: '{"state":"waiting","reason":"claude_stop"}' },
+  { event: 'StopFailure', json: '{"state":"waiting","reason":"stop_failure"}' },
   { event: 'Notification', json: '{"state":"blocked","reason":"notification"}', command: notificationHookCommand },
+  { event: 'PermissionRequest', json: '{"state":"blocked","reason":"permission"}' },
   { event: 'SubagentStop', json: '{"state":"working","reason":"subagent_stop"}' },
   { event: 'PreToolUse', json: '{"state":"working","reason":"pre_tool_use"}' },
   { event: 'PostToolUse', json: '{"state":"working","reason":"tool_use"}' },

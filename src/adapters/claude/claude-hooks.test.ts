@@ -65,7 +65,9 @@ describe('mergeClaudeHooks (§9.2 — merge-safe, idempotent)', () => {
     expect(hasAllOctopusHooks(merged)).toBe(true)
     for (const event of [
       'Stop',
+      'StopFailure',
       'Notification',
+      'PermissionRequest',
       'SubagentStop',
       'PreToolUse',
       'PostToolUse',
@@ -73,6 +75,20 @@ describe('mergeClaudeHooks (§9.2 — merge-safe, idempotent)', () => {
     ]) {
       expect(merged.hooks?.[event]).toBeDefined()
     }
+  })
+
+  it('wires StopFailure → waiting so a user-interrupted turn reads as Idle, not stuck Working', () => {
+    const merged = mergeClaudeHooks({})
+    const cmd = octopusCommand(merged, 'StopFailure')
+    expect(cmd).toContain('"state":"waiting"')
+    expect(cmd).toContain('stop_failure')
+  })
+
+  it('wires PermissionRequest → blocked as a first-class Needs-input signal', () => {
+    const merged = mergeClaudeHooks({})
+    const cmd = octopusCommand(merged, 'PermissionRequest')
+    expect(cmd).toContain('"state":"blocked"')
+    expect(cmd).toContain('permission')
   })
 
   it('wires SubagentStop → working so a finished subagent is not read as Idle (BUG 2)', () => {
