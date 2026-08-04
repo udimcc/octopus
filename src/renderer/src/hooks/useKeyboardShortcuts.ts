@@ -32,6 +32,7 @@
 
 import { useEffect } from 'react'
 import { useStore } from '../store/store'
+import { groupTasksByRepo } from '../store/group-tasks'
 import { matchesChord } from '../keybindings/chords'
 
 /**
@@ -55,11 +56,20 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
       const store = useStore.getState()
       const { taskOrder, activeTaskId } = store
 
-      // Cycle the active task by `delta`, wrapping, then switch to it.
+      // Cycle the active task by `delta`, wrapping, then switch to it. The walk order
+      // follows the VISUAL order of the Progress panel, not `taskOrder` (creation/append
+      // order): in the Flat view those coincide, but the Grouped view (§5.1) buckets
+      // tasks by repo, so a newly-opened task slots next to its repo-mates rather than at
+      // the end. We rebuild the panel's exact order with the same pure `groupTasksByRepo`
+      // helper it renders from, keyed on the `groupTasksByRepo` setting, so keyboard
+      // cycling matches what the user sees.
       const cycleTask = (delta: number): void => {
-        if (taskOrder.length === 0) return
-        const cur = activeTaskId ? taskOrder.indexOf(activeTaskId) : -1
-        const next = taskOrder[(cur + delta + taskOrder.length) % taskOrder.length]
+        const order = store.settings.groupTasksByRepo
+          ? groupTasksByRepo(taskOrder, store.tasks).flatMap((g) => g.taskIds)
+          : taskOrder
+        if (order.length === 0) return
+        const cur = activeTaskId ? order.indexOf(activeTaskId) : -1
+        const next = order[(cur + delta + order.length) % order.length]
         if (!next) return
         store.setActiveTask(next)
         void window.octopusAPI.tasks.switch({ taskId: next })

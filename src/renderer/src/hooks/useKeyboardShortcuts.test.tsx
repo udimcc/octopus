@@ -39,6 +39,15 @@ function task(id: string, over: Partial<TaskDTO> = {}): TaskDTO {
   }
 }
 
+/** A worktree ref rooted at `repoRoot`, so a task groups under that repo (§5.1). */
+function worktree(repoRoot: string): TaskDTO['worktree'] {
+  return {
+    path: `${repoRoot}/wt`,
+    managed: true,
+    provisionedBy: { script: 'p', args: [], repoRoot, provisionedAt: 1000 }
+  }
+}
+
 function win(id: string, over: Partial<WindowDTO> = {}): WindowDTO {
   return {
     id,
@@ -113,6 +122,41 @@ describe('useKeyboardShortcuts (§5.4 — Shift-gated)', () => {
     render(<Host onNewTask={vi.fn()} />)
     chord('ArrowUp')
     expect(useStore.getState().activeTaskId).toBe('t2') // wrapped backwards
+  })
+
+  it('cycles tasks in the GROUPED visual order, not creation order', () => {
+    // The scenario from the bug: repo A holds t1 then (later-created) t3; repo B holds
+    // t2. Creation/`taskOrder` interleaves them ([t1, t2, t3]), but the grouped panel
+    // shows A: t1, t3 then B: t2. Cycling from t1 must land on its repo-mate t3, not t2.
+    const tasks = [
+      task('t1', { worktree: worktree('/repo/a') }),
+      task('t2', { position: 1, worktree: worktree('/repo/b') }),
+      task('t3', { position: 2, worktree: worktree('/repo/a') })
+    ]
+    seed(tasks, 't1') // seed defaults groupTasksByRepo: true
+    render(<Host onNewTask={vi.fn()} />)
+    chord('ArrowDown')
+    expect(useStore.getState().activeTaskId).toBe('t3')
+    expect(window.octopusAPI.tasks.switch).toHaveBeenLastCalledWith({ taskId: 't3' })
+    chord('ArrowDown') // t3 → t2 (crossing into repo B)
+    expect(useStore.getState().activeTaskId).toBe('t2')
+    chord('ArrowDown') // t2 → wraps to t1
+    expect(useStore.getState().activeTaskId).toBe('t1')
+  })
+
+  it('cycles tasks in the FLAT (creation) order when grouping is off', () => {
+    const tasks = [
+      task('t1', { worktree: worktree('/repo/a') }),
+      task('t2', { position: 1, worktree: worktree('/repo/b') }),
+      task('t3', { position: 2, worktree: worktree('/repo/a') })
+    ]
+    seed(tasks, 't1')
+    useStore.setState((s) => ({ settings: { ...s.settings, groupTasksByRepo: false } }))
+    render(<Host onNewTask={vi.fn()} />)
+    chord('ArrowDown') // flat: t1 → t2 (next in taskOrder, ignoring repo)
+    expect(useStore.getState().activeTaskId).toBe('t2')
+    chord('ArrowDown') // t2 → t3
+    expect(useStore.getState().activeTaskId).toBe('t3')
   })
 
   it('Ctrl+Shift+Tab no longer cycles sessions (binding removed)', () => {
