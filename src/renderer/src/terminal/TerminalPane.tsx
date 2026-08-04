@@ -290,6 +290,14 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
 
     fitAndResize(sessionId, term, fit, host)
 
+    // Focus a pane that mounts already-active (a freshly opened session becomes the
+    // active tab), so the user can type immediately without clicking in. The on-show
+    // `useLayoutEffect` can't do this on the FIRST render: it runs in the commit phase
+    // BEFORE this passive mount effect, when `termRef` is still null, so it returns
+    // early. It handles focus only for LATER active→visible transitions of an
+    // already-mounted pane.
+    if (active) term.focus()
+
     // Refit on container resize, debounced so a drag doesn't spam pty:resize.
     let debounce: ReturnType<typeof setTimeout> | undefined
     let observer: ResizeObserver | undefined

@@ -285,6 +285,22 @@ describe('<TerminalPane> wiring (§5.3/§6.1)', () => {
     expect(h.instances[0].focus).toHaveBeenCalled()
   })
 
+  it('focuses on mount when it mounts already-active (freshly opened session — bug guard)', () => {
+    cleanup()
+    // A new session becomes the active tab, so its pane mounts with active=true. The
+    // user must be able to type without clicking in. The on-show layout effect can't
+    // do this on first render (termRef still null in the commit phase), so the mount
+    // effect focuses directly.
+    render(<TerminalPane sessionId="s1" active={true} />)
+    expect(h.instances[0].focus).toHaveBeenCalled()
+  })
+
+  it('does not focus a pane that mounts hidden (inactive tab of another task)', () => {
+    cleanup()
+    render(<TerminalPane sessionId="s1" active={false} />)
+    expect(h.instances[0].focus).not.toHaveBeenCalled()
+  })
+
   it('never fits while the host has no layout box (the hidden 0×0 pane — bug guard)', () => {
     cleanup()
     // Simulate the hidden task: TaskView collapses the pane to 0×0.
