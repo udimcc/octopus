@@ -32,7 +32,11 @@
  * signal — `Notification` is Claude's real "needs the user" event; there is no
  * silence-heuristic backstop, the hooks are the sole source of Claude's state, §9):
  *   - `Stop`          → waiting (turn finished)
- *   - `Notification`  → blocked (permission / attention request)
+ *   - `Notification`  → blocked (permission / attention request) — but the idle
+ *     "waiting for your input" reminder Claude fires AFTER a turn already ended is
+ *     suppressed (it is not a real input need; see {@link notificationHookCommand}).
+ *   - `SubagentStop`  → working (a delegated subagent finished; the MAIN agent is
+ *     still mid-turn — do NOT let this read as Idle).
  *   - `PreToolUse`    → working (a tool is starting)
  *   - `PostToolUse`   → working (still Claude's turn)
  *   - `UserPromptSubmit` → working (user handed work back to Claude)
@@ -73,15 +77,36 @@ interface ClaudeSettings {
 interface HookSpec {
   readonly event: string
   readonly json: string
+  /**
+   * Optional override for the shell one-liner. Defaults to {@link hookCommand}(json);
+   * `Notification` uses {@link notificationHookCommand} so it can inspect the payload.
+   */
+  readonly command?: (json: string) => string
 }
 
 const HOOK_SPECS: readonly HookSpec[] = [
   { event: 'Stop', json: '{"state":"waiting","reason":"claude_stop"}' },
-  { event: 'Notification', json: '{"state":"blocked","reason":"notification"}' },
+  { event: 'Notification', json: '{"state":"blocked","reason":"notification"}', command: notificationHookCommand },
+  { event: 'SubagentStop', json: '{"state":"working","reason":"subagent_stop"}' },
   { event: 'PreToolUse', json: '{"state":"working","reason":"pre_tool_use"}' },
   { event: 'PostToolUse', json: '{"state":"working","reason":"tool_use"}' },
   { event: 'UserPromptSubmit', json: '{"state":"working","reason":"user_prompt"}' }
 ]
+
+/**
+ * The `Notification` event is emitted for TWO unrelated situations: a genuine
+ * permission/tool-approval request (real Needs-input), AND an idle "waiting for your
+ * input" reminder Claude fires when a turn has ALREADY ended and the user hasn't
+ * typed. Mapping both to `blocked` is the BUG 1 false-positive: after a turn ends
+ * (`Stop` → waiting/Idle) the idle reminder would overwrite it with a sticky
+ * `blocked`, so the tab reads Needs-input though nothing is blocked.
+ *
+ * Claude passes the notification payload as JSON on the hook's stdin (a `message`
+ * field). We keep the default "Notification ⇒ blocked" (DESIGN §9.2: Notification is
+ * the real attention event) but SUPPRESS the idle-reminder message — matched
+ * substring-wise on stdin — emitting no frame so the prior `Stop`→waiting stands.
+ */
+export const IDLE_NOTIFICATION_MARKER = 'waiting for your input'
 
 /**
  * The shell one-liner for a state frame (§9.2). No-op when the socket var is unset,
@@ -101,6 +126,30 @@ export function hookCommand(json: string): string {
   return (
     `[ -n "$OCTOPUS_STATE_SOCKET" ] && ` +
     `printf '%s\\n' '${escaped}' | nc -N -q0 -w1 -U "$OCTOPUS_STATE_SOCKET" 2>/dev/null; ` +
+    `true ${OCTOPUS_HOOK_MARKER}`
+  )
+}
+
+/**
+ * The `Notification` one-liner (BUG 1). Same guards/transport/marker as
+ * {@link hookCommand}, but it first reads the hook's stdin payload and SUPPRESSES the
+ * idle "waiting for your input" reminder (emits no frame) so it can't overwrite the
+ * `Stop`→waiting/Idle state with a false `blocked`. Any other Notification (a real
+ * permission/attention request) still emits `blocked`, per DESIGN §9.2.
+ *
+ * `msg=$(cat)` drains stdin (Claude always pipes the payload; if there is none this
+ * is an empty string and the frame is sent, matching the old always-blocked behavior
+ * for non-payload notifications). The `case` match is a plain substring test — no
+ * regex/jq dependency — keeping the hook a portable POSIX-sh one-liner.
+ */
+export function notificationHookCommand(json: string): string {
+  const escaped = json.replace(/'/g, `'\\''`)
+  const marker = IDLE_NOTIFICATION_MARKER.replace(/'/g, `'\\''`)
+  return (
+    `[ -n "$OCTOPUS_STATE_SOCKET" ] && { msg=$(cat); ` +
+    `case "$msg" in *'${marker}'*) : ;; *) ` +
+    `printf '%s\\n' '${escaped}' | nc -N -q0 -w1 -U "$OCTOPUS_STATE_SOCKET" 2>/dev/null ;; ` +
+    `esac; }; ` +
     `true ${OCTOPUS_HOOK_MARKER}`
   )
 }
@@ -145,7 +194,8 @@ export function mergeClaudeHooks(settings: ClaudeSettings): ClaudeSettings {
     // Refresh: strip a stale Octopus entry, then append the current command. This
     // updates the command across upgrades without disturbing user entries.
     const userGroups = stripOctopusEntries(existing)
-    userGroups.push({ hooks: [{ type: 'command', command: hookCommand(spec.json) }] })
+    const buildCommand = spec.command ?? hookCommand
+    userGroups.push({ hooks: [{ type: 'command', command: buildCommand(spec.json) }] })
     hooks[spec.event] = userGroups
   }
 

@@ -799,12 +799,18 @@ has printed a prompt, and is reading stdin — indistinguishable from Waiting fr
   via the per-session `$OCTOPUS_STATE_SOCKET` env var; merge-safe + idempotent — see
   `src/adapters/claude/claude-hooks.ts`), each a tiny one-liner:
   - `Stop` → `{"state":"waiting","reason":"claude_stop"}` (turn finished → Idle)
-  - `Notification` → `{"state":"blocked","reason":"notification"}` (permission / attention → Needs input)
+  - `Notification` → `{"state":"blocked","reason":"notification"}` (permission / attention → Needs input) —
+    EXCEPT the idle "waiting for your input" reminder Claude fires after a turn already ended, which the hook
+    one-liner suppresses (reads the payload on stdin; emits no frame) so it can't overwrite `Stop`→Idle with a
+    false Needs-input.
+  - `SubagentStop` → `{"state":"working","reason":"subagent_stop"}` (a delegated subagent finished; the MAIN
+    agent is still mid-turn, so this must read as Working, not Idle).
   - `PreToolUse` → `{"state":"working","reason":"pre_tool_use"}`
   - `PostToolUse` → `{"state":"working","reason":"tool_use"}`
   - `UserPromptSubmit` → `{"state":"working","reason":"user_prompt"}`
   `Notification` — not `PreToolUse` — is Claude's real "needs the user" event; permission prompts do not fire
-  `PreToolUse` with a distinct signal, so the accurate Needs-input source is `Notification`.
+  `PreToolUse` with a distinct signal, so the accurate Needs-input source is `Notification` (minus the idle
+  reminder noted above).
 - The hook one-liner sends one newline-delimited frame via `nc -N -q0 -w1 -U`. The `-N -q0` flags are
   **critical for latency**: OpenBSD `nc` (the Debian default) does not close a Unix socket on stdin EOF, so
   without them the `Stop` hook lingers ~2 min on the half-open connection. The `ClaudeCodeProvider` treats
