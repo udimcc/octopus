@@ -39,7 +39,6 @@ import {
   FakePersistence,
   FakeSettingsStore,
   FakeWorktreeProvider,
-  FakeSocketProvisioner,
   RecordingBus,
   SeqIdGenerator,
   FakeClock
@@ -153,7 +152,6 @@ d('reconcileOnStartup over real dirs + the real PTY stack (integration, §6.3/I1
       clock: new FakeClock(),
       aggregator: worstStatusWins,
       configValidator: createAjvConfigValidator(),
-      socketProvisioner: new FakeSocketProvisioner(),
       scrollbacks: new RingBufferScrollbackStore(),
       currentVersion: 1
     }

@@ -36,12 +36,6 @@ describe('buildPtyEnv (§6.1)', () => {
     expect(env.OCTOPUS_WORKTREE).toBe('/wt/t1')
   })
 
-  it('exports OCTOPUS_STATE_SOCKET only when a socket path is given (§9.2 seam)', () => {
-    expect(buildPtyEnv({}, ctx).OCTOPUS_STATE_SOCKET).toBeUndefined()
-    const withSock = buildPtyEnv({}, { ...ctx, stateSocketPath: '/tmp/octopus-1000/session-s1.sock' })
-    expect(withSock.OCTOPUS_STATE_SOCKET).toBe('/tmp/octopus-1000/session-s1.sock')
-  })
-
   it('drops undefined inherited values (never stringifies to "undefined")', () => {
     const env = buildPtyEnv({ FOO: undefined, BAR: 'ok' }, ctx)
     expect('FOO' in env).toBe(false)

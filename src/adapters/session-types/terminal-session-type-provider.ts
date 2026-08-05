@@ -1,8 +1,9 @@
 /**
  * The Terminal `SessionTypeProvider` (DESIGN §8, §9). The only session type today.
- * `capabilities` includes `EvaluatesState` (phase 2, §9): a terminal evaluates its
- * own state (Idle/Working/Needs-input) via the composite provider its runtime
- * builds, so `stateEvaluator()` is non-null when detection is enabled.
+ * `capabilities` includes `EvaluatesState` (§9): a terminal running Claude surfaces
+ * its state (Idle/Working/Needs-input), though the signal now flows out-of-band —
+ * the Claude python bridge writes each session's state file and a single app-side
+ * watcher feeds the Application (§9.6), not a per-runtime evaluator method.
  * `availableFromVersion = 1` so it shows in the dropdown from the first version.
  *
  * `createRuntime` delegates to the injected `SessionManager` (the PTY manager at

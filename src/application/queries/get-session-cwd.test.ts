@@ -53,8 +53,7 @@ describe('getSessionCwd read-model (§6.5)', () => {
       write: () => {},
       resize: () => {},
       stop: () => Promise.resolve(),
-      dispose: () => {},
-      stateEvaluator: () => null
+      dispose: () => {}
     }
     fd.deps.runtimes.set(id, legacy)
 

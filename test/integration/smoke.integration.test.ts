@@ -36,7 +36,6 @@ import {
   FakePersistence,
   FakeSettingsStore,
   FakeWorktreeProvider,
-  FakeSocketProvisioner,
   RecordingBus,
   SeqIdGenerator,
   FakeClock,
@@ -115,7 +114,6 @@ d('V1 E2E smoke: create → run → switch (keep-alive) → delete (§11)', () =
       clock: new FakeClock(),
       aggregator: worstStatusWins,
       configValidator: createAjvConfigValidator(),
-      socketProvisioner: new FakeSocketProvisioner(),
       scrollbacks: new RingBufferScrollbackStore(),
       currentVersion: 1
     }

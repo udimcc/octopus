@@ -15,10 +15,10 @@
  *
  * Builds the `SessionRuntimeContext`: cwd = last-known cwd (durable backend, §6.2)
  * or config override or the worktree; env = the process env the adapter sanitizes +
- * augments with OCTOPUS_* (and the dormant OCTOPUS_STATE_SOCKET, §9.2 seam); onData
- * → `ptyData` event; onExit → the late-bound `deps.onRuntimeExit` which re-enters
- * the single-writer loop as a `handleRuntimeExit` command (never mutates inline,
- * §6.6).
+ * augments with OCTOPUS_* (incl. OCTOPUS_SESSION_ID, which the Claude bridge keys
+ * state files by, §9.6); onData → `ptyData` event; onExit → the late-bound
+ * `deps.onRuntimeExit` which re-enters the single-writer loop as a `handleRuntimeExit`
+ * command (never mutates inline, §6.6).
  *
  * Spawn-vs-attach seam (§6.2, §10): `ctx.resume` is set when the durable backend's
  * live roster (`deps.liveDaemonSessions`) still holds this id — the runtime then
@@ -77,8 +77,6 @@ export async function startSessionRuntime(
     env: process.env,
     shell: configShell(session.config),
     resume,
-    // Dormant §9.2 seam: exported to the child, never bound in V1.
-    stateSocketPath: deps.socketProvisioner.socketPathFor(id),
     onData: (data) => {
       // Capture output for scrollback persistence (§6.6) before publishing, so a
       // crash between the two still keeps the byte in the buffer for the next quit
@@ -106,17 +104,10 @@ export async function startSessionRuntime(
   session.markRunning()
   deps.runtimes.set(id, runtime)
 
-  // Subscribe to the runtime's state evaluator (§9.6), if its type evaluates state
-  // (Terminal via `EvaluatesState`; null otherwise). Each pushed change is routed
-  // through the single-writer loop via `deps.onSessionState` — never applied inline
-  // — so `setState` + the task re-derivation stay serialized with all other
-  // mutations (§6.6). The evaluator's own lifetime is the runtime's: it is disposed
-  // in `runtime.dispose()` by the adapter, so no explicit teardown is needed here.
-  const evaluator = runtime.stateEvaluator()
-  if (evaluator && deps.onSessionState) {
-    const sink = deps.onSessionState
-    evaluator.onStateChange((state, meta) => sink(id, state, meta))
-  }
+  // State detection is no longer per-runtime (§9.6): the Claude python bridge writes
+  // each session's state file (keyed by OCTOPUS_SESSION_ID == this session's id) and
+  // the composition-root watcher feeds `onSessionState` for every session globally.
+  // So there is nothing to subscribe here — the runtime owns only its PTY lifecycle.
 
   // Deliver an initial command to the fresh shell, if configured (§3.2). Skipped on
   // a re-attach: the shell already exists (and likely already ran it), so re-running

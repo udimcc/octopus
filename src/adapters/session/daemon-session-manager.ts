@@ -34,8 +34,9 @@ export interface DaemonSessionManagerDeps {
   readonly getSettings: () => Settings
   /**
    * Generated OSC 133 shell-integration files (§12.1), shared with the in-process
-   * manager. When present AND state detection is on, bash/zsh spawn against them (the
-   * `envPatch`/`args` ride to the daemon in `spawn`); omitted ⇒ plain login shells.
+   * manager. When present AND `terminal.stateDetection` is on, bash/zsh spawn against
+   * them (the `envPatch`/`args` ride to the daemon in `spawn`); omitted ⇒ plain login
+   * shells.
    */
   readonly shellIntegration?: ShellIntegrationFiles
 }
@@ -54,24 +55,20 @@ export class DaemonSessionManager implements SessionManager {
   createRuntime(ctx: SessionRuntimeContext): SessionRuntime {
     const settings = this.getSettings()
     const shell = resolveShell(ctx.shell, settings.terminal.shell, process.env.SHELL)
-    // State detection on unless explicitly opted out (§9). The daemon still runs its
-    // (cheap) evaluator regardless; when off, the runtime simply doesn't surface a
-    // state evaluator, so `startSessionRuntime` never subscribes and no icons show.
-    const stateDetection = settings.terminal.stateDetection !== false
-    // OSC 133 injection rides the same opt-out and only applies to the default
-    // interactive login shell (a custom ctx.shell skips it, §12.1). The daemon builds
-    // the child env from ITS process.env, so we forward only the integration delta as
-    // `envPatch`; HOME/ZDOTDIR are read here from the app's env (same user).
+    // OSC 133 injection rides the `terminal.stateDetection` opt-out and only applies
+    // to the default interactive login shell (a custom ctx.shell skips it, §12.1). The
+    // daemon builds the child env from ITS process.env, so we forward only the
+    // integration delta as `envPatch`; HOME/ZDOTDIR are read here from the app's env.
+    const detection = settings.terminal.stateDetection !== false
     const plan =
-      stateDetection && this.shellIntegration && ctx.shell === undefined
+      detection && this.shellIntegration && ctx.shell === undefined
         ? shellSpawnPlan(shell, this.shellIntegration, process.env)
         : undefined
     return new DaemonSessionRuntime(ctx, {
       client: this.client,
       shell,
       args: plan?.args,
-      envPatch: plan?.envPatch,
-      stateDetection
+      envPatch: plan?.envPatch
     })
   }
 }

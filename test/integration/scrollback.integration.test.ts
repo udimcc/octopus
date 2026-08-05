@@ -41,7 +41,6 @@ import {
   FakePersistence,
   FakeSettingsStore,
   FakeWorktreeProvider,
-  FakeSocketProvisioner,
   RecordingBus,
   SeqIdGenerator,
   FakeClock,
@@ -124,7 +123,6 @@ d('scrollback persist + replay across a simulated restart (integration, §6.6/§
       clock: new FakeClock(),
       aggregator: worstStatusWins,
       configValidator: createAjvConfigValidator(),
-      socketProvisioner: new FakeSocketProvisioner(),
       scrollbacks: new RingBufferScrollbackStore(),
       currentVersion: 1
     }

@@ -7,9 +7,9 @@
  * `ports`, and `application` — so the boundary rule (`eslint-plugin-boundaries`)
  * is satisfied for a file classified as `application`. In particular it does NOT
  * import any adapter: every port is faked inline here (event bus, persistence,
- * settings, worktree provider, session manager, session-type registry, socket
- * provisioner), and the only concrete helpers pulled in are pure application/domain
- * code (`MapRuntimeRegistry`, `createAjvConfigValidator`, `worstStatusWins`,
+ * settings, worktree provider, session manager, session-type registry), and the
+ * only concrete helpers pulled in are pure application/domain code
+ * (`MapRuntimeRegistry`, `createAjvConfigValidator`, `worstStatusWins`,
  * `Workspace`).
  */
 
@@ -42,8 +42,7 @@ import type {
 import type {
   SessionManager,
   SessionRuntime,
-  SessionRuntimeContext,
-  StateEvaluator
+  SessionRuntimeContext
 } from '../../ports/session-runtime'
 import {
   Capability,
@@ -53,7 +52,6 @@ import {
 import {
   MapRuntimeRegistry,
   type AppDependencies,
-  type SocketProvisioner,
   type ScrollbackBuffers
 } from '../dependencies'
 import type { StateLog, StateTransition } from '../../ports/state-log'
@@ -91,8 +89,6 @@ export class FakeRuntime implements SessionRuntime {
   failStartWith?: Error
   /** Value returned by `currentCwd()` (undefined → cwd unavailable). */
   cwdValue?: string
-  /** Returned by `stateEvaluator()`; null → no evaluator (the default). */
-  evaluator: StateEvaluator | null = null
 
   constructor(ctx: SessionRuntimeContext) {
     this.ctx = ctx
@@ -117,9 +113,6 @@ export class FakeRuntime implements SessionRuntime {
   }
   dispose(): void {
     this.disposed = true
-  }
-  stateEvaluator(): StateEvaluator | null {
-    return this.evaluator
   }
   currentCwd(): Promise<string | undefined> {
     return Promise.resolve(this.cwdValue)
@@ -342,17 +335,6 @@ export class FakeWorktreeProvider implements WorktreeProvider {
   }
 }
 
-/** Fake socket provisioner (§9.2 dormant seam): pure path, records ensureSocketDir. */
-export class FakeSocketProvisioner implements SocketProvisioner {
-  ensured = 0
-  socketPathFor(sessionId: SessionId): string {
-    return `/tmp/octopus-test/session-${sessionId}.sock`
-  }
-  ensureSocketDir(): void {
-    this.ensured++
-  }
-}
-
 /**
  * Fake scrollback store: a plain per-session string accumulator (no byte cap —
  * the cap is the adapter's `RingBuffer` concern, tested there). Enough to assert
@@ -440,7 +422,6 @@ export interface FakeDeps {
   readonly settings: FakeSettingsStore
   readonly worktrees: FakeWorktreeProvider
   readonly sessions: FakeSessionManager
-  readonly socketProvisioner: FakeSocketProvisioner
   readonly scrollbacks: FakeScrollbackStore
   readonly stateLog: RecordingStateLog
   readonly ids: SeqIdGenerator
@@ -460,7 +441,6 @@ export function makeDeps(
   const settings = new FakeSettingsStore()
   const worktrees = new FakeWorktreeProvider()
   const sessions = new FakeSessionManager()
-  const socketProvisioner = new FakeSocketProvisioner()
   const scrollbacks = new FakeScrollbackStore()
   const stateLog = new RecordingStateLog()
   const ids = new SeqIdGenerator()
@@ -485,7 +465,6 @@ export function makeDeps(
     clock,
     aggregator: worstStatusWins,
     configValidator: createAjvConfigValidator(),
-    socketProvisioner,
     scrollbacks,
     stateLog,
     currentVersion: 1,
@@ -499,7 +478,6 @@ export function makeDeps(
     settings,
     worktrees,
     sessions,
-    socketProvisioner,
     scrollbacks,
     stateLog,
     ids,

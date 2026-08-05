@@ -8,9 +8,11 @@
  *
  * §6.1 env recipe:
  *   { ...inherited (sanitized), TERM: 'xterm-256color', COLORTERM: 'truecolor',
- *     OCTOPUS_TASK_ID, OCTOPUS_SESSION_ID, OCTOPUS_WORKTREE,
- *     OCTOPUS_STATE_SOCKET (§9.2, provisioned-not-bound in V1) }
+ *     OCTOPUS_TASK_ID, OCTOPUS_SESSION_ID, OCTOPUS_WORKTREE }
  *   stripped: TMUX, TMUX_PANE, STY, WINDOWID.
+ *
+ * OCTOPUS_SESSION_ID is load-bearing for state detection (§9.6): the Claude python
+ * bridge keys each session's state file by it, so it must equal `session.id`.
  *
  * Pure, no I/O — fully unit-testable and safe under both TS projects (no `Buffer`
  * or node types, so it compiles under `tsconfig.web` too).
@@ -23,8 +25,6 @@ export interface PtyEnvContext {
   readonly taskId: string
   readonly sessionId: string
   readonly worktreePath: string
-  /** Provisioned-not-bound state socket path (§9.2, §10 V1 seam). Optional. */
-  readonly stateSocketPath?: string
 }
 
 /**
@@ -52,10 +52,6 @@ export function buildPtyEnv(
   env.OCTOPUS_TASK_ID = ctx.taskId
   env.OCTOPUS_SESSION_ID = ctx.sessionId
   env.OCTOPUS_WORKTREE = ctx.worktreePath
-  if (ctx.stateSocketPath !== undefined) {
-    // Exported but never listened on in V1 (§9.2 / §10 V1 seam).
-    env.OCTOPUS_STATE_SOCKET = ctx.stateSocketPath
-  }
   return env
 }
 

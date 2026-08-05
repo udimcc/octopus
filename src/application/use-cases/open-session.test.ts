@@ -31,11 +31,10 @@ describe('openSession happy path (§3.6, §6.1)', () => {
     expect(runtime.started).toBe(true)
     expect(fd.deps.runtimes.get(session.id)).toBe(runtime)
 
-    // Context: cwd = worktree, default 80×24, dormant state socket path wired.
+    // Context: cwd = worktree, default 80×24.
     expect(runtime.ctx.worktreePath).toBe('/wt/task')
     expect(runtime.ctx.cols).toBe(80)
     expect(runtime.ctx.rows).toBe(24)
-    expect(runtime.ctx.stateSocketPath).toBe(`/tmp/octopus-test/session-${session.id}.sock`)
 
     // Persisted the session + task in one transaction; sessionCreated announced.
     const createTaskTx = 1

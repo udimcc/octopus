@@ -33,6 +33,12 @@ export interface AppPaths {
   stateLogPath: string
   /** Dir holding the generated OSC 133 shell-integration rc files (§12.1). */
   shellIntegrationDir: string
+  /**
+   * Dir holding the generated Claude state bridge script + per-session state files
+   * (§9). The python bridge writes `<sessionId>.json` here; the app's watcher reads
+   * them. See `octopus-claude-state.script.ts`.
+   */
+  claudeStateDir: string
 }
 
 export interface ResolveContext {
@@ -52,7 +58,8 @@ export function resolveAppPaths({ env, platform, home }: ResolveContext): AppPat
     settingsPath: join(dataDir, 'settings.json'),
     logsDir: join(dataDir, 'logs'),
     stateLogPath: join(dataDir, 'logs', 'state.log'),
-    shellIntegrationDir: join(dataDir, 'shell-integration')
+    shellIntegrationDir: join(dataDir, 'shell-integration'),
+    claudeStateDir: join(dataDir, 'claude-state')
   }
 }
 
@@ -70,6 +77,7 @@ export function currentAppPaths(): AppPaths {
 export function ensureAppDirs(paths: AppPaths = currentAppPaths()): AppPaths {
   mkdirSync(paths.dataDir, { recursive: true })
   mkdirSync(paths.logsDir, { recursive: true })
+  mkdirSync(paths.claudeStateDir, { recursive: true })
   return paths
 }
 

@@ -8,8 +8,8 @@
  *   1. `raiseFileLimit()` FIRST — child PTYs inherit the higher soft fd limit (§6.1).
  *   2. `ensureAppDirs()` — data + logs dirs exist before any store opens.
  *   3. Build adapters behind their ports (clock, ids, bus, settings, persistence,
- *      script runner, worktree provider, socket provisioner, PTY manager, session-
- *      type registry + Terminal provider, ajv config validator).
+ *      script runner, worktree provider, PTY manager, session-type registry +
+ *      Terminal provider, ajv config validator).
  *   4. `persistence.load()` → `Workspace.hydrate` → `reconcileOnStartup` (missing
  *      worktree → Stale, I14).
  *   5. `new CommandLoop(deps)`; late-bind `deps.onRuntimeExit` to route a runtime's
@@ -39,14 +39,16 @@ import { ChildProcessScriptRunner } from '../adapters/scripts/child-process-scri
 import { ScriptWorktreeProvider } from '../adapters/worktree/script-worktree-provider'
 import { NativeGitWorktreeProvider } from '../adapters/worktree/native-git-worktree-provider'
 import { SelectingWorktreeProvider } from '../adapters/worktree/selecting-worktree-provider'
-import { createSocketProvisioner } from '../adapters/state-socket/socket-provisioner'
-import { createDefaultDetectorRegistry } from '../shared/node/state/state-core'
 import {
   ensureShellIntegrationFiles,
   type ShellIntegrationFiles
 } from '../shared/node/shell-integration'
 import { createStateLogFile } from '../adapters/observability/state-log-file'
 import { ensureClaudeHooks } from '../adapters/claude/claude-hooks'
+import {
+  createClaudeStateWatcher,
+  type ClaudeStateWatcher
+} from '../adapters/claude/claude-state-watcher'
 import { PtySessionManager } from '../adapters/session/pty-session-manager'
 import { DaemonClient } from '../adapters/session/daemon-client'
 import { DaemonSessionManager } from '../adapters/session/daemon-session-manager'
@@ -166,14 +168,6 @@ export function bootstrap(): AppContext {
     hasScript: existsFile
   })
 
-  const socketProvisioner = createSocketProvisioner(getUid())
-
-  // State-detection wiring (§9). The pluggable per-program detector registry (§9.3)
-  // is built once and shared by every backend: the in-process PTY manager below and
-  // — separately, inside `octopusd` — the daemon. Adding a program is a new
-  // `register()` HERE (composition root), with zero change downstream (§8/§9.3).
-  const detectorRegistry = createDefaultDetectorRegistry()
-
   // OSC 133 shell-integration files (§12.1): generate the bash/zsh rc files once at
   // boot so every terminal launches against them (opt-out auto-injection). Best-effort
   // — an I/O failure just means no injection (a plain login shell); the at-prompt
@@ -203,7 +197,7 @@ export function bootstrap(): AppContext {
   // authoritative Layer-3 state out of the box for ANY Octopus user. Opt-out via
   // `terminal.injectClaudeHooks === false`. Best-effort: never blocks boot.
   if (getSettings().terminal.injectClaudeHooks !== false) {
-    const hooks = ensureClaudeHooks(homedir())
+    const hooks = ensureClaudeHooks(paths.dataDir, homedir())
     console.log(`[octopus] claude hooks: ${hooks.action} (${hooks.path})`)
   }
 
@@ -216,7 +210,6 @@ export function bootstrap(): AppContext {
   // client here (not connecting) keeps `bootstrap()` synchronous.
   const inProcessSessions = new PtySessionManager({
     getSettings,
-    detectorRegistry,
     shellIntegration
   })
   const sessions = new SwitchableSessionManager(inProcessSessions)
@@ -283,7 +276,6 @@ export function bootstrap(): AppContext {
     aggregator,
     configValidator,
     stateLog,
-    socketProvisioner,
     scrollbacks,
     currentVersion: CURRENT_VERSION,
     // Live at construction: the SAME Set instance the warmup fills before any
@@ -302,14 +294,36 @@ export function bootstrap(): AppContext {
       input: { sessionId, exitCode, signal }
     })
   }
-  // Route each evaluated session-state change through the loop as `ingestSessionState`
-  // (§9.6), so `setState` + the task re-derivation run on the single writer, never
-  // inline in the evaluator's push callback (§6.6). Same late-bind pattern as above.
+  // Route each session-state change through the loop as `ingestSessionState` (§9.6),
+  // so `setState` + the task re-derivation run on the single writer, never inline in
+  // the watcher's file-change callback (§6.6). Same late-bind pattern as above.
   deps.onSessionState = (sessionId, state, meta): void => {
     void commandLoop.dispatch({
       kind: 'ingestSessionState',
       input: { sessionId, state, meta }
     })
+  }
+
+  // Claude state watcher (§9.6): the SOLE source of session-state now. The python
+  // bridge (wired into settings.json above) writes `<sessionId>.json` under
+  // `claudeStateDir` from Claude's hooks + statusline; this watches that dir and
+  // feeds each change through `onSessionState`. The initial scan replays existing
+  // files, which is the resume-recovery path — a session reopened with `--resume`
+  // (whose original process's hooks are gone) still gets its state from the
+  // transcript-derived file the statusline last wrote. Gated by the same opt-out as
+  // hook injection; `sessionId` is the state file's stem (== OCTOPUS_SESSION_ID).
+  let claudeStateWatcher: ClaudeStateWatcher | undefined
+  if (getSettings().terminal.injectClaudeHooks !== false) {
+    claudeStateWatcher = createClaudeStateWatcher({
+      dir: paths.claudeStateDir,
+      sink: (sessionId, state, meta) =>
+        deps.onSessionState?.(asSessionId(sessionId), state, meta),
+      onError: (message) => console.warn(`[octopus] claude state watcher: ${message}`)
+    })
+    // The "refresh state" affordance (§5.4 R1): re-read one session's file NOW and
+    // re-emit. Late-bound like the sinks above so `refreshSessionState` stays a pure
+    // application use-case with no adapter import.
+    deps.refreshClaudeState = (sessionId): void => claudeStateWatcher?.rescan(sessionId)
   }
 
   // 6. Window registry + IPC handlers (§6.7). The registry routes each event to the
@@ -395,13 +409,11 @@ export function bootstrap(): AppContext {
         `[octopus] daemon backend active: ${liveDaemonSessions.size} live session(s) to re-attach`
       )
       // Re-attach EVERY Ready task's sessions at boot, not just the one the first
-      // window will focus. Each re-attach subscribes a state evaluator that flushes
-      // the daemon's buffered live state → `ingestSessionState` → `taskStateChanged`,
-      // so a task shows its true status immediately instead of only once the user
-      // focuses it (Bug: "status appears only when I focus the task"). We dispatch
-      // `startTaskSessions` (NOT `switchTask`) so no active-task pointer moves and no
-      // `activeTaskChanged` fires; it's idempotent with the later focus switch (§6.2,
-      // §9.6, §6.6 — runs on the single writer).
+      // window will focus, so a re-attached shell resumes streaming immediately and
+      // the Claude state watcher's file-derived status shows without waiting for the
+      // user to focus the task. We dispatch `startTaskSessions` (NOT `switchTask`) so
+      // no active-task pointer moves and no `activeTaskChanged` fires; it's idempotent
+      // with the later focus switch (§6.2, §9.6, §6.6 — runs on the single writer).
       for (const task of workspace.tasks()) {
         if (task.lifecycle === TaskLifecycle.Ready) {
           void commandLoop.dispatch({ kind: 'startTaskSessions', input: { taskId: task.id } })
@@ -452,6 +464,7 @@ export function bootstrap(): AppContext {
     persistDaemonCwds,
     shutdown: () => {
       windowRegistry.dispose()
+      claudeStateWatcher?.dispose()
       shutdown(deps, {
         daemonBackend: daemonActive,
         // Drop the client socket AFTER runtimes detach; the daemon reads the
@@ -460,9 +473,4 @@ export function bootstrap(): AppContext {
       })
     }
   }
-}
-
-/** Current uid for the socket dir; 0 on platforms without `process.getuid`. */
-function getUid(): number {
-  return typeof process.getuid === 'function' ? process.getuid() : 0
 }

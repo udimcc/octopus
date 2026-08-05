@@ -162,7 +162,12 @@ describe('reduceEvent (§5.2)', () => {
     expect(host.activeTaskId).toBe('t1')
   })
 
-  it('activeSessionChanged clears the ready-for-review flag only in the hosting window (§9.5)', () => {
+  it('activeSessionChanged clears the ready-for-review flag in EVERY window (§9.5)', () => {
+    // The clear is global: switching to a session focuses+raises its host window, so
+    // the user HAS looked at it. Every window's store must drop the flag, because the
+    // task rollup (`taskReadyForReview`) is shown only in the main window yet ORs over
+    // sessions hosted in ANY window — a host-only clear left the main window's task dot
+    // lit after focusing a session that lives elsewhere.
     let d: StoreData = { ...initialData(), windowId: 'main' }
     d = reduceEvent(d, { type: 'taskCreated', task: task('t1') })
     d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s1', 't1') })
@@ -173,16 +178,18 @@ describe('reduceEvent (§5.2)', () => {
     d = reduceEvent(d, { type: 'sessionStateChanged', sessionId: 's1', state: 'waiting' })
     expect(d.readyForReview.s1).toBe(true)
 
-    // Switching to it in a NON-host window must not clear it (the user hasn't looked).
+    // Switching to it while its host is a DIFFERENT window still clears here: this
+    // (main) window renders the task rollup, and the session is now focused elsewhere.
     const elsewhere = reduceEvent(d, {
       type: 'activeSessionChanged',
       taskId: 't1',
       sessionId: 's1',
       windowId: 'win-9'
     })
-    expect(elsewhere.readyForReview.s1).toBe(true)
+    expect(elsewhere.readyForReview.s1).toBeUndefined()
+    expect(taskReadyForReview(elsewhere, 't1')).toBe(false)
 
-    // Switching to it in the host window ('main') clears it.
+    // Switching to it in the host window ('main') clears it too.
     const here = reduceEvent(d, {
       type: 'activeSessionChanged',
       taskId: 't1',
@@ -583,6 +590,31 @@ describe('ready-for-review (§9.5)', () => {
     let d: StoreData = { ...base(), readyForReview: { s2: true } }
     d = reduceEvent(d, { type: 'sessionClosed', taskId: 't1', sessionId: 's2' })
     expect(d.readyForReview.s2).toBeUndefined()
+  })
+
+  it('task rollup clears when a session hosted in ANOTHER window is focused there (§9.5)', () => {
+    // Regression: the main window renders the task rollup but its sessions can live in
+    // other windows. Focusing such a session broadcasts `activeSessionChanged` with a
+    // non-host windowId; the (main) window must still clear the flag so the task dot
+    // stops showing ready-for-review with no session actually flagged.
+    let d: StoreData = { ...base(), readyForReview: { s2: true } }
+    // Move s2 out to a secondary window, as a detach would.
+    d = reduceEvent(d, {
+      type: 'sessionMovedToWindow',
+      sessionId: 's2',
+      taskId: 't1',
+      fromWindowId: 'main',
+      toWindowId: 'win-2'
+    })
+    expect(taskReadyForReview(d, 't1')).toBe(true)
+    d = reduceEvent(d, {
+      type: 'activeSessionChanged',
+      taskId: 't1',
+      sessionId: 's2',
+      windowId: 'win-2'
+    })
+    expect(d.readyForReview.s2).toBeUndefined()
+    expect(taskReadyForReview(d, 't1')).toBe(false)
   })
 })
 

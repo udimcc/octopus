@@ -152,9 +152,20 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
     scrollRef.current?.scrollBy({ left: dx, behavior: 'smooth' })
   }
 
+  // Activate a session tab. Update THIS window's pointer locally for instant feedback,
+  // then round-trip through the loop (`sessions.switch`) — exactly as the keyboard cycle
+  // and `TaskListItem` do. The round-trip persists the active-tab pointer (I10) and
+  // broadcasts `activeSessionChanged` to EVERY window, so the ready-for-review clear on
+  // focus (§9.5) reaches the main window's task rollup even when this session is hosted
+  // in another window. A local-only click left that task dot lit (bug 2.x).
+  const activate = (sid: string): void => {
+    setActiveSession(taskId, sid)
+    void window.octopusAPI.sessions.switch({ sessionId: sid })
+  }
+
   const jumpTo = (sid: string): void => {
     setMenuOpen(false)
-    setActiveSession(taskId, sid)
+    activate(sid)
   }
 
   const canAddSession = task?.lifecycle === 'ready'
@@ -223,7 +234,7 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
                   key={sid}
                   session={s}
                   active={sid === activeSessionId}
-                  onActivate={() => setActiveSession(taskId, sid)}
+                  onActivate={() => activate(sid)}
                   onRename={(title) => window.octopusAPI.sessions.rename({ sessionId: sid, title })}
                   onClose={() => window.octopusAPI.sessions.close({ sessionId: sid })}
                   canOpenHere={s.config.kind === 'terminal'}

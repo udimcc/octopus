@@ -34,7 +34,6 @@ import {
   FakePersistence,
   FakeSettingsStore,
   FakeWorktreeProvider,
-  FakeSocketProvisioner,
   RecordingBus,
   SeqIdGenerator,
   FakeClock,
@@ -107,7 +106,6 @@ d('CommandLoop over the real PTY stack (integration, §6.6/§6.1)', () => {
       clock: new FakeClock(),
       aggregator: worstStatusWins,
       configValidator: createAjvConfigValidator(),
-      socketProvisioner: new FakeSocketProvisioner(),
       scrollbacks: new RingBufferScrollbackStore(),
       currentVersion: 1
     }

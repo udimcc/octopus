@@ -81,11 +81,15 @@ describe('<SessionTabBar>', () => {
     expect(screen.getByText('(exited)')).toBeInTheDocument()
   })
 
-  it('activates a session on click', () => {
+  it('activates a session on click: local pointer + backend round-trip', () => {
     seed({ sessions: [session('s1'), session('s2', { order: 1 })] })
     render(<SessionTabBar taskId="t1" />)
     fireEvent.click(screen.getByRole('tab', { name: 's2' }))
+    // Local pointer moves for instant feedback…
     expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+    // …AND the switch round-trips so the pointer persists (I10) and every window is
+    // told via `activeSessionChanged` — the cross-window ready-for-review clear (§9.5).
+    expect(window.octopusAPI.sessions.switch).toHaveBeenCalledWith({ sessionId: 's2' })
   })
 
   it('closes a session via its × button', () => {

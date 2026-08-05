@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { resolveAppPaths, resolveWorktreeBase, resolveDefaultWorktreeBase } from './paths'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  resolveAppPaths,
+  resolveWorktreeBase,
+  resolveDefaultWorktreeBase,
+  ensureAppDirs
+} from './paths'
 
 describe('resolveAppPaths', () => {
   it('honours XDG_DATA_HOME on Linux when set to an absolute path', () => {
@@ -14,6 +22,7 @@ describe('resolveAppPaths', () => {
     expect(paths.logsDir).toBe('/custom/data/octopus/logs')
     expect(paths.stateLogPath).toBe('/custom/data/octopus/logs/state.log')
     expect(paths.shellIntegrationDir).toBe('/custom/data/octopus/shell-integration')
+    expect(paths.claudeStateDir).toBe('/custom/data/octopus/claude-state')
   })
 
   it('falls back to ~/.local/share on Linux when XDG_DATA_HOME is unset', () => {
@@ -44,6 +53,27 @@ describe('resolveAppPaths', () => {
     const paths = resolveAppPaths({ env: {}, platform: 'win32', home: 'C:\\Users\\dev' })
     expect(paths.dataDir).toContain('Roaming')
     expect(paths.dataDir).toContain('octopus')
+  })
+})
+
+describe('ensureAppDirs', () => {
+  it('creates the data, logs, and claude-state dirs (idempotently)', () => {
+    const base = mkdtempSync(join(tmpdir(), 'octopus-paths-'))
+    try {
+      const paths = resolveAppPaths({
+        env: { XDG_DATA_HOME: base },
+        platform: 'linux',
+        home: '/home/dev'
+      })
+      ensureAppDirs(paths)
+      // A second call must not throw (recursive mkdir is idempotent).
+      ensureAppDirs(paths)
+      expect(existsSync(paths.dataDir)).toBe(true)
+      expect(existsSync(paths.logsDir)).toBe(true)
+      expect(existsSync(paths.claudeStateDir)).toBe(true)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
   })
 })
 

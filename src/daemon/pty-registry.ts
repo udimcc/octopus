@@ -16,7 +16,6 @@ import { buildPtyEnv } from '../shared/pty-env'
 import { procCwd } from '../shared/node/proc-cwd'
 import type { DaemonSessionInfo, SpawnParams } from '../shared/node/daemon-protocol'
 import { DaemonPty, type DaemonPtySink, type DaemonPtySpawn } from './daemon-pty'
-import type { ProgramStateDetectorRegistry } from '../shared/node/state/state-core'
 
 /** node-pty's spawn narrowed to the daemon's contract (structural match). */
 const nodePtySpawn = pty.spawn as unknown as DaemonPtySpawn
@@ -28,26 +27,18 @@ export interface PtyRegistryOptions {
   readonly bufferBytes?: number
   /** cwd resolver (default reads /proc/<pid>/cwd); injectable for tests/portability. */
   readonly resolveCwd?: (pid: number) => string | undefined
-  /**
-   * Pluggable per-program state detectors (§9.3). Passed to each spawned
-   * {@link DaemonPty} so the daemon evaluates state where its PTYs live. Omitted ⇒
-   * no detection (no `state` frames), the clean daemon-side opt-out.
-   */
-  readonly detectorRegistry?: ProgramStateDetectorRegistry
 }
 
 export class PtyRegistry {
   private readonly spawn: DaemonPtySpawn
   private readonly bufferBytes?: number
   private readonly resolveCwd: (pid: number) => string | undefined
-  private readonly detectorRegistry?: ProgramStateDetectorRegistry
   private readonly ptys = new Map<string, DaemonPty>()
 
   constructor(opts: PtyRegistryOptions = {}) {
     this.spawn = opts.spawn ?? nodePtySpawn
     this.bufferBytes = opts.bufferBytes
     this.resolveCwd = opts.resolveCwd ?? procCwd
-    this.detectorRegistry = opts.detectorRegistry
   }
 
   has(sessionId: string): boolean {
@@ -71,8 +62,7 @@ export class PtyRegistry {
       ...buildPtyEnv(process.env, {
         taskId: params.taskId,
         sessionId: params.sessionId,
-        worktreePath: params.cwd,
-        stateSocketPath: params.stateSocketPath
+        worktreePath: params.cwd
       }),
       // Shell-integration env (§12.1), layered last so ZDOTDIR/OCTOPUS_USER_* win.
       ...(params.envPatch ?? {})
@@ -85,9 +75,7 @@ export class PtyRegistry {
       cols: params.cols,
       rows: params.rows,
       env,
-      bufferBytes: this.bufferBytes,
-      detectorRegistry: this.detectorRegistry,
-      stateSocketPath: params.stateSocketPath
+      bufferBytes: this.bufferBytes
     })
     this.ptys.set(params.sessionId, dpty)
     return dpty

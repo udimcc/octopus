@@ -5,7 +5,7 @@ import { TaskLifecycle } from '../../domain/lifecycle'
 
 describe('createTask (§3.5, §6.4)', () => {
   it('drives None → Provisioning → Ready and persists only the Ready task', async () => {
-    const { deps, workspace, worktrees, persistence, bus, socketProvisioner } = makeDeps()
+    const { deps, workspace, worktrees, persistence, bus } = makeDeps()
 
     await createTask(deps, {
       mode: 'new',
@@ -36,9 +36,6 @@ describe('createTask (§3.5, §6.4)', () => {
       sourceBranch: 'main',
       newBranch: 'feature/x'
     })
-
-    // Dormant §9.2 seam: the socket dir was provisioned (never bound in V1).
-    expect(socketProvisioner.ensured).toBe(1)
 
     // Persisted the task + set it active, in one transaction.
     expect(persistence.transactions).toBe(1)

@@ -19,12 +19,6 @@
 
 import { OutputBatcher } from '../shared/node/output-batcher'
 import { RingBuffer } from '../shared/node/ring-buffer'
-import { CompositeStateProvider } from '../shared/node/state/state-composite'
-import { bindStateSocket, type StateSocketListener } from '../shared/node/state/state-socket-listener'
-import type {
-  CoreStateChange,
-  ProgramStateDetectorRegistry
-} from '../shared/node/state/state-core'
 
 /** A disposable listener registration (node-pty's IDisposable shape). */
 export interface DaemonPtyDisposable {
@@ -71,15 +65,6 @@ export interface DaemonPtyOptions {
   /** Injected timer (default globals); lets tests drive the grace timer + batcher. */
   readonly setTimer?: (fn: () => void, ms: number) => unknown
   readonly clearTimer?: (h: unknown) => void
-  /**
-   * Pluggable per-program state detectors (§9.3). When present, the daemon builds
-   * the SAME {@link CompositeStateProvider} the in-process backend uses and reports
-   * every debounced transition through the sink's `onState`. Omitted ⇒ no detection
-   * (the client then simply never receives `state` frames for this session).
-   */
-  readonly detectorRegistry?: ProgramStateDetectorRegistry
-  /** Per-session L3 state socket to bind (§9.2); omitted ⇒ L2/L1 only. */
-  readonly stateSocketPath?: string
 }
 
 const DEFAULT_BUFFER_BYTES = 5 * 1024 * 1024
@@ -91,12 +76,6 @@ export interface DaemonPtySink {
   onData(data: string): void
   /** SPONTANEOUS death only (a `close()` resolves via its own path, no onExit). */
   onExit(exitCode: number, signal?: number): void
-  /**
-   * An evaluated state change (§9.6), pushed on every debounced transition. Wired
-   * only when a detector registry is present; the server forwards it as a `state`
-   * control frame. Optional so a sink that ignores state (e.g. a test) can omit it.
-   */
-  onState?(change: CoreStateChange): void
 }
 
 export class DaemonPty {
@@ -117,10 +96,6 @@ export class DaemonPty {
   private stopping = false
   private lastExit: { exitCode: number; signal?: number } | null = null
   private closeResolvers: Array<() => void> = []
-  private evaluator: CompositeStateProvider | null = null
-  private stateSocket: StateSocketListener | null = null
-  /** The last evaluated state, replayed to a client on (re-)attach (§9.6). */
-  private lastState: CoreStateChange | null = null
 
   constructor(opts: DaemonPtyOptions) {
     this.cols = opts.cols
@@ -145,31 +120,7 @@ export class DaemonPty {
       env: opts.env
     })
 
-    // State detection (§9.6): the daemon runs the IDENTICAL composite where its PTY
-    // lives, reading /proc/<pid>/stat for Layer 2. Built after spawn so the pid is
-    // known. Latest state is remembered and pushed to the sink on every transition.
-    if (opts.detectorRegistry) {
-      this.evaluator = new CompositeStateProvider({
-        shellPid: this.pty.pid,
-        registry: opts.detectorRegistry
-      })
-      this.evaluator.onStateChange((change) => {
-        this.lastState = change
-        this.sink?.onState?.(change)
-      })
-      if (opts.stateSocketPath) {
-        this.stateSocket = bindStateSocket(opts.stateSocketPath, (signal) =>
-          this.evaluator?.submitExplicit(signal)
-        )
-      }
-    }
-
-    // Tee raw (un-batched) output into the evaluator so OSC marks + activity timing
-    // see bytes as they arrive, independent of the batching cadence (§9.1).
-    this.pty.onData((data) => {
-      this.batcher.push(data)
-      this.evaluator?.feedOutput(data)
-    })
+    this.pty.onData((data) => this.batcher.push(data))
     this.pty.onExit(({ exitCode, signal }) => this.handleExit(exitCode, signal))
   }
 
@@ -200,17 +151,7 @@ export class DaemonPty {
     if (snapshot.length > 0) {
       sink.onData(snapshot)
     }
-    // Replay the last evaluated state so a re-attaching client's icon is correct
-    // immediately, without waiting for the next transition (§9.6).
-    if (this.lastState) {
-      sink.onState?.(this.lastState)
-    }
     return !this.exited
-  }
-
-  /** Force the evaluator to re-emit now (the client's "refresh state", §9.6). */
-  refreshState(): void {
-    this.evaluator?.refresh()
   }
 
   /** Detach the current client; the PTY keeps running and buffering (§6.2). */
@@ -276,9 +217,6 @@ export class DaemonPty {
     this.lastExit = { exitCode, signal }
     // Flush any final buffered output so a late attach still sees it.
     this.batcher.flush()
-    // Stop evaluating a dead pid and release its L3 socket (§9.6).
-    this.evaluator?.dispose()
-    this.stateSocket?.close()
     this.settleClose()
     // A `close()` owns its own resolution; only a SPONTANEOUS death fires onExit.
     if (!this.stopping) {

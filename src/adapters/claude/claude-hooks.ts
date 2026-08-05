@@ -1,63 +1,50 @@
 /**
- * Init-time, merge-safe injection of Octopus's Claude Code hooks (DESIGN §9.2,
- * §12.1). This is what makes phase-2 Claude state detection work OUT OF THE BOX for
- * every Octopus user: on startup Octopus ensures the user's Claude settings wire the
- * three lifecycle hooks to tiny one-liners that write a state JSON frame to
- * `$OCTOPUS_STATE_SOCKET` (the per-session socket §9.2 provisions). A user who never
- * touches their Claude config still gets authoritative Working/Waiting/Blocked.
+ * Init-time, merge-safe wiring of Octopus's Claude Code integration into the user's
+ * `~/.claude/settings.json` (DESIGN §9.2, §12.1). This is what makes Claude state
+ * detection work OUT OF THE BOX for every Octopus user — a user who never touches
+ * their Claude config still gets authoritative Working/Waiting/Blocked in Octopus.
  *
- * ## Why the USER-GLOBAL settings.json (not per-worktree)
- * The socket path is a per-session ENV var the hook command reads at RUN time, so a
- * SINGLE global hook in `~/.claude/settings.json` serves every session and every
- * worktree — no per-worktree file to write on each task create, and it survives
- * worktree deletion. DESIGN §9.2 phrases it as a worktree file; the env-var
- * indirection lets one global entry subsume that, which is the user-directed
- * init-time approach ("check on init and edit settings.json if not found").
+ * ## The model (replaces the old socket transport)
+ * State no longer travels over a per-session Unix socket. Instead a single python3
+ * bridge ({@link ensureClaudeStateScript}, written into the data dir on startup) owns
+ * ALL of the state logic; the settings.json only points Claude's events at it:
+ *   - every lifecycle HOOK runs `python3 <script> hook <Event>` — the script maps the
+ *     event to a state and records it in the session's state file;
+ *   - the STATUSLINE runs `python3 <script> statusline` — the script derives state
+ *     from the transcript (the resume-recovery path), records it, THEN delegates to
+ *     the user's ORIGINAL statusline command and prints its output verbatim, so the
+ *     user's status bar is unchanged.
+ * Octopus's app-side watcher reads those files and feeds `ingestSessionState`.
+ *
+ * Correlation is by `OCTOPUS_SESSION_ID` (injected into every managed PTY), which the
+ * hook/statusline subprocesses inherit — so one GLOBAL settings entry serves every
+ * session and every worktree, and the script is a silent no-op outside Octopus.
  *
  * ## Merge-safe, never clobber (the hard requirement)
- * We MUST NOT destroy a user's existing hooks/config. The merge:
- *   - reads the existing JSON (missing/corrupt ⇒ treated as `{}`, never overwritten
- *     blind — a corrupt file is left alone and reported, see {@link ensureClaudeHooks});
+ * We MUST NOT destroy a user's existing hooks/statusline/config. The merge:
+ *   - reads the existing JSON (missing/corrupt ⇒ treated as `{}` / left alone);
  *   - preserves every existing key and every existing hook entry verbatim;
- *   - APPENDS our command entry to each event array only when an Octopus entry
- *     (tagged with {@link OCTOPUS_HOOK_MARKER}) isn't already there — so it is
- *     idempotent across restarts and upgrades (a changed command replaces only the
- *     prior Octopus entry, never a user's).
+ *   - APPENDS our command to each event array only when an Octopus entry (tagged with
+ *     {@link OCTOPUS_HOOK_MARKER}) isn't already there — idempotent across restarts,
+ *     a drifted command replaces only the prior Octopus entry;
+ *   - for the statusline, SAVES the user's original command (so the script can chain
+ *     to it) before repointing `statusLine.command` at the bridge — and never
+ *     re-wraps its own wrapper.
  *
- * ## The hook commands
- * Each is a POSIX-sh one-liner, guarded so it is a silent no-op when the socket var
- * is unset/gone (§9.2 graceful degradation) and never fails the hook. It sends ONE
- * newline-delimited JSON frame via `nc -U` (the {@link bindStateSocket} listener
- * validates + never executes it). Mapping (refines §9.2 with the accurate attention
- * signal — `Notification` is Claude's real "needs the user" event; there is no
- * silence-heuristic backstop, the hooks are the sole source of Claude's state, §9):
- *   - `Stop`          → waiting (turn finished cleanly)
- *   - `StopFailure`   → waiting (turn ended ABNORMALLY — the user interrupted it with
- *     Ctrl-C / ESC, or it errored. `Stop` does NOT fire in this case, so without this
- *     hook a user-interrupted turn stays stuck on Working until Claude actually exits
- *     and the /proc sentinel clears it. This is the interrupt signal that closes that
- *     gap — Claude stays alive at its own prompt, so the sentinel never fires).
- *   - `Notification`  → blocked (permission / attention request) — but the idle
- *     "waiting for your input" reminder Claude fires AFTER a turn already ended is
- *     suppressed (it is not a real input need; see {@link notificationHookCommand}).
- *   - `PermissionRequest` → blocked (a first-class tool-approval prompt — the clean
- *     Needs-input signal, distinct from the overloaded `Notification` event).
- *   - `SubagentStop`  → working (a delegated subagent finished; the MAIN agent is
- *     still mid-turn — do NOT let this read as Idle).
- *   - `PreToolUse`    → working (a tool is starting)
- *   - `PostToolUse`   → working (still Claude's turn)
- *   - `UserPromptSubmit` → working (user handed work back to Claude)
- *
- * Pure core ({@link mergeClaudeHooks}) + effectful wrapper ({@link ensureClaudeHooks}),
- * matching the paths.ts resolver/wrapper split so the merge is unit-testable without
- * a filesystem.
+ * Pure core ({@link mergeClaudeHooks} / {@link mergeStatusLine}) + effectful wrapper
+ * ({@link ensureClaudeHooks}), matching the paths.ts resolver/wrapper split.
  */
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
+import {
+  ensureClaudeStateScript,
+  CLAUDE_STATE_DIR_NAME,
+  ORIGINAL_STATUSLINE_FILE
+} from './octopus-claude-state.script'
 
-/** Marker embedded in every Octopus hook command so we can find + replace only ours. */
+/** Marker embedded in every Octopus hook/statusline command so we find + replace only ours. */
 export const OCTOPUS_HOOK_MARKER = '#octopus-state'
 
 /** A Claude settings hook command entry. */
@@ -74,100 +61,73 @@ interface HookGroup {
   [k: string]: unknown
 }
 
-/** The subset of Claude settings we touch; everything else is passed through. */
-interface ClaudeSettings {
-  hooks?: Record<string, HookGroup[]>
+/** The `statusLine` block Claude renders each turn. */
+interface StatusLine {
+  type?: string
+  command?: string
   [k: string]: unknown
 }
 
-/** One event → the JSON state frame its Octopus hook emits (§9.2). */
-interface HookSpec {
-  readonly event: string
-  readonly json: string
-  /**
-   * Optional override for the shell one-liner. Defaults to {@link hookCommand}(json);
-   * `Notification` uses {@link notificationHookCommand} so it can inspect the payload.
-   */
-  readonly command?: (json: string) => string
+/** The subset of Claude settings we touch; everything else is passed through. */
+interface ClaudeSettings {
+  hooks?: Record<string, HookGroup[]>
+  statusLine?: StatusLine
+  [k: string]: unknown
 }
 
-const HOOK_SPECS: readonly HookSpec[] = [
-  { event: 'Stop', json: '{"state":"waiting","reason":"claude_stop"}' },
-  { event: 'StopFailure', json: '{"state":"waiting","reason":"stop_failure"}' },
-  { event: 'Notification', json: '{"state":"blocked","reason":"notification"}', command: notificationHookCommand },
-  { event: 'PermissionRequest', json: '{"state":"blocked","reason":"permission"}' },
-  { event: 'SubagentStop', json: '{"state":"working","reason":"subagent_stop"}' },
-  { event: 'PreToolUse', json: '{"state":"working","reason":"pre_tool_use"}' },
-  { event: 'PostToolUse', json: '{"state":"working","reason":"tool_use"}' },
-  { event: 'UserPromptSubmit', json: '{"state":"working","reason":"user_prompt"}' }
+/**
+ * The Claude lifecycle events Octopus wires. The state each maps to lives in the
+ * python bridge (`HOOK_STATES`), NOT here — the hook command only names the event, so
+ * the mapping has a single source of truth. Mirrors the prior socket mapping:
+ *   Stop/StopFailure → waiting, Notification/PermissionRequest → blocked (Notification
+ *   suppresses the idle "waiting for your input" reminder, in the script), everything
+ *   else → working.
+ */
+export const HOOK_EVENTS: readonly string[] = [
+  'Stop',
+  'StopFailure',
+  'Notification',
+  'PermissionRequest',
+  'SubagentStop',
+  'PreToolUse',
+  'PostToolUse',
+  'UserPromptSubmit'
 ]
 
 /**
- * The `Notification` event is emitted for TWO unrelated situations: a genuine
- * permission/tool-approval request (real Needs-input), AND an idle "waiting for your
- * input" reminder Claude fires when a turn has ALREADY ended and the user hasn't
- * typed. Mapping both to `blocked` is the BUG 1 false-positive: after a turn ends
- * (`Stop` → waiting/Idle) the idle reminder would overwrite it with a sticky
- * `blocked`, so the tab reads Needs-input though nothing is blocked.
- *
- * Claude passes the notification payload as JSON on the hook's stdin (a `message`
- * field). We keep the default "Notification ⇒ blocked" (DESIGN §9.2: Notification is
- * the real attention event) but SUPPRESS the idle-reminder message — matched
- * substring-wise on stdin — emitting no frame so the prior `Stop`→waiting stands.
+ * The idle "waiting for your input" reminder Claude fires AFTER a turn already ended.
+ * Kept as an exported constant for documentation/parity; the actual suppression now
+ * happens inside the python bridge (see `IDLE_NOTIFICATION_MARKER` there).
  */
 export const IDLE_NOTIFICATION_MARKER = 'waiting for your input'
 
 /**
- * The shell one-liner for a state frame (§9.2). No-op when the socket var is unset,
- * never fails the hook (`|| true`), tagged with {@link OCTOPUS_HOOK_MARKER}. `nc -U`
- * is the DESIGN-specified transport; if `nc` is absent the `|| true` keeps the hook
- * harmless and detection falls back to the heuristic.
- *
- * The `-N -q0 -w1` flags are CRITICAL for hook latency: OpenBSD `nc` (the Debian
- * default) does NOT close a Unix socket on stdin EOF by default — after `printf`
- * finishes it lingers on the half-open connection waiting for the peer, which our
- * listener never closes, so the hook hangs ~2min until nc's default timeout. `-N`
- * shuts the socket down on stdin EOF, `-q0` exits immediately after sending, and
- * `-w1` caps any connect wait at 1s. Together they make the Stop hook return in ms.
+ * The shell one-liner a hook runs: invoke the bridge for this event, never fail the
+ * hook (`|| true`), tagged with {@link OCTOPUS_HOOK_MARKER}. The script is a no-op
+ * when `OCTOPUS_SESSION_ID` is unset, so this is harmless outside an Octopus PTY.
  */
-export function hookCommand(json: string): string {
-  const escaped = json.replace(/'/g, `'\\''`)
-  return (
-    `[ -n "$OCTOPUS_STATE_SOCKET" ] && ` +
-    `printf '%s\\n' '${escaped}' | nc -N -q0 -w1 -U "$OCTOPUS_STATE_SOCKET" 2>/dev/null; ` +
-    `true ${OCTOPUS_HOOK_MARKER}`
-  )
+export function hookCommand(scriptPath: string, event: string): string {
+  return `python3 '${shSingleQuote(scriptPath)}' hook ${event} 2>/dev/null || true ${OCTOPUS_HOOK_MARKER}`
 }
 
-/**
- * The `Notification` one-liner (BUG 1). Same guards/transport/marker as
- * {@link hookCommand}, but it first reads the hook's stdin payload and SUPPRESSES the
- * idle "waiting for your input" reminder (emits no frame) so it can't overwrite the
- * `Stop`→waiting/Idle state with a false `blocked`. Any other Notification (a real
- * permission/attention request) still emits `blocked`, per DESIGN §9.2.
- *
- * `msg=$(cat)` drains stdin (Claude always pipes the payload; if there is none this
- * is an empty string and the frame is sent, matching the old always-blocked behavior
- * for non-payload notifications). The `case` match is a plain substring test — no
- * regex/jq dependency — keeping the hook a portable POSIX-sh one-liner.
- */
-export function notificationHookCommand(json: string): string {
-  const escaped = json.replace(/'/g, `'\\''`)
-  const marker = IDLE_NOTIFICATION_MARKER.replace(/'/g, `'\\''`)
-  return (
-    `[ -n "$OCTOPUS_STATE_SOCKET" ] && { msg=$(cat); ` +
-    `case "$msg" in *'${marker}'*) : ;; *) ` +
-    `printf '%s\\n' '${escaped}' | nc -N -q0 -w1 -U "$OCTOPUS_STATE_SOCKET" 2>/dev/null ;; ` +
-    `esac; }; ` +
-    `true ${OCTOPUS_HOOK_MARKER}`
-  )
+/** The statusline command: run the bridge in `statusline` mode (it chains to the original). */
+export function statusLineCommand(scriptPath: string): string {
+  return `python3 '${shSingleQuote(scriptPath)}' statusline ${OCTOPUS_HOOK_MARKER}`
+}
+
+/** Escape a path for embedding inside a single-quoted sh literal. */
+function shSingleQuote(value: string): string {
+  return value.replace(/'/g, `'\\''`)
+}
+
+/** True if a command string is Octopus's (tagged with the marker). */
+function isOctopusCommand(command: unknown): command is string {
+  return typeof command === 'string' && command.includes(OCTOPUS_HOOK_MARKER)
 }
 
 /** True if a hook group array already contains an Octopus-tagged command. */
 function hasOctopusEntry(groups: HookGroup[]): boolean {
-  return groups.some((g) =>
-    (g.hooks ?? []).some((h) => typeof h.command === 'string' && h.command.includes(OCTOPUS_HOOK_MARKER))
-  )
+  return groups.some((g) => (g.hooks ?? []).some((h) => isOctopusCommand(h.command)))
 }
 
 /** Drop any Octopus-tagged command entries (and now-empty groups) from an event array. */
@@ -175,9 +135,7 @@ function stripOctopusEntries(groups: HookGroup[]): HookGroup[] {
   return groups
     .map((g) => ({
       ...g,
-      hooks: (g.hooks ?? []).filter(
-        (h) => !(typeof h.command === 'string' && h.command.includes(OCTOPUS_HOOK_MARKER))
-      )
+      hooks: (g.hooks ?? []).filter((h) => !isOctopusCommand(h.command))
     }))
     // Keep a group only if it still has hooks OR carried no hooks array to begin with
     // (a user group we shouldn't have touched — preserve verbatim shape).
@@ -187,36 +145,75 @@ function stripOctopusEntries(groups: HookGroup[]): HookGroup[] {
 /**
  * Pure merge: return `settings` with Octopus's hooks ensured, preserving every
  * existing key + user hook. Idempotent — re-running yields deep-equal output; a
- * changed Octopus command replaces only the prior Octopus entry. Returns a NEW
- * object (does not mutate the input).
+ * changed Octopus command replaces only the prior Octopus entry. Returns a NEW object.
  */
-export function mergeClaudeHooks(settings: ClaudeSettings): ClaudeSettings {
+export function mergeClaudeHooks(settings: ClaudeSettings, scriptPath: string): ClaudeSettings {
   const hooks: Record<string, HookGroup[]> = {}
-  // Deep-ish clone of the existing hooks map (arrays copied; entries reused — we
-  // never mutate an existing entry, only append/filter).
   for (const [event, groups] of Object.entries(settings.hooks ?? {})) {
     hooks[event] = groups.map((g) => ({ ...g, hooks: g.hooks ? [...g.hooks] : g.hooks }))
   }
 
-  for (const spec of HOOK_SPECS) {
-    const existing = hooks[spec.event] ?? []
-    // Refresh: strip a stale Octopus entry, then append the current command. This
-    // updates the command across upgrades without disturbing user entries.
+  for (const event of HOOK_EVENTS) {
+    const existing = hooks[event] ?? []
+    // Refresh: strip a stale Octopus entry, then append the current command.
     const userGroups = stripOctopusEntries(existing)
-    const buildCommand = spec.command ?? hookCommand
-    userGroups.push({ hooks: [{ type: 'command', command: buildCommand(spec.json) }] })
-    hooks[spec.event] = userGroups
+    userGroups.push({ hooks: [{ type: 'command', command: hookCommand(scriptPath, event) }] })
+    hooks[event] = userGroups
   }
 
   return { ...settings, hooks }
 }
 
-/** True if `settings` already has every Octopus hook present (skip the write). */
-export function hasAllOctopusHooks(settings: ClaudeSettings): boolean {
-  return HOOK_SPECS.every((spec) => {
-    const groups = settings.hooks?.[spec.event]
+/**
+ * Pure merge for the statusline chain: point `statusLine.command` at the bridge, and
+ * SAVE the user's original command so the script can delegate to it. Returns
+ * `{ settings, savedOriginal }` — `savedOriginal` is the command the effectful wrapper
+ * must persist to the `original-statusline` file (undefined ⇒ nothing to save, either
+ * there was no prior statusline or ours was already installed).
+ *
+ * Idempotent: if `command` is already the Octopus wrapper we don't re-wrap (and we
+ * report no new original to save — the prior save stands).
+ */
+export function mergeStatusLine(
+  settings: ClaudeSettings,
+  scriptPath: string
+): { settings: ClaudeSettings; savedOriginal?: string } {
+  const current = settings.statusLine ?? {}
+  const currentCommand = typeof current.command === 'string' ? current.command : undefined
+
+  if (currentCommand !== undefined && isOctopusCommand(currentCommand)) {
+    // Already ours — refresh the command text in case the script path drifted, but do
+    // NOT capture it as the original (that would overwrite the real saved original).
+    if (currentCommand === statusLineCommand(scriptPath)) {
+      return { settings }
+    }
+    return {
+      settings: {
+        ...settings,
+        statusLine: { ...current, type: 'command', command: statusLineCommand(scriptPath) }
+      }
+    }
+  }
+
+  return {
+    settings: {
+      ...settings,
+      statusLine: { ...current, type: 'command', command: statusLineCommand(scriptPath) }
+    },
+    // A prior user command (if any) becomes the chain target. Absent ⇒ the script's
+    // delegation is a no-op passthrough (Octopus adds no bar of its own).
+    savedOriginal: currentCommand
+  }
+}
+
+/** True if `settings` already has every Octopus hook AND the statusline wrapper. */
+export function hasAllOctopusHooks(settings: ClaudeSettings, scriptPath: string): boolean {
+  const hooksOk = HOOK_EVENTS.every((event) => {
+    const groups = settings.hooks?.[event]
     return groups !== undefined && hasOctopusEntry(groups)
   })
+  const statusOk = settings.statusLine?.command === statusLineCommand(scriptPath)
+  return hooksOk && statusOk
 }
 
 export interface ClaudeHooksResult {
@@ -232,17 +229,19 @@ export function claudeSettingsPath(home: string = homedir()): string {
 }
 
 /**
- * Effectful wrapper: ensure the Octopus hooks in `~/.claude/settings.json`, creating
- * the file/dir if absent and merge-preserving an existing one (§9.2). Never throws —
- * hook injection is best-effort (detection degrades to the heuristic on any failure).
+ * Effectful wrapper: write the python bridge into `dataDir`, then ensure the Octopus
+ * hooks + statusline chain in `~/.claude/settings.json`, creating the file/dir if
+ * absent and merge-preserving an existing one (§9.2). Never throws — best-effort.
  *
  * A file that exists but is NOT valid JSON is LEFT UNTOUCHED and reported
- * `skipped-corrupt` — we must never clobber a user's hand-edited config we can't
- * safely parse. `already-present` short-circuits the common restart path with no
- * write (idempotent).
+ * `skipped-corrupt`. `already-present` short-circuits the common restart path with no
+ * write (idempotent). The user's original statusline command is saved to
+ * `<dataDir>/claude-state/original-statusline` so the bridge can chain to it.
  */
-export function ensureClaudeHooks(home: string = homedir()): ClaudeHooksResult {
+export function ensureClaudeHooks(dataDir: string, home: string = homedir()): ClaudeHooksResult {
+  const scriptPath = ensureClaudeStateScript(dataDir)
   const path = claudeSettingsPath(home)
+
   let raw: string | undefined
   try {
     raw = readFileSync(path, 'utf8')
@@ -263,16 +262,31 @@ export function ensureClaudeHooks(home: string = homedir()): ClaudeHooksResult {
     }
   }
 
-  if (hasAllOctopusHooks(existing)) {
-    // Still refresh if the command text drifted (upgrade): compare the merged output.
-    const merged = mergeClaudeHooks(existing)
-    if (JSON.stringify(merged) === JSON.stringify(existing)) {
-      return { action: 'already-present', path }
-    }
-    return writeMerged(path, merged)
+  // Merge hooks, then the statusline chain (capturing any original to save).
+  const withHooks = mergeClaudeHooks(existing, scriptPath)
+  const { settings: merged, savedOriginal } = mergeStatusLine(withHooks, scriptPath)
+
+  // Persist the saved original (if this run captured one) so the bridge can chain.
+  if (savedOriginal !== undefined) {
+    saveOriginalStatusLine(dataDir, savedOriginal)
   }
 
-  return writeMerged(path, mergeClaudeHooks(existing))
+  if (JSON.stringify(merged) === JSON.stringify(existing)) {
+    return { action: 'already-present', path }
+  }
+  return writeMerged(path, merged)
+}
+
+/** Persist the user's original statusline command for the bridge to chain to. */
+function saveOriginalStatusLine(dataDir: string, command: string): void {
+  try {
+    const file = join(dataDir, CLAUDE_STATE_DIR_NAME, ORIGINAL_STATUSLINE_FILE)
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, command, 'utf8')
+  } catch {
+    // Best-effort: if we can't save it, the bridge's delegation becomes a no-op — the
+    // status bar is empty, but state capture still works. Never fail boot.
+  }
 }
 
 function writeMerged(path: string, merged: ClaudeSettings): ClaudeHooksResult {

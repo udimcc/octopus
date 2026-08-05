@@ -14,7 +14,7 @@
  *     is what killed the process.
  */
 
-import type { SessionRuntime, SessionRuntimeContext, StateEvaluator } from '../../ports/session-runtime'
+import type { SessionRuntime, SessionRuntimeContext } from '../../ports/session-runtime'
 import {
   OutputBatcher,
   type BatcherTimers,
@@ -22,8 +22,6 @@ import {
 } from '../../shared/node/output-batcher'
 import { buildPtyEnv } from '../../shared/pty-env'
 import { procCwd } from '../../shared/node/proc-cwd'
-import type { ProgramStateDetectorRegistry } from '../../shared/node/state/state-core'
-import { CompositeStateEvaluator } from './composite-state-evaluator'
 
 /** A disposable listener registration (node-pty's IDisposable shape). */
 export interface PtyDisposable {
@@ -70,13 +68,6 @@ export interface PtyTerminalRuntimeOptions {
   readonly graceMs?: number
   readonly timers?: BatcherTimers
   readonly batcher?: OutputBatcherOptions
-  /**
-   * Pluggable per-program state detectors (§9.3). When present, the runtime builds
-   * a {@link CompositeStateEvaluator} on `start()` and exposes it via
-   * {@link stateEvaluator}; the Terminal type advertises `EvaluatesState` only when
-   * the composition root passes this, so the seam stays additive.
-   */
-  readonly detectorRegistry?: ProgramStateDetectorRegistry
 }
 
 const DEFAULT_TIMERS: BatcherTimers = {
@@ -93,7 +84,6 @@ export class PtyTerminalRuntime implements SessionRuntime {
   private readonly graceMs: number
   private readonly timers: BatcherTimers
   private readonly batcher: OutputBatcher
-  private readonly detectorRegistry?: ProgramStateDetectorRegistry
 
   private pty?: PtyProcess
   private dataSub?: PtyDisposable
@@ -101,7 +91,6 @@ export class PtyTerminalRuntime implements SessionRuntime {
   private exited = false
   private stopping = false
   private stopResolvers: Array<() => void> = []
-  private evaluator?: CompositeStateEvaluator
 
   constructor(ctx: SessionRuntimeContext, opts: PtyTerminalRuntimeOptions) {
     this.ctx = ctx
@@ -111,7 +100,6 @@ export class PtyTerminalRuntime implements SessionRuntime {
     this.envPatch = opts.envPatch ?? {}
     this.graceMs = opts.graceMs ?? 2000
     this.timers = opts.timers ?? DEFAULT_TIMERS
-    this.detectorRegistry = opts.detectorRegistry
     this.batcher = new OutputBatcher((data) => this.ctx.onData(data), {
       ...opts.batcher,
       timers: this.timers
@@ -129,8 +117,7 @@ export class PtyTerminalRuntime implements SessionRuntime {
         ...buildPtyEnv(this.ctx.env, {
           taskId: this.ctx.taskId,
           sessionId: this.ctx.sessionId,
-          worktreePath: this.ctx.worktreePath,
-          stateSocketPath: this.ctx.stateSocketPath
+          worktreePath: this.ctx.worktreePath
         }),
         ...this.envPatch
       }
@@ -144,22 +131,7 @@ export class PtyTerminalRuntime implements SessionRuntime {
     } catch (err) {
       return Promise.reject(err instanceof Error ? err : new Error(String(err)))
     }
-    // State detection (§9.6): build the composite once the shell pid is known, so
-    // Layer 2 can read `/proc/<pid>/stat`. Absent registry ⇒ no evaluator (the
-    // Terminal type won't advertise `EvaluatesState`), preserving prior behavior.
-    if (this.detectorRegistry) {
-      this.evaluator = new CompositeStateEvaluator({
-        shellPid: this.pty.pid,
-        registry: this.detectorRegistry,
-        stateSocketPath: this.ctx.stateSocketPath
-      })
-    }
-    this.dataSub = this.pty.onData((data) => {
-      this.batcher.push(data)
-      // Tee raw (un-batched) output into the evaluator: OSC marks + activity timing
-      // must see bytes as they arrive, independent of the batching cadence (§9.1).
-      this.evaluator?.feedOutput(data)
-    })
+    this.dataSub = this.pty.onData((data) => this.batcher.push(data))
     this.exitSub = this.pty.onExit(({ exitCode, signal }) => this.handleExit(exitCode, signal))
     return Promise.resolve()
   }
@@ -218,8 +190,6 @@ export class PtyTerminalRuntime implements SessionRuntime {
     this.exitSub?.dispose()
     this.dataSub = undefined
     this.exitSub = undefined
-    this.evaluator?.dispose()
-    this.evaluator = undefined
     this.batcher.dispose()
     // Safety net: if disposed while still alive, don't leak the child.
     if (!this.exited && this.pty) {
@@ -230,15 +200,6 @@ export class PtyTerminalRuntime implements SessionRuntime {
       }
     }
     this.pty = undefined
-  }
-
-  /**
-   * The composite state evaluator (§9.6), or null when no detector registry was
-   * injected (the Terminal type then doesn't advertise `EvaluatesState`). Built in
-   * `start()`, so it is null before the first spawn.
-   */
-  stateEvaluator(): StateEvaluator | null {
-    return this.evaluator ?? null
   }
 
   /**
@@ -262,11 +223,6 @@ export class PtyTerminalRuntime implements SessionRuntime {
     this.batcher.flush()
     this.dataSub?.dispose()
     this.exitSub?.dispose()
-    // Stop the evaluator promptly so it doesn't keep polling a dead pid (its final
-    // state is irrelevant — the session is about to go Exited/Closed). Idempotent
-    // with the dispose() the caller runs afterwards.
-    this.evaluator?.dispose()
-    this.evaluator = undefined
     this.settleStop()
     // Only a SPONTANEOUS exit drives markExited; a user close (stop()) is handled
     // by close-session, which owns the Stopping → Closed transition (§3.6).

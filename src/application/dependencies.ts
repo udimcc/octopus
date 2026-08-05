@@ -24,12 +24,6 @@ import type { SessionState } from '../domain/state'
 import type { StateLog } from '../ports/state-log'
 import type { ConfigValidator } from './config-validator'
 
-/** Provisions the (dormant in V1) per-session state socket path (§9.2, §10). */
-export interface SocketProvisioner {
-  socketPathFor(sessionId: SessionId): string
-  ensureSocketDir(): void
-}
-
 /**
  * In-memory, byte-capped accumulator of each session's terminal OUTPUT, keyed by
  * session id. This realizes the §6.6 backend ring buffer (deferred in V1's
@@ -88,8 +82,6 @@ export interface AppDependencies {
    * implementation (or absence) disables logging. Never throws into the loop.
    */
   readonly stateLog?: StateLog
-  /** Dormant state-socket provisioner (§9.2, §10 V1 seam). */
-  readonly socketProvisioner: SocketProvisioner
   /** Per-session output accumulator for scrollback persistence (§6.6, §6.2). */
   readonly scrollbacks: ScrollbackBuffers
   /** The app feature version (§10); gates session-type availability. */
@@ -112,16 +104,22 @@ export interface AppDependencies {
    */
   onRuntimeExit?: (sessionId: SessionId, exitCode?: number, signal?: number) => void
   /**
-   * Late-bound sink for a runtime's evaluated STATE change (§9.6). Bound by the
-   * composition root — like {@link onRuntimeExit} — to
-   * `(sessionId, state) => loop.dispatch({ kind: 'ingestSessionState', … })`, so
-   * the `setState` + task re-derivation run on the single writer, never inline in
-   * the evaluator's push callback (§6.6). `startSessionRuntime` subscribes each
-   * runtime's `stateEvaluator()` to it; a runtime whose type lacks `EvaluatesState`
-   * returns null and is simply not subscribed. Absent ⇒ state ingestion is off
-   * (preserves the pre-phase-2 no-icons behavior exactly).
+   * Late-bound sink for a session STATE change (§9.6). Bound by the composition root
+   * — like {@link onRuntimeExit} — to
+   * `(sessionId, state) => loop.dispatch({ kind: 'ingestSessionState', … })`, so the
+   * `setState` + task re-derivation run on the single writer, never inline in the
+   * Claude state watcher's file-change callback (§6.6). The watcher (composition
+   * root) is the sole caller: it feeds every session whose python bridge wrote a
+   * state file. Absent ⇒ state ingestion is off.
    */
   onSessionState?: (sessionId: SessionId, state: SessionState, meta?: StateChangeMeta) => void
+  /**
+   * Late-bound "refresh state" sink (§5.4 R1, §9.6). Bound by the composition root to
+   * the Claude state watcher's `rescan(sessionId)`, which re-reads that session's
+   * state file and re-emits it through {@link onSessionState}. `refreshSessionState`
+   * calls it; absent ⇒ refresh is a no-op (detection opted out).
+   */
+  refreshClaudeState?: (sessionId: SessionId) => void
 }
 
 /** Simple `Map`-backed runtime registry (composition-root default). */

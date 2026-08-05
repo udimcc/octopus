@@ -24,7 +24,6 @@ import { PtyRegistry } from './pty-registry'
 import { DaemonServer } from './server'
 import { acquireSingleton } from './singleton-lock'
 import { controlSocketPath, ensureDaemonDir, currentUid } from '../shared/node/daemon-paths'
-import { createDefaultDetectorRegistry } from '../shared/node/state/state-core'
 
 /** Grace before a client-less, session-less daemon exits (ms). */
 const IDLE_EXIT_MS = 30_000
@@ -36,11 +35,10 @@ async function main(): Promise<void> {
   ensureDaemonDir(uid)
   const socketPath = controlSocketPath(uid)
 
-  // The daemon always evaluates state where its PTYs live (§9.6) — running the
-  // same composite as the in-process backend. The per-user opt-out is enforced
-  // app-side (a runtime that ignores `state` frames costs the daemon nothing), so
-  // the daemon unconditionally builds the default per-program detector registry.
-  const registry = new PtyRegistry({ detectorRegistry: createDefaultDetectorRegistry() })
+  // State detection is no longer a daemon concern (§9.6): the Claude python bridge
+  // writes each session's state file (keyed by OCTOPUS_SESSION_ID) and a single
+  // app-side watcher feeds the Application. The daemon only owns PTY lifecycle.
+  const registry = new PtyRegistry()
 
   let idleTimer: ReturnType<typeof setTimeout> | null = null
 

@@ -262,12 +262,6 @@ describe('PtyTerminalRuntime spontaneous exit vs user stop (§3.6/§6.1)', () =>
     expect(h.fakePty.kills).toEqual(['SIGKILL'])
   })
 
-  it('stateEvaluator() is null in V1 (§10)', async () => {
-    const h = harness()
-    const rt = new PtyTerminalRuntime(h.ctx, { spawn: h.spawn, shell: '/bin/bash' })
-    await rt.start()
-    expect(rt.stateEvaluator()).toBeNull()
-  })
 })
 
 describe('PtyTerminalRuntime.currentCwd (§6.1, "new terminal here")', () => {

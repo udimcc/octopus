@@ -31,8 +31,7 @@ describe('shutdown (§6.3 Quit, I13)', () => {
       stop: () => {
         throw new Error('stop boom')
       },
-      dispose: () => undefined,
-      stateEvaluator: () => null
+      dispose: () => undefined
     }
     fd.deps.runtimes.set(asTaskId('x') as never, throwing as never)
 

@@ -16,8 +16,8 @@
  * ## Auto-restart of a stale daemon (§6.2 upgrade path)
  * Because the daemon is DETACHED it survives not just an app restart but a REBUILD:
  * a daemon spawned by a pre-upgrade build keeps holding the socket, and connecting
- * to it would silently run old code (e.g. a v1 daemon that never emits `state`
- * frames → no status icons). So the `hello` handshake compares `PROTOCOL_VERSION`:
+ * to it would silently run old code (e.g. a stale daemon speaking a removed frame).
+ * So the `hello` handshake compares `PROTOCOL_VERSION`:
  * a COMPATIBLE daemon is adopted as-is; an INCOMPATIBLE one is RETIRED — we SIGTERM
  * it by the pid it reports in `helloAck`, wait for it to release the socket, then
  * launch a fresh daemon. A current daemon is never disturbed.
@@ -53,26 +53,12 @@ import {
   type SpawnParams
 } from '../../shared/node/daemon-protocol'
 
-/** A daemon-evaluated state change delivered to a session sink (§9.6). */
-export interface DaemonStateUpdate {
-  readonly state: 'unknown' | 'waiting' | 'working' | 'blocked'
-  readonly layer?: 1 | 2 | 3
-  readonly confidence?: 'authoritative' | 'high' | 'medium' | 'low' | 'none'
-  readonly reason?: string
-  readonly subState?: string
-}
-
 /** Per-session event sink; wired by a {@link DaemonSessionRuntime}. */
 export interface DaemonSessionSink {
   /** A batched output chunk (live or replayed-on-attach). */
   onData(data: string): void
   /** SPONTANEOUS death (or a daemon-crash synthetic exit); never fired for a `close`. */
   onExit(exitCode: number, signal?: number): void
-  /**
-   * An evaluated state change pushed by the daemon (§9.6), including the state
-   * replayed on (re-)attach. Optional: a runtime with detection disabled omits it.
-   */
-  onState?(update: DaemonStateUpdate): void
 }
 
 export interface DaemonClientOptions {
@@ -227,11 +213,6 @@ export class DaemonClient {
 
   resize(sessionId: string, cols: number, rows: number): void {
     this.sendControl({ type: 'resize', sessionId, cols, rows })
-  }
-
-  /** Ask the daemon to re-evaluate a session's state now (§9.6); reply via onState. */
-  refreshState(sessionId: string): void {
-    this.sendControl({ type: 'refreshState', sessionId })
   }
 
   /** Graceful close (SIGHUP→grace→SIGKILL daemon-side); resolves on `closed`. */
@@ -447,18 +428,6 @@ export class DaemonClient {
       const sink = this.sinks.get(msg.sessionId)
       this.sinks.delete(msg.sessionId)
       sink?.onExit(msg.exitCode, msg.signal)
-      return
-    }
-    // An evaluated state change is the other unsolicited message (§9.6). Keep the
-    // sink registered — a session emits many state frames over its lifetime.
-    if (msg.type === 'state') {
-      this.sinks.get(msg.sessionId)?.onState?.({
-        state: msg.state,
-        layer: msg.layer,
-        confidence: msg.confidence,
-        reason: msg.reason,
-        subState: msg.subState
-      })
       return
     }
     const pending = this.pending.get(msg.requestId)

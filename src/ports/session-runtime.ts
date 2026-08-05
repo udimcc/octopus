@@ -4,20 +4,20 @@
  * only to this interface, so a V2 durable backend (daemon/tmux) is a drop-in
  * `SessionManager` swap with no renderer change (§6.2).
  *
- * `stateEvaluator()` is the §8/§10 seam: it returns null for a runtime whose type
- * lacks `EvaluatesState`, else a {@link StateEvaluator} that PUSHES state changes.
- * The signature does not change across backends — both the in-process composite
- * and the daemon's `state`-message adapter satisfy it (§9.6), so the Application
- * never learns which backend produced a signal.
+ * State detection is NOT a runtime concern (§9.6): the Claude python bridge writes
+ * each session's state file (keyed by OCTOPUS_SESSION_ID) and a single app-side
+ * watcher feeds the Application. So the runtime owns only the PTY lifecycle, and its
+ * contract is identical across the in-process and daemon backends.
  */
 
 import type { TaskId, SessionId } from '../domain/ids'
-import type { SessionState, SessionSubState } from '../domain/state'
+import type { SessionSubState } from '../domain/state'
 
 /**
- * Metadata accompanying a state change (§9.1, §9.3). All optional: the aggregation
- * lattice only needs the {@link SessionState}, but the sub-state / confidence /
- * layer feed the debug overlay and the UI's low-confidence dimming (R1).
+ * Metadata accompanying a state change (§9.6). All optional: the aggregation lattice
+ * only needs the {@link SessionState}, but the reason feeds the transition log and
+ * the debug overlay. `subState`/`layer`/`confidence` are retained as optional debug
+ * fields the current Claude bridge does not populate.
  */
 export interface StateChangeMeta {
   readonly subState?: SessionSubState
@@ -27,25 +27,6 @@ export interface StateChangeMeta {
   readonly confidence?: 'authoritative' | 'high' | 'medium' | 'low' | 'none'
   /** Free-form reason for the transition log (e.g. `claude_stop`, `subprocess`). */
   readonly reason?: string
-}
-
-/**
- * A per-session state evaluator (§9.3, §9.6). It OWNS the timers/socket/OSC parsing
- * that produce state signals and pushes each freshly-evaluated {@link SessionState}
- * to the subscriber (which routes it through the single-writer `ingestSessionState`
- * command). Push, not poll: the composite already runs its own 200 ms / 1 s cadence
- * internally, so the Application just subscribes once and disposes on session exit.
- */
-export interface StateEvaluator {
-  /** Register the sink for state changes. Called once by the start-runtime use case. */
-  onStateChange(listener: (state: SessionState, meta?: StateChangeMeta) => void): void
-  /**
-   * Manually re-evaluate now (the "refresh state" affordance, R1/§5.4). Optional:
-   * a backend that can't force a re-poll (or hasn't wired it) simply omits it.
-   */
-  refresh?(): void
-  /** Stop all timers/listeners and release the socket. Called on session teardown. */
-  dispose(): void
 }
 
 /** Everything a runtime needs to start a session (DESIGN §6.1). */
@@ -60,11 +41,6 @@ export interface SessionRuntimeContext {
   readonly env: Readonly<Record<string, string | undefined>>
   /** Shell override (else $SHELL, else /bin/bash) (§6.1). */
   readonly shell?: string
-  /**
-   * The per-session state socket path (§9.2). Provisioned in V1 but never bound;
-   * exported to the child as OCTOPUS_STATE_SOCKET (§10 V1 seam).
-   */
-  readonly stateSocketPath?: string
   /**
    * Re-attach hint for a durable backend (§6.2). When true, a session already
    * lives in the daemon and `start()` should RE-ATTACH (replaying its live buffer)
@@ -91,8 +67,6 @@ export interface SessionRuntime {
   stop(): Promise<void>
   /** Release resources without signalling (used after an observed exit). */
   dispose(): void
-  /** V2 seam: returns null in V1 (Terminal has no `EvaluatesState`) (§10). */
-  stateEvaluator(): StateEvaluator | null
   /**
    * Best-effort current working directory of the live process (§6.1) — where a
    * terminal has `cd`'d to since spawn, used to open a new session in the same

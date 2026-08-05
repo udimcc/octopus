@@ -1,12 +1,15 @@
 import { describe, it, expect } from 'vitest'
 import {
   mergeClaudeHooks,
+  mergeStatusLine,
   hasAllOctopusHooks,
   hookCommand,
-  notificationHookCommand,
-  IDLE_NOTIFICATION_MARKER,
+  statusLineCommand,
+  HOOK_EVENTS,
   OCTOPUS_HOOK_MARKER
 } from './claude-hooks'
+
+const SCRIPT = '/data/octopus/claude-state/octopus-claude-state.py'
 
 /** Grab the single Octopus command for an event from a merged settings object. */
 function octopusCommand(merged: ReturnType<typeof mergeClaudeHooks>, event: string): string {
@@ -19,98 +22,60 @@ function octopusCommand(merged: ReturnType<typeof mergeClaudeHooks>, event: stri
 }
 
 describe('hookCommand (§9.2)', () => {
-  it('is guarded on the socket var, never fails the hook, and is tagged', () => {
-    const cmd = hookCommand('{"state":"working"}')
-    expect(cmd).toContain('$OCTOPUS_STATE_SOCKET')
-    expect(cmd).toContain('nc')
-    expect(cmd).toContain('-U')
-    // -N/-q0 make OpenBSD nc close the socket on stdin EOF instead of hanging ~2min.
-    expect(cmd).toContain('-N')
+  it('invokes the python bridge for the event, never fails the hook, and is tagged', () => {
+    const cmd = hookCommand(SCRIPT, 'Stop')
+    expect(cmd).toContain('python3')
+    expect(cmd).toContain(SCRIPT)
+    expect(cmd).toContain('hook Stop')
     expect(cmd).toContain(OCTOPUS_HOOK_MARKER)
-    // A trailing `true` keeps a missing `nc` / unset var from failing the hook.
-    expect(cmd).toContain('true')
+    // A trailing `|| true` keeps a missing python3 / script error from failing the hook.
+    expect(cmd).toContain('|| true')
   })
 
-  it('single-quote-escapes the JSON payload so the sh literal stays intact', () => {
-    const cmd = hookCommand(`{"reason":"it's fine"}`)
+  it('single-quote-escapes the script path so the sh literal stays intact', () => {
+    const cmd = hookCommand("/data/it's odd/state.py", 'Stop')
     // The apostrophe must be closed-escaped-reopened, never left bare inside '...'.
     expect(cmd).toContain(`'\\''`)
   })
 })
 
-describe('notificationHookCommand (§9.2 — BUG 1: suppress the idle reminder)', () => {
-  it('carries the same guards, transport and marker as hookCommand', () => {
-    const cmd = notificationHookCommand('{"state":"blocked"}')
-    expect(cmd).toContain('$OCTOPUS_STATE_SOCKET')
-    expect(cmd).toContain('nc')
-    expect(cmd).toContain('-U')
-    expect(cmd).toContain('-N')
+describe('statusLineCommand (§9.2 — chain to the original bar)', () => {
+  it('runs the bridge in statusline mode, tagged with the marker', () => {
+    const cmd = statusLineCommand(SCRIPT)
+    expect(cmd).toContain('python3')
+    expect(cmd).toContain(SCRIPT)
+    expect(cmd).toContain('statusline')
     expect(cmd).toContain(OCTOPUS_HOOK_MARKER)
-    expect(cmd).toContain('true')
-  })
-
-  it('reads stdin and branches on the idle-reminder marker', () => {
-    const cmd = notificationHookCommand('{"state":"blocked"}')
-    // Drains the payload and suppresses the "waiting for your input" reminder.
-    expect(cmd).toContain('$(cat)')
-    expect(cmd).toContain(IDLE_NOTIFICATION_MARKER)
-    // The suppression branch is a no-op (`:`), the default branch sends the frame.
-    expect(cmd).toContain('case')
   })
 })
 
 describe('mergeClaudeHooks (§9.2 — merge-safe, idempotent)', () => {
   it('adds all Octopus hook events to an empty settings object', () => {
-    const merged = mergeClaudeHooks({})
-    expect(hasAllOctopusHooks(merged)).toBe(true)
-    for (const event of [
-      'Stop',
-      'StopFailure',
-      'Notification',
-      'PermissionRequest',
-      'SubagentStop',
-      'PreToolUse',
-      'PostToolUse',
-      'UserPromptSubmit'
-    ]) {
+    const merged = mergeClaudeHooks({}, SCRIPT)
+    for (const event of HOOK_EVENTS) {
       expect(merged.hooks?.[event]).toBeDefined()
+      const cmd = octopusCommand(merged, event)
+      expect(cmd).toContain(`hook ${event}`)
     }
   })
 
-  it('wires StopFailure → waiting so a user-interrupted turn reads as Idle, not stuck Working', () => {
-    const merged = mergeClaudeHooks({})
+  it('names the event, not the state — mapping lives in the bridge', () => {
+    const merged = mergeClaudeHooks({}, SCRIPT)
+    // The command carries the event name; no literal state string is embedded.
     const cmd = octopusCommand(merged, 'StopFailure')
-    expect(cmd).toContain('"state":"waiting"')
-    expect(cmd).toContain('stop_failure')
-  })
-
-  it('wires PermissionRequest → blocked as a first-class Needs-input signal', () => {
-    const merged = mergeClaudeHooks({})
-    const cmd = octopusCommand(merged, 'PermissionRequest')
-    expect(cmd).toContain('"state":"blocked"')
-    expect(cmd).toContain('permission')
-  })
-
-  it('wires SubagentStop → working so a finished subagent is not read as Idle (BUG 2)', () => {
-    const merged = mergeClaudeHooks({})
-    const cmd = octopusCommand(merged, 'SubagentStop')
-    expect(cmd).toContain('"state":"working"')
-    expect(cmd).toContain('subagent_stop')
-  })
-
-  it('gives Notification the stdin-branching command (BUG 1)', () => {
-    const merged = mergeClaudeHooks({})
-    const cmd = octopusCommand(merged, 'Notification')
-    expect(cmd).toContain('$(cat)')
-    expect(cmd).toContain(IDLE_NOTIFICATION_MARKER)
+    expect(cmd).toContain('hook StopFailure')
+    expect(cmd).not.toContain('"state"')
   })
 
   it('preserves an unrelated user key and a user hook entry verbatim', () => {
     const userHook = { hooks: [{ type: 'command' as const, command: 'echo hi' }] }
-    const merged = mergeClaudeHooks({
-      model: 'opus',
-      hooks: { Stop: [userHook] }
-    })
+    const merged = mergeClaudeHooks(
+      {
+        model: 'opus',
+        hooks: { Stop: [userHook] }
+      },
+      SCRIPT
+    )
     expect(merged.model).toBe('opus')
     // The user's Stop hook survives alongside the appended Octopus one.
     const stop = merged.hooks?.Stop ?? []
@@ -120,8 +85,8 @@ describe('mergeClaudeHooks (§9.2 — merge-safe, idempotent)', () => {
   })
 
   it('is idempotent — re-merging yields deep-equal output (no duplicate Octopus entries)', () => {
-    const once = mergeClaudeHooks({})
-    const twice = mergeClaudeHooks(once)
+    const once = mergeClaudeHooks({}, SCRIPT)
+    const twice = mergeClaudeHooks(once, SCRIPT)
     expect(twice).toEqual(once)
     // Exactly one Octopus entry per event.
     const stopCmds = (twice.hooks?.Stop ?? [])
@@ -137,7 +102,7 @@ describe('mergeClaudeHooks (§9.2 — merge-safe, idempotent)', () => {
         Stop: [{ hooks: [{ type: 'command' as const, command: `old-cmd ${OCTOPUS_HOOK_MARKER}` }] }]
       }
     }
-    const merged = mergeClaudeHooks(stale)
+    const merged = mergeClaudeHooks(stale, SCRIPT)
     const stopCmds = (merged.hooks?.Stop ?? [])
       .flatMap((g) => g.hooks ?? [])
       .filter((h) => h.command.includes(OCTOPUS_HOOK_MARKER))
@@ -149,12 +114,56 @@ describe('mergeClaudeHooks (§9.2 — merge-safe, idempotent)', () => {
   it('does not mutate the input object', () => {
     const input = { hooks: {} }
     const snapshot = JSON.stringify(input)
-    mergeClaudeHooks(input)
+    mergeClaudeHooks(input, SCRIPT)
     expect(JSON.stringify(input)).toBe(snapshot)
   })
+})
 
-  it('hasAllOctopusHooks is false when an event is missing its Octopus entry', () => {
-    expect(hasAllOctopusHooks({})).toBe(false)
-    expect(hasAllOctopusHooks({ hooks: { Stop: [] } })).toBe(false)
+describe('mergeStatusLine (§9.2 — save & chain)', () => {
+  it('points statusLine.command at the bridge and reports no original when none existed', () => {
+    const { settings, savedOriginal } = mergeStatusLine({}, SCRIPT)
+    expect(settings.statusLine?.command).toBe(statusLineCommand(SCRIPT))
+    expect(settings.statusLine?.type).toBe('command')
+    expect(savedOriginal).toBeUndefined()
+  })
+
+  it("captures the user's original command as the chain target", () => {
+    const { settings, savedOriginal } = mergeStatusLine(
+      { statusLine: { type: 'command', command: 'my-bar.sh' } },
+      SCRIPT
+    )
+    expect(savedOriginal).toBe('my-bar.sh')
+    expect(settings.statusLine?.command).toBe(statusLineCommand(SCRIPT))
+  })
+
+  it('is idempotent — re-wrapping does not recapture our own wrapper as the original', () => {
+    const first = mergeStatusLine({ statusLine: { type: 'command', command: 'my-bar.sh' } }, SCRIPT)
+    const second = mergeStatusLine(first.settings, SCRIPT)
+    expect(second.settings).toEqual(first.settings)
+    expect(second.savedOriginal).toBeUndefined()
+  })
+
+  it('refreshes a drifted Octopus wrapper without capturing it as the original', () => {
+    const stale = {
+      statusLine: { type: 'command', command: `python3 old.py statusline ${OCTOPUS_HOOK_MARKER}` }
+    }
+    const { settings, savedOriginal } = mergeStatusLine(stale, SCRIPT)
+    expect(settings.statusLine?.command).toBe(statusLineCommand(SCRIPT))
+    expect(savedOriginal).toBeUndefined()
+  })
+})
+
+describe('hasAllOctopusHooks', () => {
+  it('is true once hooks and the statusline wrapper are all present', () => {
+    const withHooks = mergeClaudeHooks({}, SCRIPT)
+    const { settings } = mergeStatusLine(withHooks, SCRIPT)
+    expect(hasAllOctopusHooks(settings, SCRIPT)).toBe(true)
+  })
+
+  it('is false when an event is missing its Octopus entry or the statusline is unset', () => {
+    expect(hasAllOctopusHooks({}, SCRIPT)).toBe(false)
+    expect(hasAllOctopusHooks({ hooks: { Stop: [] } }, SCRIPT)).toBe(false)
+    // Hooks present but statusline not yet wrapped.
+    expect(hasAllOctopusHooks(mergeClaudeHooks({}, SCRIPT), SCRIPT)).toBe(false)
   })
 })

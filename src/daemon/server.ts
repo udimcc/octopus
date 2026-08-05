@@ -192,12 +192,6 @@ export class DaemonServer {
         this.registry.get(msg.sessionId)?.resize(msg.cols, msg.rows)
         return
 
-      case 'refreshState':
-        // Fire-and-forget (§9.6): re-evaluate now; the fresh `state` frame is
-        // pushed through the already-bound sink's onState.
-        this.registry.get(msg.sessionId)?.refreshState()
-        return
-
       case 'close': {
         const sessionId = msg.sessionId
         void this.registry.close(sessionId).then(() => {
@@ -236,19 +230,7 @@ export class DaemonServer {
         this.registry.forget(sessionId)
         this.onSessionGone?.(sessionId)
         this.onActivity?.()
-      },
-      // Forward each evaluated state change to the client as an unsolicited `state`
-      // frame (§9.6). No-op when detection is off (onState is never invoked).
-      onState: (change) =>
-        this.send(conn, {
-          type: 'state',
-          sessionId,
-          state: change.state,
-          layer: change.layer,
-          confidence: change.confidence,
-          reason: change.reason,
-          subState: change.subState
-        })
+      }
     })
   }
 }

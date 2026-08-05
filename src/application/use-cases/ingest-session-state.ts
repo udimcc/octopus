@@ -1,16 +1,15 @@
 /**
- * `ingestSessionState` (DESIGN §9.6, §3.4) — a per-session state provider (behind
- * the `EvaluatesState` capability) dispatches this command with a freshly
- * evaluated {@link SessionState}; the loop applies it to the session, recomputes
- * the owning task's aggregate `TaskState` (worst-status-wins, §3.4) and emits the
- * two state-changed events the renderer already understands.
+ * `ingestSessionState` (DESIGN §9.6, §3.4) — the Claude state watcher dispatches
+ * this command with a freshly read {@link SessionState}; the loop applies it to the
+ * session, recomputes the owning task's aggregate `TaskState` (worst-status-wins,
+ * §3.4) and emits the two state-changed events the renderer already understands.
  *
- * Runs on the single writer (§6.6): the runtime's `stateEvaluator()` callback
- * routes through the command loop rather than mutating the domain inline, so the
+ * Runs on the single writer (§6.6): the watcher's file-change callback routes
+ * through the command loop rather than mutating the domain inline, so the
  * `setState` + derivation stay serialized with every other workspace mutation.
  *
  * Idempotent-friendly: it publishes unconditionally (even if the state is
- * unchanged) — the evaluator debounces upstream (§9.3), so a redundant signal here
+ * unchanged) — the watcher debounces upstream per file, so a redundant signal here
  * would be rare and the events are cheap; the renderer patch is a no-op when equal.
  */
 

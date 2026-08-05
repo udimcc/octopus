@@ -441,16 +441,20 @@ export function reduceEvent(data: StoreData, event: EventDTO): StoreData {
       // session hosted elsewhere. All windows move the tab pointer; the window that
       // HOSTS the session (`event.windowId === thisWindowId`) also makes the task
       // active so its `TaskView` is the one on screen when the OS raises it (the
-      // raise itself is done in main). Clear the session's ready-for-review flag on
-      // the hosting window — switching to it counts as "looking at it" (§9.5).
+      // raise itself is done in main).
+      //
+      // The ready-for-review CLEAR is GLOBAL, not host-only (§9.5): switching to a
+      // session focuses and raises its host window (composition-root), so the user has
+      // now looked at it. The flag must clear in EVERY window's store — the task rollup
+      // (`taskReadyForReview`) is shown only in the main window yet ORs over sessions
+      // hosted in ANY window, so a host-only clear left the main window's task dot lit
+      // after the user focused a session living in another window.
       const hosting = event.windowId === data.windowId
       const next: StoreData = {
         ...data,
         activeSessionByTask: { ...data.activeSessionByTask, [event.taskId]: event.sessionId },
         activeTaskId: hosting ? event.taskId : data.activeTaskId,
-        readyForReview: hosting
-          ? clearReady(data.readyForReview, event.sessionId)
-          : data.readyForReview
+        readyForReview: clearReady(data.readyForReview, event.sessionId)
       }
       return next
     }

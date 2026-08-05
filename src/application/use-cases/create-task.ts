@@ -50,10 +50,6 @@ export async function createTask(deps: AppDependencies, input: CreateTaskInput):
         : await adoptExisting(deps, id, input)
     task.markReady(worktree)
 
-    // Dormant §9.2 seam: ensure the private socket dir exists for this uid so V2
-    // tooling can bind per-session sockets. Nothing listens in V1.
-    deps.socketProvisioner.ensureSocketDir()
-
     // Persist the now-Ready task and make it active, atomically (§6.6).
     deps.persistence.transaction(() => {
       deps.persistence.upsertTask(task.toSnapshot(deps.aggregator))

@@ -83,13 +83,6 @@ class FakeDaemonClient {
     this.order.push('close')
     this.closes.push(id)
   }
-
-  refreshState(id: string): void {
-    this.order.push('refreshState')
-    this.refreshes.push(id)
-  }
-
-  readonly refreshes: string[] = []
 }
 
 interface Harness {
@@ -110,7 +103,6 @@ function harness(overrides: Partial<SessionRuntimeContext> = {}): Harness {
     cols: 100,
     rows: 40,
     env: { PATH: '/usr/bin' },
-    stateSocketPath: '/run/octopus/s1.sock',
     onData: (d) => onData.push(d),
     onExit: (code, signal) => exits.push({ code, signal }),
     ...overrides
@@ -118,16 +110,11 @@ function harness(overrides: Partial<SessionRuntimeContext> = {}): Harness {
   return { ctx, onData, exits, client }
 }
 
-function makeRuntime(
-  h: Harness,
-  args?: readonly string[],
-  stateDetection?: boolean
-): DaemonSessionRuntime {
+function makeRuntime(h: Harness, args?: readonly string[]): DaemonSessionRuntime {
   return new DaemonSessionRuntime(h.ctx, {
     client: h.client as unknown as DaemonClient,
     shell: '/bin/zsh',
-    args,
-    stateDetection
+    args
   })
 }
 
@@ -147,8 +134,7 @@ describe('DaemonSessionRuntime.start (§6.2)', () => {
       args: ['-l'],
       cwd: '/wt/t1',
       cols: 100,
-      rows: 40,
-      stateSocketPath: '/run/octopus/s1.sock'
+      rows: 40
     })
   })
 
@@ -278,52 +264,6 @@ describe('DaemonSessionRuntime.dispose (§6.2)', () => {
     rt.dispose()
     expect(h.client.unregistered).toEqual(['s1'])
     expect(h.client.detaches).toEqual([])
-  })
-})
-
-describe('DaemonSessionRuntime.stateEvaluator (§9.6)', () => {
-  it('surfaces daemon-pushed state frames, mapped to the domain state', async () => {
-    const h = harness()
-    const rt = makeRuntime(h)
-    await rt.start()
-
-    const evaluator = rt.stateEvaluator()
-    expect(evaluator).not.toBeNull()
-    const seen: string[] = []
-    evaluator?.onStateChange((state) => seen.push(state))
-
-    h.client.sink?.onState?.({ state: 'working', layer: 2, confidence: 'high' })
-    h.client.sink?.onState?.({ state: 'waiting' })
-    expect(seen).toEqual(['working', 'waiting'])
-  })
-
-  it('buffers a state pushed BEFORE subscribe and flushes it on subscribe (re-attach replay)', async () => {
-    const h = harness({ resume: true })
-    const rt = makeRuntime(h)
-    await rt.start()
-
-    // Daemon replays its last state during attach — before the app subscribes.
-    h.client.sink?.onState?.({ state: 'blocked' })
-    const seen: string[] = []
-    rt.stateEvaluator()?.onStateChange((state) => seen.push(state))
-    expect(seen).toEqual(['blocked'])
-  })
-
-  it('refresh() asks the daemon to re-emit', async () => {
-    const h = harness()
-    const rt = makeRuntime(h)
-    await rt.start()
-    rt.stateEvaluator()?.refresh?.()
-    expect(h.client.refreshes).toEqual(['s1'])
-  })
-
-  it('returns null when state detection is opted out (§9), still dropping pushed frames', async () => {
-    const h = harness()
-    const rt = makeRuntime(h, undefined, false)
-    await rt.start()
-    expect(rt.stateEvaluator()).toBeNull()
-    // The daemon may still push (cheap, unconditional); the sink must swallow it.
-    expect(() => h.client.sink?.onState?.({ state: 'working' })).not.toThrow()
   })
 })
 
