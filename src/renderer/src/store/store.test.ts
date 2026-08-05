@@ -567,11 +567,22 @@ describe('ready-for-review (§9.5)', () => {
     expect(d.readyForReview.s1).toBe(true)
   })
 
-  it('isSessionFocused reflects active-tab + this-window + window-focus', () => {
+  it('raises for the active tab of a task the user has switched AWAY from', () => {
+    // s1 is s1-task's active tab, but the user is now viewing a different task, so
+    // s1 is off screen and finishing there is "just finished, unlooked" (§9.5).
+    let d: StoreData = { ...base(), activeTaskId: 't-other' }
+    d = setState(d, 's1', 'working')
+    d = setState(d, 's1', 'waiting')
+    expect(d.readyForReview.s1).toBe(true)
+  })
+
+  it('isSessionFocused reflects active-task + active-tab + this-window + window-focus', () => {
     const d = base()
     expect(isSessionFocused(d, 's1')).toBe(true)
     expect(isSessionFocused(d, 's2')).toBe(false)
     expect(isSessionFocused({ ...d, windowFocused: false }, 's1')).toBe(false)
+    // s1 is its task's active tab, but that task is not the viewed task → unfocused.
+    expect(isSessionFocused({ ...d, activeTaskId: 't-other' }, 's1')).toBe(false)
   })
 
   it('setActiveSession clears the flag on the newly-focused session', () => {
@@ -615,6 +626,59 @@ describe('ready-for-review (§9.5)', () => {
     })
     expect(d.readyForReview.s2).toBeUndefined()
     expect(taskReadyForReview(d, 't1')).toBe(false)
+  })
+
+  it('activeTaskChanged clears the flag for the task’s global active session (§9.5)', () => {
+    // Switching BACK to a task (not between its sessions) must clear the dot: the active
+    // session tab pointer never moves, so no activeSessionChanged fires — the clear has
+    // to ride on activeTaskChanged. Model "away on t-other, then switch to t1".
+    let d: StoreData = { ...base(), activeTaskId: 't-other', readyForReview: { s1: true } }
+    d = reduceEvent(d, { type: 'activeTaskChanged', taskId: 't1' })
+    expect(d.activeTaskId).toBe('t1')
+    expect(d.readyForReview.s1).toBeUndefined()
+    expect(taskReadyForReview(d, 't1')).toBe(false)
+  })
+
+  it('activeTaskChanged clears globally even in a blurred / non-host window (§9.5)', () => {
+    // The clear is unconditional: a window that is blurred and does not render the
+    // switched-to session still drops the global pointer's session, so the main window's
+    // task rollup stays consistent (same rationale as activeSessionChanged).
+    let d: StoreData = {
+      ...base(),
+      windowId: 'main',
+      windowFocused: false,
+      activeTaskId: 't-other',
+      readyForReview: { s1: true }
+    }
+    d = reduceEvent(d, { type: 'activeTaskChanged', taskId: 't1' })
+    expect(d.readyForReview.s1).toBeUndefined()
+  })
+
+  it('activeTaskChanged with an undefined taskId leaves flags untouched', () => {
+    let d: StoreData = { ...base(), readyForReview: { s1: true } }
+    d = reduceEvent(d, { type: 'activeTaskChanged', taskId: undefined })
+    expect(d.activeTaskId).toBeUndefined()
+    expect(d.readyForReview.s1).toBe(true) // no active session to clear
+  })
+
+  it('activeTaskChanged for a task with no active-session pointer preserves flags', () => {
+    let d: StoreData = { ...base(), activeSessionByTask: {}, readyForReview: { s1: true } }
+    d = reduceEvent(d, { type: 'activeTaskChanged', taskId: 't1' })
+    expect(d.activeTaskId).toBe('t1')
+    expect(d.readyForReview.s1).toBe(true)
+  })
+
+  it('setActiveTask clears the flag on the task’s active session', () => {
+    useStore.setState({ ...base(), activeTaskId: 't-other', readyForReview: { s1: true } })
+    useStore.getState().setActiveTask('t1')
+    expect(useStore.getState().activeTaskId).toBe('t1')
+    expect(useStore.getState().readyForReview.s1).toBeUndefined()
+  })
+
+  it('setActiveTask preserves flags when the task has no active session', () => {
+    useStore.setState({ ...base(), activeSessionByTask: {}, readyForReview: { s1: true } })
+    useStore.getState().setActiveTask('t1')
+    expect(useStore.getState().readyForReview.s1).toBe(true)
   })
 })
 

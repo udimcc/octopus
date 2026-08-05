@@ -261,17 +261,23 @@ export function activeSessionInWindow(
 
 /**
  * Is `sessionId` currently FOCUSED from this renderer's vantage (§9.5)? True only
- * when it is the active tab of its task, hosted in THIS window, and this window has
- * OS focus. A session in another window (or when this window is blurred, or that
- * isn't the active tab) counts as unfocused — so a `Working → Waiting` there raises
- * ready-for-review. Each renderer knows its own OS focus only; that is exactly the
- * per-window view memory §9.5 describes.
+ * when it is the session actually ON SCREEN: its task is the active task, it is that
+ * task's active tab, it is hosted in THIS window, and this window has OS focus. A
+ * session whose task is not the viewed task (some other `activeTaskId` is on screen),
+ * or that lives in another window, or when this window is blurred, or that isn't its
+ * task's active tab, counts as unfocused — so a `Working → Waiting` there raises
+ * ready-for-review. Only one task is visible per window at a time, so being the active
+ * tab of a NON-active task is not "looked at": without the `activeTaskId` check a
+ * session finishing while the user views a different task would wrongly be suppressed.
+ * Each renderer knows its own OS focus only; that is exactly the per-window view
+ * memory §9.5 describes.
  */
 export function isSessionFocused(data: StoreData, sessionId: string): boolean {
   const session = data.sessions[sessionId]
   if (!session) return false
   if (!data.windowFocused) return false
   if (session.windowId !== data.windowId) return false
+  if (data.activeTaskId !== session.taskId) return false
   return data.activeSessionByTask[session.taskId] === sessionId
 }
 
@@ -432,8 +438,19 @@ export function reduceEvent(data: StoreData, event: EventDTO): StoreData {
       return { ...data, taskOrder: known }
     }
 
-    case 'activeTaskChanged':
-      return { ...data, activeTaskId: event.taskId }
+    case 'activeTaskChanged': {
+      // Switching to a task focuses its globally-active session, so the user has now
+      // looked at it — clear its ready-for-review flag (§9.5). GLOBAL + unconditional,
+      // mirroring activeSessionChanged: broadcast to every window on a deliberate switch,
+      // and the main-window task rollup (`taskReadyForReview`) ORs over sessions in ANY
+      // window, so a guarded or per-window clear would leave the dot lit. Target the
+      // replicated global pointer (`activeSessionByTask[taskId]`, identical in every
+      // window) so all windows drop the SAME session and the rollup stays consistent.
+      const next: StoreData = { ...data, activeTaskId: event.taskId }
+      const active = event.taskId ? data.activeSessionByTask[event.taskId] : undefined
+      if (!active) return next
+      return { ...next, readyForReview: clearReady(next.readyForReview, active) }
+    }
 
     case 'activeSessionChanged': {
       // Broadcast to every window so cross-window session switching works (§5.4):
@@ -625,7 +642,16 @@ export const useStore = create<Store>((set) => ({
 
   applyEvent: (event) => set((data) => reduceEvent(data, event)),
 
-  setActiveTask: (taskId) => set({ activeTaskId: taskId }),
+  setActiveTask: (taskId) =>
+    set((data) => {
+      // Immediate same-window feedback before the tasks.switch round-trip lands the
+      // broadcast activeTaskChanged — and the only clear when the target is already the
+      // workspace-active task (switchTask skips the event then). Mirrors setActiveSession:
+      // focusing a task clears its globally-active session's ready-for-review flag (§9.5).
+      const active = data.activeSessionByTask[taskId]
+      if (!active) return { activeTaskId: taskId }
+      return { activeTaskId: taskId, readyForReview: clearReady(data.readyForReview, active) }
+    }),
 
   setActiveSession: (taskId, sessionId) =>
     set((data) => ({
