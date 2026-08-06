@@ -33,14 +33,14 @@ sessions while **all sessions keep running in the background**.
 | Desktop runtime / UI stack (was open) | **Electron + React + TypeScript.** | §4 |
 | Quit semantics (was open) | **Persist metadata + gracefully terminate processes; do not resurrect live process state.** Reconcile worktrees on startup. | §7, §8 |
 | PTY hosting: in-process vs daemon vs tmux | **Phase 1: node-pty in-process behind a `SessionManager` port.** Durable backend (daemon or tmux) is a phase 2+ migration with the same message protocol. | §6.2 |
-| Task-state aggregation rule | **Worst-status-wins:** `Blocked > Working > Waiting > Unknown`. | §3.4, §9.3 |
+| Task-state aggregation rule | **Worst-status-wins:** `Blocked > Working > Waiting > Unknown`. | §3.4 |
 | Status vocabulary (one, shared) | **UI and domain share ONE vocabulary: `Unknown` / `Idle` / `Working` / `NeedsInput`** — no domain-vs-label translation. The enum *member names* are these; the enum **values** stay the original wire strings (`'waiting'`/`'blocked'`) so IPC, the daemon protocol, persistence, and hook payloads need no migration (§10's "signatures never change" holds — only TS member identifiers changed). `Unknown → no icon`. | §3.3, §5.4 |
 | "Just finished" signal (many parallel agents) | **Ready-for-review is a renderer view-model flag, not a domain state.** A `Working→Waiting` transition observed while a session is unfocused raises a highlight that clears on focus. Adds **no** enum member, no port change. | §3.4, §5.4, §9.5 |
-| Per-program status mapping | **Pluggable `ProgramStateDetector` registry keyed by foreground-process `comm`.** Status is Claude-only: Phase 2 ships a Claude Code detector + a default that stays `Unknown` (no heuristic); more programs are new registry entries, not rewrites. Fits the existing `CompositeStateProvider` seam. | §9.2, §9.3 |
-| Where state is *detected* (daemon vs main) | **Signal collection runs where the PTY master fd lives:** in `octopusd` for the daemon backend (default), in Electron main for `in-process`. Both surface state through the unchanged `SessionRuntime.stateEvaluator()` seam; the daemon ships it as a new protocol `CONTROL` message. | §6.2, §9.6 |
+| How status is detected | **Claude-only, out-of-band via a python bridge.** A single stdlib-only python3 script wired into Claude's hooks + statusline writes each session's state file (keyed by `OCTOPUS_SESSION_ID`); Octopus never reads the PTY or process table. Non-Claude foreground programs stay `Unknown` (no heuristic). | §9.1, §9.2 |
+| Where state is *detected* (daemon vs main) | **Backend-agnostic: neither the runtime nor the daemon participates.** The bridge runs as Claude's own subprocesses; one app-side `ClaudeStateWatcher` (Electron main) file-watches the state dir and feeds `ingestSessionState`. Identical for the in-process and daemon backends — `SessionRuntime` has no state seam, the protocol has no state message. | §9.3, §9.6 |
 | Worktree provisioning | **Repo-local script if present, else native git.** If `<repoDir>/create_worktree.sh` (resp. `delete_worktree.sh`) exists, Octopus runs it (script owns the location); otherwise Octopus provisions the worktree itself via `git worktree`. Detected **per task** on each create/delete. | §6.4, §12.4 |
 | Worktree location | **Octopus-owned by default**, under a configurable base dir `worktree.location` (default `~/octopus_repos/`). A repo-local create script may return any location instead; Octopus stores the path verbatim. `repo_root` stored per task, so multi-repo works with no special support. | §6.3, §6.4, §12.4 |
-| State-signal injection (OSC 133 + Claude hooks) | **Opt-out auto-injection** (rcfile sources user's rc; `.claude/settings.json` merged, never clobbered). Lands in phase 2. | §12.1 |
+| State-signal injection (Claude hooks + statusline) | **Opt-out auto-injection on startup** (`~/.claude/settings.json` merged, never clobbered — `#octopus-state`-tagged hook entries + a statusline that chains to the user's original). Lands in phase 2. | §9.2, §12.1 |
 | Task-creation inputs | **Modal collects name, repo directory (native picker), source branch, new branch** (new-branch prefilled with a slug). All are passed to native git / the repo-local create script. | §5.4, §12.3 |
 | Single vs multiple windows | **Multi-window, phase 1.5.** The **main** window owns the progress panel; **secondary** windows are session-only. All windows sync on the single `activeTaskId` (switch a task → sessions switch everywhere). Session→window is an opaque `windowId` on `Session` (default `MAIN_WINDOW_ID`); pixel bounds live in persistence only, never the domain. Windows + session assignments are restored on relaunch. | §3.7, §5.6, §6.7, §10 |
 
@@ -71,7 +71,7 @@ sessions while **all sessions keep running in the background**.
 │     WorktreeProvider → SelectingWorktreeProvider (Script | NativeGit)         │
 │     SessionManager / SessionRuntime → PtyTerminalRuntime (node-pty)           │
 │     WorkspacePersistence → SqliteStore (better-sqlite3)                        │
-│     StateEvaluator (phase 2) → structural sentinel + ClaudeCode explicit           │
+│     ClaudeStateWatcher (phase 2) → file-watches the python bridge's state dir      │
 │     JenkinsClient (phase 3) → JenkinsHttpClient                                     │
 │     EventBus, Clock, IdGenerator, CredentialsProvider                         │
 └───────────────────────────────────────────────────────────────────────────────┘
@@ -433,8 +433,8 @@ Each terminal session spawns one PTY via node-pty:
 node-pty.spawn(shell, ["-l"], {
   name: "xterm-256color", cols, rows, cwd: worktreePath,
   env: { ...inherited, TERM:"xterm-256color", COLORTERM:"truecolor",
-         OCTOPUS_TASK_ID, OCTOPUS_SESSION_ID, OCTOPUS_WORKTREE,
-         OCTOPUS_STATE_SOCKET /* phase 2, §9 */,
+         OCTOPUS_TASK_ID, OCTOPUS_SESSION_ID /* keys the Claude state file, §9.1 */,
+         OCTOPUS_WORKTREE,
          /* stripped: TMUX, STY, WINDOWID */ } })
 ```
 
@@ -732,9 +732,12 @@ registry**:
 2. **`SessionViewFactory`** (UI layer, keyed by the same `typeId`): `mount(runtimeHandle, container)` /
    `unmount()`. Renders the terminal emulator or Jenkins view.
 
-**`SessionRuntime`** exposes `start()/stop()/dispose()`, a type-neutral output/interaction handle, and an
-optional `stateEvaluator()` (present iff `EvaluatesState`). State is **push-based**: the runtime emits
-`sessionStateChanged` on the `EventBus`; the Application ingests it and recomputes `TaskState`.
+**`SessionRuntime`** exposes `start()/stop()/dispose()` and a type-neutral output/interaction handle — it owns
+only the PTY lifecycle, not state detection (§9.6). State is **push-based** but sourced OUT of the runtime: the
+Claude python bridge writes each session's state file and the app-side `ClaudeStateWatcher` emits
+`sessionStateChanged` on the `EventBus`; the Application ingests it and recomputes `TaskState`. `EvaluatesState`
+survives as a session-type capability flag (Terminal advertises it), but there is no `stateEvaluator()` seam on
+the runtime.
 
 **Acceptance test for the abstraction:** adding Jenkins (phase 3) is a `JenkinsSessionTypeProvider` +
 `JenkinsViewFactory` + a `JenkinsHttpClient` adapter, registered at the composition root — **zero edits** to
@@ -747,106 +750,124 @@ additive behind this registry.
 ## 9. Session-State-Detection Subsystem (phase 2 core)
 
 Status reflects **only a program that reports its own state** — in practice Claude Code (§9.2). A bare shell,
-or any other foreground command, is `Unknown` (no icon). State is fused from just two signals: an explicit
-application signal, and a structural sentinel that decides whether that signal still applies.
+or any other foreground command, is `Unknown` (no icon). State is sourced **out-of-band** from a single
+self-contained python3 bridge that Claude itself runs (via hooks + statusline); Octopus never reads the PTY,
+the process table, or a socket to compute state. The runtime/daemon do not participate at all (§9.6).
 
-### 9.1 Signal layers
+### 9.1 The state bridge (one script, three modes)
+
+A single stdlib-only python3 script — `octopus-claude-state.py`, embedded as a string in
+`src/adapters/claude/octopus-claude-state.script.ts` and written into the data dir on startup by
+`ensureClaudeStateScript` (the same embed-and-write-on-boot pattern as the shell-integration rc files, chosen
+over a bundled asset because electron-vite's `out/` vs `release/` layouts make an on-disk asset path fragile).
+It owns **all** state logic and runs in three modes, all driven from `~/.claude/settings.json`:
+
+- **`hook <Event>`** — wired to Claude's lifecycle hooks (§9.2). Maps the event to a state and records it as
+  the session's `hook` observation.
+- **`statusline`** — wired to `statusLine.command`. Derives state from the session TRANSCRIPT tail, records it
+  as the `transcript` observation, THEN delegates to the user's ORIGINAL statusline command and prints its
+  output verbatim (so the user's status bar is unchanged). This is the resume-recovery path: after `--resume`
+  the prior process's hooks are gone, but the transcript survives.
+- **`get <id>`** — prints the effective state (debug / tooling). Never fails: an unknown id prints `unknown`.
+
+**Per-session state file.** Keyed by `OCTOPUS_SESSION_ID` (the env var Octopus injects into every managed PTY,
+inherited by the hook/statusline subprocesses — so one global settings entry serves every session and every
+worktree, and the script is a silent no-op outside an Octopus PTY). Written atomically (temp + `os.replace`)
+to `<dataDir>/claude-state/<OCTOPUS_SESSION_ID>.json`:
 
 ```
-Layer 3 (AUTHORITATIVE): explicit application signals
-   • Claude Code hooks → per-session Unix socket   (§9.2)
-   • OSC 9000 in-band state escape sequence
-   → accurate Idle (Waiting) / Working / Needs input (Blocked)
-Layer 2 (STRUCTURAL SENTINEL): is the shell at its own prompt?
-   • OSC 133 semantic prompt marks (A/B prompt, C command-start, D;exit command-end)
-   • tcgetpgrp(master_fd) vs shell PGID  (shell foreground = at prompt; child = running)
-   → the ONLY structural fact consumed: "the tracked program is gone" vs "a child is running"
+{ state, reason, updated_at,
+  turn_start_ts, turn_end_ts,               // turn boundaries (§9.1 turn gating)
+  hook:       { state, reason, ts, event }, // last in-turn hook observation
+  transcript: { state, reason, mtime } }    // last transcript-derived observation
 ```
 
-**Decision logic (Claude-only):**
-1. No `/proc` read (dead pid / non-Linux) → `Unknown`.
-2. Shell at its own prompt (`tpgid == pgrp`, refined by a fresh OSC 133 `A`/`D`) → `Unknown`, and the stored
-   explicit signal is **cleared**: the tracked program has exited or been suspended. This sentinel is robust to
-   Claude's tool subprocesses — while Claude runs a shell tool the foreground `comm` is `bash`/`git`/… but the
-   shell is *not* at its prompt, so the last explicit state is held.
-3. A child holds the foreground **and** we have a stored explicit signal → report it verbatim. The signal
-   **never goes stale** while a child runs; it persists until the next explicit signal or until the shell
-   returns to its prompt.
-4. A child holds the foreground but no explicit signal has arrived yet → `Unknown` (show nothing rather than
-   guess before the first hook fires).
+**Effective state = newer-observation-wins** between `hook.ts` (wall-clock at hook time) and
+`transcript.mtime` (the transcript file's mtime), tie → hook. Live, a hook fires at now ≥ the transcript
+mtime, so hooks stay authoritative; after resume the transcript advances with no new hook, so it wins. There
+is **no** fixed staleness window, **no** activity timing, and **no** silence-based heuristic — the two
+observations are self-dating, so the newer one is simply trusted. One exception implements the §9.7 mid-tool
+mitigation: a transcript-derived `blocked` is overridden by an in-turn `working` hook (the hook slot is
+`working` and the turn is open), since a dangling `tool_use` mid-execution is indistinguishable from an
+awaiting-permission one. A real permission prompt records a `blocked` hook, so it is unaffected; with no fresh
+hook (resume), or a closed turn, the transcript still wins.
 
-There is **no** Layer-1 activity timing, **no** silence-based `Blocked` heuristic, and **no** staleness window
-— these were the sources of the "idle Claude flaps to Working/Needs-input on focus" bug, and are removed. The
-`Notification` hook (§9.2) is Claude's authoritative "needs the user" event, so no heuristic backstop is
-needed.
+**Turn gating (the fix for "idle session flaps back to Working").** The hook slot holds the last *in-turn*
+observation, not the last hook of any kind. A turn **opens** on `UserPromptSubmit` (`turn_start_ts`) and
+**closes** on `Stop`/`StopFailure` (`turn_end_ts`); it is open iff `turn_start_ts > turn_end_ts`, and a
+**missing `turn_start_ts` ⇒ closed** (so a legacy file, or one that has just seen a `Stop`, is closed). The
+turn-boundary events always record; every other event is a *within-turn* observation and is honored **only
+while the turn is open** — an out-of-turn one aborts the write, leaving the file untouched. Without this, a
+stray `working` sub-event that Claude fires after a turn already ended (e.g. a `SubagentStop` arriving minutes
+after `Stop` with no new prompt) would clobber the terminal `waiting` with a newer `working` and win the
+newer-observation race against the frozen transcript — surfacing a finished session as Working. A blocked
+event (`Notification`/`PermissionRequest`) is gated the same way: a real permission prompt only ever occurs
+mid-turn, so gating never drops a genuine one but does drop a stray post-`Stop` one. Only start/end events move
+the turn boundary; a permission request does **not** close the turn (Claude is still mid-turn, awaiting
+permission), so mid-turn `SubagentStop`→Working (§9.2) is preserved.
 
-**The at-prompt tradeoff.** An explicit signal that arrives in the same instant the shell is at its prompt is
-dropped (rule 2 clears it) rather than shown — the structural truth "nothing is running" wins over a
-straggling hook. In practice the `Stop` hook fires while Claude still owns the foreground, so `Idle` is
-reported correctly; only a hook racing an actual Claude exit is discarded, which is right.
+**Mis-gate is self-correcting; the old bug was not.** The only new failure mode is dropping a legitimate
+`working` sub-event because a turn's `turn_start_ts` was never recorded (a legacy/resumed file mid-turn). The
+transcript backstop covers exactly this: during real work the statusline fires and `transcript.mtime` advances
+to ~now, so the transcript observation reads `working` and wins; and the next `UserPromptSubmit` re-opens the
+turn, bounding any mis-gate to the current turn. By contrast the bug being fixed (false-`working`-while-idle)
+had **no** backstop — when idle the transcript is frozen at `waiting`, so nothing corrected a spurious
+`working`. The fix trades an uncorrectable error for a correctable one.
 
-**Baseline for any terminal:** Octopus injects OSC 133 shell integration into its own terminals (via an
-`--rcfile`/profile snippet) so the at-prompt sentinel is precise even before `tcgetpgrp` settles.
-
-### 9.2 Claude Code explicit signal (the only reliable `Blocked`)
+### 9.2 Claude Code hook / statusline wiring (the only reliable `Blocked`)
 
 "Blocked waiting for permission" is internal to Claude Code — no OS primitive exposes it (it is foreground,
-has printed a prompt, and is reading stdin — indistinguishable from Waiting from outside). Solution:
+has printed a prompt, and is reading stdin — indistinguishable from Waiting from outside). Solution: let Claude
+tell us, via its own hooks and statusline, both pointed at the bridge (§9.1).
 
-- Octopus creates a per-session socket `/tmp/octopus-<uid>/session-<uuid>.sock` (dir `chmod 700`), exports
-  `OCTOPUS_STATE_SOCKET`, and listens async on it.
-- Octopus merges hooks into the user-global `~/.claude/settings.json` (one global entry serves every session
-  via the per-session `$OCTOPUS_STATE_SOCKET` env var; merge-safe + idempotent — see
-  `src/adapters/claude/claude-hooks.ts`), each a tiny one-liner:
-  - `Stop` → `{"state":"waiting","reason":"claude_stop"}` (turn finished → Idle)
-  - `Notification` → `{"state":"blocked","reason":"notification"}` (permission / attention → Needs input) —
-    EXCEPT the idle "waiting for your input" reminder Claude fires after a turn already ended, which the hook
-    one-liner suppresses (reads the payload on stdin; emits no frame) so it can't overwrite `Stop`→Idle with a
-    false Needs-input.
-  - `SubagentStop` → `{"state":"working","reason":"subagent_stop"}` (a delegated subagent finished; the MAIN
-    agent is still mid-turn, so this must read as Working, not Idle).
-  - `PreToolUse` → `{"state":"working","reason":"pre_tool_use"}`
-  - `PostToolUse` → `{"state":"working","reason":"tool_use"}`
-  - `UserPromptSubmit` → `{"state":"working","reason":"user_prompt"}`
-  `Notification` — not `PreToolUse` — is Claude's real "needs the user" event; permission prompts do not fire
-  `PreToolUse` with a distinct signal, so the accurate Needs-input source is `Notification` (minus the idle
-  reminder noted above).
-- The hook one-liner sends one newline-delimited frame via `nc -N -q0 -w1 -U`. The `-N -q0` flags are
-  **critical for latency**: OpenBSD `nc` (the Debian default) does not close a Unix socket on stdin EOF, so
-  without them the `Stop` hook lingers ~2 min on the half-open connection. The `ClaudeCodeProvider` treats
-  socket messages as authoritative. **Graceful degradation:** socket unset/gone or `nc` absent → the guarded
-  `|| true` keeps the hook a silent no-op and the session stays `Unknown`. Messages are validated (≤1 KB,
-  valid JSON, known state values); nothing from a message is ever executed.
+- Octopus merges into the user-global `~/.claude/settings.json` on startup (merge-safe + idempotent, tagged
+  with `#octopus-state` so only Octopus's own entries are ever touched — see
+  `src/adapters/claude/claude-hooks.ts`):
+  - each wired lifecycle **hook** runs `python3 <script> hook <Event>`;
+  - `statusLine.command` is repointed at `python3 <script> statusline`, after SAVING the user's original
+    command (to `claude-state/original-statusline`) so the bridge can chain to it and the user's bar is
+    unchanged.
+- **Event → state map** (`HOOK_STATES`), interpreted through the turn gate (§9.1):
+  - `Stop` / `StopFailure` → `waiting` (turn finished → Idle; **closes** the turn).
+  - `UserPromptSubmit` → `working` (**opens** the turn).
+  - `PreToolUse` / `PostToolUse` / `SubagentStop` → `working` (in-turn; a delegated subagent finishing does not
+    mean the MAIN agent is idle, so `SubagentStop`→Working — honored while the turn is open).
+  - `Notification` / `PermissionRequest` → `blocked` (Needs input; in-turn) — EXCEPT the idle "waiting for your
+    input" reminder Claude fires after a turn already ended, which the bridge suppresses (reads the payload on
+    stdin; emits no write) so it can't overwrite `Stop`→Idle with a false Needs-input.
+  - Any unlisted/renamed event → `working` (still the agent's turn; never mis-read as Idle).
+- **Transcript inference** (`statusline` mode): a `tool_use` with no matching `tool_result` (dangling) →
+  `blocked`; else the last assistant turn ended (`end_turn`/`stop_sequence`) → `waiting`; else → `working`.
+- **Graceful degradation.** Every hook is `python3 <script> … 2>/dev/null || true` and the bridge wraps every
+  write, so a failure is a silent no-op and the session stays `Unknown`. Nothing from Claude's payloads is ever
+  executed; the bridge only reads/writes JSON.
 
 Alternatives (inferior): parsing Claude Code's terminal output (brittle, version-coupled) or an Octopus MCP
 server (richer but heavier — defer).
 
-### 9.3 State model, providers, debouncing
+### 9.3 App-side consumer: the state watcher
 
-- **`StateProvider` interface:** `initialize(ctx)`, `poll()`, `get_state() → StateSnapshot{state,
-  confidence, assessed_at, reason, layer}`, `teardown()`. Confidence ∈ {Authoritative, High, Medium, Low,
-  None}; Medium/Low set a `low_confidence` flag the UI dims.
-- **Composition:** a terminal session uses a `CompositeStateProvider` = the structural sentinel (§9.1) +
-  **a per-program Layer-3 detector chosen from a `ProgramStateDetectorRegistry`**, applying §9.1 logic. Jenkins
-  (phase 3) uses `JenkinsProvider`.
-- **Pluggable per-program mapping — `ProgramStateDetectorRegistry`.** *Which* detector's vocabulary is applied
-  to an explicit signal is not hard-wired to Claude: the composite looks up the **foreground process** (from
-  `tcgetpgrp` → `/proc/<pgid>/comm`) in a registry keyed by program name. Phase 2 registers exactly one entry —
-  **`claude` → `ClaudeCodeDetector`** (§9.2) — and a **default** (no entry) that trusts an explicit signal
-  verbatim. There is no heuristic path: a program that never emits an explicit signal stays `Unknown`, so a
-  bare shell — running a command or at the prompt — is always `Unknown` (no icon). A `ProgramStateDetector`
-  exposes `matches(comm): boolean` and `interpret(signal): CoreState | undefined`; adding a new program (a
-  build tool that emits OSC 9000, a `git rebase --continue` prompt, etc.) is a **new registry entry at the
-  composition root**, with **zero** change to the composite, the aggregator, the icons, or the ports — the same
-  additive rule as the session-type registry (§8). The registry is consulted per explicit signal, keyed on the
-  current foreground `comm`.
-- **Delivery:** OSC parsing and socket reads are event-driven (in the PTY read loop / async socket); the
-  structural sentinel (`tcgetpgrp`/`/proc`) is polled at 200 ms.
-- **No debounce/hysteresis.** Explicit transitions are event-driven — already debounced by discrete hook
-  events — so they emit immediately; the only poll-driven transition is to/from `Unknown` as the shell
-  enters/leaves its prompt, which also emits immediately so the icon clears the instant Claude exits. `Unknown`
-  is the resting state. (The former min-hold / `Working→Waiting` stability window is removed with the Layer-1
-  activity signal it existed to smooth.)
+The app half of the edge is `src/adapters/claude/claude-state-watcher.ts` — the **sole** source of session
+state now. It watches the `claude-state/` dir and turns each `<id>.json` change into a
+`(sessionId, SessionState, meta)` push:
+
+- **Initial scan on construction** (resume recovery): replays every existing file so restored tabs show status
+  immediately after an app restart, without waiting for the next hook.
+- **`fs.watch`** for each subsequent write, per-file debounced (~40 ms) because an atomic temp+replace fires a
+  rapid rename+change burst for one logical write.
+- **Mapping.** `coreToSessionState` (`src/adapters/claude/core-to-session-state.ts`) maps the file's top-level
+  `state` string to the domain enum: `waiting`→Idle, `working`→Working, `blocked`→NeedsInput, else→Unknown.
+  The filename stem IS the `OCTOPUS_SESSION_ID`, which the app knows as `session.id`.
+- **Sink.** Each push goes through `deps.onSessionState`, dispatched as `ingestSessionState` on the
+  single-writer command loop — never applied inline in the file-change callback. A stray file for a deleted
+  session is harmless (`ingestSessionState` no-ops for an unknown session).
+- **Refresh affordance (R1, §5.4).** The manual "refresh state" path is `watcher.rescan(sessionId)` — a
+  forced re-read + re-emit of one session's file — wired through `deps.refreshClaudeState`.
+
+There is no `StateProvider`/`CompositeStateProvider`, no `ProgramStateDetectorRegistry`, no structural
+sentinel, no OSC/`tcgetpgrp`/`/proc` polling, and no per-session socket — all removed. `Unknown` is the resting
+state; transitions are event-driven (a file write) and emit immediately, so there is no debounce/hysteresis on
+the state itself (only the watcher's write-coalescing debounce).
 
 ### 9.4 Phase 3 Jenkins state mapping
 
@@ -877,44 +898,80 @@ stream** and lives only in the Zustand store:
   it needs **no** backend, port, or protocol change — only store reducer logic + the icon variant (§5.4). The
   focus signal it needs (which session is active in which window) is already in the store (§5.2, §5.6).
 
-### 9.6 Where detection runs: daemon vs in-process (a backend split, one seam)
+### 9.6 Where detection runs: out-of-band, backend-agnostic
 
-State **detection reads the PTY**: the structural sentinel needs `tcgetpgrp(master_fd)` and `/proc/<pgid>/comm`;
-Layer 3's OSC 133 / OSC 9000 parsing taps the PTY output byte stream. **The PTY master
-fd's owner differs by backend (§6.2), so detection is hosted differently — but both expose it through the one
-unchanged `SessionRuntime.stateEvaluator()` seam (§8, §10), so the Application, aggregator, and UI never learn
-which backend produced a signal:**
+State detection **does not read the PTY at all** and is **not a runtime concern** — neither backend
+participates. The Claude python bridge (§9.1) runs as Claude's own hook/statusline subprocesses, entirely
+outside Octopus's process tree, and writes each session's state file; the single app-side `ClaudeStateWatcher`
+(§9.3, in Electron main) reads those files and feeds `ingestSessionState` on the command loop. This is
+identical whether the PTY lives in `octopusd` or in-process, so `SessionRuntime` carries **no state seam** and
+the daemon protocol carries **no state message** — both were removed when this replaced the earlier
+socket/composite design.
 
-- **In-process backend (`PtyTerminalRuntime`, Electron main owns the fd).** The `CompositeStateProvider` runs
-  **in main**, next to the PTY: it taps the existing `onData` for OSC parsing, polls `tcgetpgrp` on
-  the master fd at 200 ms (§9.3), and listens on the per-session `OCTOPUS_STATE_SOCKET` (the phase-1 seam,
-  §9.2). `stateEvaluator()` returns this composite; it emits `sessionStateChanged` on the `EventBus` directly.
-- **Daemon backend (`octopusd` owns the fd, the default — §6.2).** Electron main **cannot** call `tcgetpgrp`
-  or read `/proc/<pgid>/comm` for a PTY it doesn't own, and shipping every raw byte to main just to parse OSC
-  would duplicate the hot path. So **the composite runs inside `octopusd`**, alongside `DaemonPty`: the daemon
-  already sees every output chunk (it batches + ring-buffers them, §6.2) and holds the fd for `tcgetpgrp`. The
-  daemon computes the session's `SessionState` and pushes it to the app as a **new `CONTROL` message**
-  `{type:'state', sessionId, state, subState?, confidence, reason, layer}` on the existing length-prefixed
-  protocol (`daemon-protocol.ts`) — **not** a `DATA` frame (state is low-frequency control, not terminal
-  bytes). `DaemonSessionRuntime.stateEvaluator()` returns an adapter that surfaces these messages; the app-side
-  ingest re-emits them as the same `sessionStateChanged` `EventBus` event. The **Claude Code socket also moves
-  into the daemon** for this backend (the daemon exports `OCTOPUS_STATE_SOCKET` when it spawns the PTY, §6.2 /
-  `pty-registry.ts`, and listens there), so authoritative Layer-3 signals are collected fd-side too.
-- **Consequence for the protocol (§6.2, transport-agnostic).** One additive `CONTROL` variant (`state`) and,
-  symmetrically, a client→daemon `refreshState{sessionId}` control for the manual "refresh state" affordance
-  (R1, §5.4). No `DATA`-path change, so the <5 ms terminal budget (§11) is untouched. The `windowId` echo
-  (§10 phase 1.5) is unaffected — state events are session-scoped and routed by the `WindowRegistry` to the
-  hosting window like any session event (§6.7).
+- **Why the fd's owner no longer matters.** The old design had to host detection wherever the PTY master fd
+  lived (in-process → Electron main; daemon → inside `octopusd`) because it needed `tcgetpgrp(master_fd)` and
+  the OSC byte stream. The bridge needs neither: it is driven by Claude's lifecycle hooks and statusline, whose
+  subprocesses inherit `OCTOPUS_SESSION_ID` from the PTY environment (§9.1) regardless of which process spawned
+  the PTY. The only requirement on the runtime is that it injects `OCTOPUS_SESSION_ID` into every managed PTY —
+  which both `PtyTerminalRuntime` and the daemon's `pty-registry.ts` do.
+- **Consequence for the protocol (§6.2).** State detection removed the `state` `CONTROL` frame and the
+  `refreshState` command entirely — the manual "refresh state" affordance (R1, §5.4) is served app-side by
+  `ClaudeStateWatcher.rescan(sessionId)` (a forced re-read of the local file), needing no round-trip to the
+  daemon. The `DATA` path is untouched (as before), so the <5 ms terminal budget (§11) is unaffected.
 - **Protocol-version coupling (the durable-daemon upgrade trap).** Because `octopusd` is detached it outlives
-  not just an app restart but a **rebuild**: a daemon spawned by the pre-phase-2 build keeps holding the socket,
-  and the app reconnects to it. Adding the `state`/`refreshState` messages therefore **bumps `PROTOCOL_VERSION`
-  (1 → 2)** — otherwise the stale daemon passes the `hello` handshake and silently never emits `state` (no
-  status icons, though every downstream layer is wired). The `hello` handshake now carries the daemon's `pid`,
-  so on a version mismatch the app **retires the stale daemon** (SIGTERM by pid, waits for it to release the
-  socket) and launches a fresh one; a compatible daemon is left untouched. Any future daemon protocol addition
-  must bump `PROTOCOL_VERSION` for the same reason.
-- **Fallback.** If the daemon launch fails and the app degrades to in-process for that run (§6.2), detection
-  transparently uses the in-process path above — same seam, same events.
+  not just an app restart but a **rebuild**, and the app reconnects to whatever daemon holds the socket.
+  REMOVING the `state`/`refreshState` messages therefore **bumps `PROTOCOL_VERSION` (2 → 3)** for the same
+  reason adding them did (1 → 2): a stale v2 daemon would keep emitting now-unknown `state` frames. The `hello`
+  handshake carries the daemon's `pid`, so on a version mismatch the app **retires the stale daemon** (SIGTERM
+  by pid, waits for it to release the socket) and launches a fresh one; a compatible daemon is left untouched.
+  Any future daemon protocol change must bump `PROTOCOL_VERSION` for the same reason.
+- **Fallback.** If the daemon launch fails and the app degrades to in-process for that run (§6.2), detection is
+  completely unaffected — the bridge + watcher are backend-agnostic by construction.
+
+### 9.7 Known limitations (heuristic edges, verified)
+
+State detection is a best-effort heuristic layered on signals Claude Code was never designed to export as a
+state machine. It classifies the common path (prompt → work → tools → finish, plus mid-turn permission prompts)
+correctly the large majority of the time, but the following edges are known and **cannot** be eliminated
+without a richer signal (e.g. an Octopus MCP server, deferred in §9.2). They are ordered by user impact.
+
+- **Mid-tool `tool_use` can transiently read as `Blocked`.** `derive_transcript_state` maps *any* dangling
+  `tool_use` (a `tool_use` with no matching `tool_result`) → `blocked`. A tool that is merely *mid-execution*
+  has the identical transcript signature to a tool awaiting a permission prompt. Because `transcript.mtime`
+  advances when the assistant streams a fresh `tool_use` block — potentially *before* the next `PreToolUse`
+  hook fires — a `statusline` tick in that window wins the newer-observation race and flips a `working` session
+  to `NeedsInput`. **Self-correcting** (the next in-turn hook overwrites it), so it is a transient flicker, not
+  a stuck state. Mitigation shipped: transcript-derived `blocked` is only honored when it is not contradicted by
+  a recent in-turn `working` hook (see §9.1) — this collapses the window to the rare case where no hook fires at
+  all.
+- **Interrupt (Esc) mid-tool → sticky `NeedsInput` until the next prompt.** An interrupt leaves a dangling
+  `tool_use` in the transcript with no clean-up hook, so at rest the transcript inference reads `blocked`. There
+  is no event that clears it; it resolves on the next `UserPromptSubmit`. Untested by construction (no hook
+  models an interrupt).
+- **Hooks installed mid-turn → `Unknown` for the current turn.** Turn gating requires a `UserPromptSubmit` to
+  open the turn; a session already running when Octopus first injects the hooks (or on first-run before the
+  user has submitted a prompt under the new settings) has a *closed* turn, so in-turn `PreToolUse`/`PostToolUse`
+  observations are gated out and **no state file is created** — the session stays `Unknown` until the next
+  prompt. The transcript backstop only helps if a `statusline` fires and the transcript is not frozen at a
+  dangling state.
+- **Subagent sidechains are not distinguished from the main agent.** `derive_transcript_state` ignores
+  `isSidechain`. Today this is benign: the installed Claude version writes subagent activity to *separate*
+  `subagents/agent-*.jsonl` files and the `statusline` payload's `transcript_path` names only the main
+  transcript, so a subagent's dangling `tool_use` never appears there. It is a **latent version-coupling risk**:
+  a Claude version that inlines sidechain records into the main transcript would make a long-running subagent's
+  dangling `tool_use` read as `blocked` on the parent session. Guarded defensively (`derive_transcript_state`
+  skips `isSidechain` records) so the inference is correct regardless of which layout a Claude version uses.
+- **Lost-update race between the hook and statusline processes.** The hook and statusline run as independent OS
+  processes doing read-modify-write on the same `<id>.json`; `os.replace` makes each *swap* atomic but not the
+  read-modify-write *pair*, so a sufficiently tight interleave can drop one observation (e.g. a hook write
+  clobbered by a statusline that read the pre-hook file). Low-probability and self-healing (the next write of
+  either kind re-converges), accepted as a documented risk rather than serialized with a lock.
+- **Silent degradation to `Unknown`.** Every hook is `… 2>/dev/null || true` and the bridge swallows all write
+  errors (§9.2), so any of: `python3` absent from PATH, `OCTOPUS_SESSION_ID` not surviving into the hook
+  subprocess env, or a Claude version renaming an event / changing the `transcript_path`/`stop_reason` payload
+  shape — degrades the affected session to `Unknown` with no error surfaced. This is the intended
+  graceful-degradation posture, and it is why detection is not, and cannot be advertised as, correct 100% of the
+  time.
 
 ---
 
@@ -936,11 +993,12 @@ phases.
   `IdGenerator`, `Clock`, `EventBus`.
 - **UI:** ProgressPanel (task list, New/Delete Task), TaskWorkspace (tabs, registry-driven New-Session
   dropdown), TerminalPane + Terminal `SessionViewFactory`, keep-alive-on-switch.
-- **Seams to leave (explicit):** `capabilities.EvaluatesState` (Terminal off); `stateEvaluator()` returns
-  null; `EventBus` carries state events (dormant); aggregator called but yields `Unknown`; view resolution
-  already keyed by `typeId`; `SessionConfig` already validated against `configSchema`;
-  `OCTOPUS_STATE_SOCKET` env + per-session socket dir provisioned (unused); `CredentialsProvider` port shape
-  defined.
+- **Seams to leave (explicit):** `capabilities.EvaluatesState` (Terminal off); `EventBus` carries state events
+  (dormant); aggregator called but yields `Unknown`; view resolution already keyed by `typeId`; `SessionConfig`
+  already validated against `configSchema`; `OCTOPUS_SESSION_ID` injected into every PTY (the key phase 2's
+  out-of-band Claude bridge later correlates on, §9.1); `CredentialsProvider` port shape defined. *(The earlier
+  plan also reserved a `stateEvaluator()` runtime seam + an `OCTOPUS_STATE_SOCKET` per-session socket; phase 2
+  replaced that with the out-of-band bridge (§9.6), so neither exists.)*
 
 ### Phase 1.5 — Multiple windows
 
@@ -965,26 +1023,27 @@ is untouched: a `JenkinsPane` carries a `windowId` like any session and moves be
 
 ### Phase 2 — Session state + aggregation + icons
 
-- Implement the structural sentinel (OSC 133 + tcgetpgrp/`/proc`, §9.1) and a **pluggable
-  `ProgramStateDetectorRegistry`** (§9.3) with a `ClaudeCodeDetector` (socket/OSC 9000, Layer 3) registered
-  for `comm == claude`; a `CompositeStateProvider` combines them per §9.1 (Claude-only — no heuristic). Flip
-  Terminal's `EvaluatesState` on; `SessionRuntime.stateEvaluator()` now returns the composite. Inject OSC 133
-  integration into Octopus terminals (§12.1).
-- **Host detection where the fd lives (§9.6):** in Electron main for the in-process backend; **inside
-  `octopusd` for the daemon backend (the default)**, shipping state as one additive `CONTROL` message on the
-  existing protocol (+ a `refreshState` control for the manual refresh affordance). `DaemonSessionRuntime.
-  stateEvaluator()` surfaces those messages so the ingest path is backend-agnostic.
+- Implement the **out-of-band Claude state bridge** (§9.1): one stdlib-only python3 script, embedded in TS and
+  written to the data dir on startup, wired into Claude's lifecycle hooks + statusline via a merge-safe edit of
+  `~/.claude/settings.json` (§9.2, §12.1). It writes a per-session state file keyed by `OCTOPUS_SESSION_ID`
+  (turn-gated newer-observation-wins over the hooks + transcript). Flip Terminal's `EvaluatesState` on.
+- **Detection is backend-agnostic and not a runtime concern (§9.6):** the bridge runs as Claude's own
+  subprocesses, and a single app-side `ClaudeStateWatcher` (Electron main) file-watches the state dir and feeds
+  `ingestSessionState`. Same for the in-process and daemon backends — no state seam on `SessionRuntime`, no
+  state message on the daemon protocol (the earlier `state`/`refreshState` frames were REMOVED, bumping
+  `PROTOCOL_VERSION` to 3).
 - Wire the existing `sessionStateChanged` → ingest (single-writer loop) → `TaskStateAggregator` → view-model
-  → icons in the progress window and on tabs. No debounce (§9.3 — transitions are immediate). **Shared
-  vocabulary Unknown/Idle/Working/NeedsInput** (§3.3); **ready-for-review** highlight as a renderer view-model
-  flag (§9.5 — store-only, no backend). Add the state transition log + debug overlay.
-- **No new ports, no domain signature changes.** New pieces are all additive: the detector *registry* (a
-  composition-root concern, like §8), one `CONTROL` protocol variant, and renderer store/selectors. Optionally
+  → icons in the progress window and on tabs. No debounce on the state itself (§9.3 — transitions are
+  immediate). **Shared vocabulary Unknown/Idle/Working/NeedsInput** (§3.3); **ready-for-review** highlight as a
+  renderer view-model flag (§9.5 — store-only, no backend). Add the state transition log + debug overlay.
+- **No new ports, no domain signature changes.** New pieces are all additive at the composition root: the
+  startup `ensureClaudeHooks`/`ensureClaudeStateScript` wiring and the `ClaudeStateWatcher` adapter (+ its
+  `rescan` serving the manual "refresh state" affordance app-side), and renderer store/selectors. Optionally
   expose the alternate aggregation precedence as a setting. *(Durable-session infra — **done ahead of phase
   2**:* `SessionManager` has a durable `octopusd` daemon backend, the default `terminal.backend` (opt out with
   `'in-process'`), that survives an app restart and re-attaches live PTYs — cwd + foreground program +
-  scrollback intact (§6.2). Renderer unaffected, exactly as the port boundary reserved. Phase 2's detection
-  running *inside* that daemon (§9.6) is the reason the durable backend was pulled ahead.)*
+  scrollback intact (§6.2). Renderer unaffected, exactly as the port boundary reserved. Because detection is
+  now out-of-band, it is unaffected by which backend owns the PTY.)*
 
 ### Phase 3 — Jenkins Pipeline Viewer
 
@@ -1000,29 +1059,29 @@ is untouched: a `JenkinsPane` carries a `windowId` like any session and moves be
 
 | # | Risk | Sev | Mitigation |
 |---|---|---|---|
-| R1 | State-detection reliability | High | Status is Claude-only — authoritative hook signals (§9.2), no misfiring heuristic. OSC 133 injected by default sharpens the at-prompt sentinel; manual "refresh state" affordance; log every transition w/ layer+confidence. |
-| R2 | PTY performance with many sessions | Med | Single epoll loop; output batching (leading-edge + 3 ms trailing coalesce, §6.6); 200 ms tcgetpgrp off the hot path; O(1)/byte OSC parse; 20 sessions ≈ 100 syscalls/s — negligible. |
+| R1 | State-detection reliability | High | Status is Claude-only, sourced out-of-band from Claude's own hooks + statusline (§9.1, §9.2) — no PTY parsing, no heuristic. Turn-gating stops a stray post-`Stop` sub-event resurrecting Working; the transcript backstop covers a resumed/legacy mid-turn file; `ClaudeStateWatcher.rescan` is the manual "refresh state" affordance; log every transition. |
+| R2 | PTY performance with many sessions | Med | Single epoll loop; output batching (leading-edge + 3 ms trailing coalesce, §6.6); state detection is off the PTY path entirely (§9.6 — external python bridge + file watches), so it adds nothing to the hot path. |
 | R3 | Worktree provisioning safety (repo-local script **or** native git) | High | Validate the resulting path (absolute, exists, is a directory; warn if not a git worktree); containment check before delete (exactly the stored path, not `/`/`repoDir`/an ancestor); 30 s timeout; show command output; **all inputs passed as argv — no shell interpolation** for both scripts and native git (I17). |
 | R4 | Keeping many sessions alive / crash loses agent work | Med | Phase 1 accepts loss + fresh-shell restore; durable backend (tmux/daemon) is the phase 2+ mitigation behind `SessionManager`; warn on quit if Working/Blocked. |
-| R5 | Security (air-gapped on-prem): socket spoofing, secrets | Med | Per-user `chmod 700` socket dir; validate/size-cap socket messages; secrets only via keychain (`credentialsRef`), never in the store/JSON. |
-| R6 | OSC parsing correctness on adversarial output | Low–Med | Reuse a hardened parser (xterm.js's); cap param length (1 KB) + sequence timeout; never propagate parse errors to the renderer. |
-| R7 | State flicker | Low | Claude-only model with sticky explicit signals (§9.1): no activity/staleness timers to flap between; the only transition is to/from `Unknown` on the structural at-prompt sentinel. |
+| R5 | Security (air-gapped on-prem): state-file trust, secrets | Med | The bridge only reads/writes JSON — nothing from Claude's payloads is ever executed; the watcher reads a small set of known fields and maps unknown states to `Unknown`; `~/.claude/settings.json` edits are merge-safe and tagged (`#octopus-state`), never clobbering the user's config; secrets only via keychain (`credentialsRef`), never in the store/JSON. |
+| R6 | Bridge failure degrades gracefully | Low–Med | Every hook is `… 2>/dev/null \|\| true` and the bridge wraps every write; a failure is a silent no-op (session stays `Unknown`) and the user's statusline still renders (the bridge chains to their saved original). |
+| R7 | State flicker | Low | Claude-only, event-driven from discrete hook/transcript observations (§9.1): no activity/staleness timers to flap between. Newer-observation-wins is self-dating; turn-gating prevents a stale sub-event from flipping a finished session. |
 | R8 | (phase 1.5) Cross-window move race — window moved between drop and `windowAtPoint`, or overlapping unmount/mount | Low | Hit-test is best-effort; worst case the session lands in the wrong window and is re-draggable. Source/target renderers are separate processes, so a brief double-sink during the move overlap cannot collide; the `pty-router` pending buffer covers the pre-mount gap (§6.7). |
 | R9 | (phase 1.5) Quit blocked by the secondary-window close dialog | Low | `before-quit` sets an `isQuitting` flag; the secondary `close` handler skips its dialog when quitting, so `Ctrl+Q` runs the normal graceful shutdown (§6.7). |
 | R10 | (phase 1.5) Persisted window off-screen after a monitor change | Low | On restore, clamp any window intersecting no display work area to the nearest display (`screen.getAllDisplays()`), preserving size (§6.3). |
 
 **Observability:** structured JSON state-transition log at `~/.local/share/octopus/state.log`;
-keyboard-toggled debug overlay showing the last N transitions per session (source layer + reason).
+keyboard-toggled debug overlay showing the last N transitions per session (reason + observation source).
 
-**Testing strategy:** unit (OSC parser byte-sequences, aggregation combinations, debounce timing — all pure);
-integration (scripted PTY emitting OSC 133 at known times; `sleep` as foreground → assert Working; direct
-socket writes → assert Blocked); e2e (real Claude Code with hooks → assert Working/Blocked); failure
-injection (socket disconnect, no OSC 133 → assert graceful fallback). Worktree scripts tested against a
-throwaway repo with a fake create/delete script.
+**Testing strategy:** unit (the REAL python3 bridge shelled out — event→state mapping, turn-gating,
+newer-observation-wins, transcript inference; aggregation combinations — all skip-if-no-python3); integration
+(end-to-end: real bridge writes a state file → real `ClaudeStateWatcher` → `coreToSessionState` → sink,
+including the stray-post-`Stop` regression and resume-recovery initial scan); e2e (real Claude Code with the
+injected hooks → assert Working/Blocked/Idle). Worktree scripts tested against a throwaway repo with a fake
+create/delete script.
 
-**Performance targets:** PTY read→render <5 ms; OSC 133→state <10 ms; hook→state <20 ms; state→task icon
-<50 ms (all transitions immediate, §9.3); Claude-exit→icon-clear ≤1 poll (200 ms); Jenkins poll 10 s; state
-subsystem <1 MB/session.
+**Performance targets:** PTY read→render <5 ms; hook→state-file-write <20 ms; file-change→task icon
+<100 ms (fs.watch + ~40 ms coalescing debounce, §9.3); Jenkins poll 10 s; per-session state file < a few KB.
 
 ---
 
@@ -1030,12 +1089,14 @@ subsystem <1 MB/session.
 
 These were reviewed and decided; recorded here so implementation doesn't re-litigate them.
 
-1. **Auto-inject OSC 133 & Claude Code hooks — YES, opt-out.** Octopus injects OSC 133 via an `--rcfile` that
-   sources the user's own rc first (never edits `~/.bashrc`) and writes hooks into
-   `<worktree>/.claude/settings.json`, **merging with — never clobbering — an existing file**. This is what
-   makes phase 2 state icons work out of the box instead of requiring every developer to hand-configure their
-   shell. The phase 1 seam (per-session socket + `OCTOPUS_STATE_SOCKET`) is provisioned regardless; injection
-   itself lands in phase 2.
+1. **Auto-inject Claude Code hooks + statusline — YES, opt-out.** On startup Octopus writes the python state
+   bridge into the data dir and **merges** hook entries + a statusline into the user-global
+   `~/.claude/settings.json`, **never clobbering an existing file** — its own entries are tagged
+   (`#octopus-state`) so they can be found and updated idempotently, and the user's original statusline command
+   is saved so the bridge chains to it (§9.1, §9.2). Editing on startup (not per-worktree) means a developer
+   who doesn't even have this repo gets configured, so phase 2 state icons work out of the box instead of
+   requiring hand-configuration. Gated by the `terminal.injectClaudeHooks` setting (default on). Correlation is
+   by `OCTOPUS_SESSION_ID`, injected into every managed PTY, so one global settings entry serves every session.
 2. **Durable backend (survive app restart) — deferred to phase 2, behind `SessionManager`.** Phase 1 hosts PTYs
    in-process and restores fresh shells at the correct cwd on restart. The `SessionManager` port boundary is
    kept clean enough that swapping in a tmux/daemon backend is drop-in. Pull it earlier only if long-running

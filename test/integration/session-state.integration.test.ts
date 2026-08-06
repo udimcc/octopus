@@ -133,6 +133,36 @@ d('Claude state pipeline (integration, §9.6)', () => {
     expect(observed.filter((o) => o.state === SessionState.Idle).length).toBe(idleCount)
   })
 
+  it('mid-tool tool_use does not transiently push NeedsInput while a working hook is in-turn', async () => {
+    // A dangling tool_use in the transcript (a tool mid-execution) has the same shape as
+    // one awaiting permission. With a fresh in-turn `working` hook, the statusline's
+    // transcript-derived `blocked` must NOT surface as NeedsInput (DESIGN §9.7). Without
+    // the effective() guard, the newer transcript mtime would win and flip to NeedsInput.
+    startWatcher()
+    bridge(['hook', 'UserPromptSubmit']) // open a turn
+    bridge(['hook', 'PreToolUse']) // working hook
+    expect(await waitUntil(() => last() === SessionState.Working)).toBe(true)
+
+    const transcriptPath = join(dir, 'midtool.jsonl')
+    writeFileSync(
+      transcriptPath,
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          stop_reason: 'tool_use',
+          content: [{ type: 'tool_use', id: 'tu-1', name: 'Bash' }]
+        }
+      }) + '\n',
+      'utf8'
+    )
+    bridge(['statusline'], JSON.stringify({ session_id: SID, transcript_path: transcriptPath }))
+    // Let any spurious push land, then assert the session stayed Working throughout.
+    await new Promise((r) => setTimeout(r, 200))
+    expect(last()).toBe(SessionState.Working)
+    expect(observed.filter((o) => o.state === SessionState.NeedsInput)).toHaveLength(0)
+  })
+
   it('resume recovery: the initial scan replays a state file written before the watcher starts', async () => {
     // The bridge wrote a state BEFORE the app (and its watcher) came up — as after a
     // restart. The initial scan must replay it so a restored tab shows status at once.

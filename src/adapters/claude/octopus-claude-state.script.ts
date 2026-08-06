@@ -122,9 +122,26 @@ def read_state(sid):
 
 
 def effective(data):
-    """Newer observation wins (hook.ts vs transcript.mtime); tie -> hook."""
+    """Newer observation wins (hook.ts vs transcript.mtime); tie -> hook.
+
+    One exception: a transcript-derived "blocked" is ambiguous -- a dangling tool_use
+    is EITHER an awaiting-permission prompt OR a tool merely mid-execution. When an
+    in-turn "working" hook contradicts it, prefer the hook even if transcript.mtime is
+    newer, so a tool mid-execution does not transiently read as NeedsInput. A real
+    permission prompt records a "blocked" hook (not "working"), so it is unaffected;
+    the resume path (no fresh hook, or a closed turn) lets the transcript win as before.
+    See DESIGN 9.7 (mid-tool tool_use) and 9.1.
+    """
     hook = data.get("hook") if isinstance(data.get("hook"), dict) else None
     tr = data.get("transcript") if isinstance(data.get("transcript"), dict) else None
+    if (
+        hook
+        and tr
+        and tr.get("state") == "blocked"
+        and hook.get("state") == "working"
+        and turn_open(data)
+    ):
+        return hook.get("state", "unknown"), hook.get("reason")
     h_ts = hook.get("ts") if hook else None
     t_ts = tr.get("mtime") if tr else None
     if hook and tr and isinstance(h_ts, (int, float)) and isinstance(t_ts, (int, float)):
@@ -198,6 +215,13 @@ def derive_transcript_state(path):
                 except ValueError:
                     continue
                 if not isinstance(rec, dict):
+                    continue
+                # Skip subagent sidechain records: a delegated subagent's dangling
+                # tool_use must not read as the PARENT session being blocked. Benign on
+                # Claude versions that split subagents into separate files (the case
+                # today), but guards a version that inlines sidechains into the main
+                # transcript. See DESIGN 9.7 (subagent sidechains).
+                if rec.get("isSidechain"):
                     continue
                 rtype = rec.get("type")
                 msg = rec.get("message") if isinstance(rec.get("message"), dict) else {}

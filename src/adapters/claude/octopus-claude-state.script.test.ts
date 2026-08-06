@@ -181,6 +181,117 @@ describe.skipIf(!hasPython)('octopus-claude-state.py', () => {
       runStatusline(p)
       expect((readState().transcript as Record<string, unknown>).state).toBe('working')
     })
+
+    it('ignores a dangling tool_use inside an isSidechain record (subagent) => not blocked', () => {
+      // A completed main-agent turn (end_turn) plus a subagent sidechain record still
+      // holding an unanswered tool_use. The sidechain must be skipped, so the main
+      // end_turn tail wins => waiting, NOT the subagent's dangling tool_use => blocked.
+      const p = transcript([
+        { type: 'user', message: { role: 'user', content: 'hi' } },
+        { type: 'assistant', message: { role: 'assistant', stop_reason: 'end_turn', content: [] } },
+        {
+          type: 'assistant',
+          isSidechain: true,
+          message: {
+            role: 'assistant',
+            stop_reason: 'tool_use',
+            content: [{ type: 'tool_use', id: 'sub-1', name: 'Bash' }]
+          }
+        }
+      ])
+      runStatusline(p)
+      expect((readState().transcript as Record<string, unknown>).state).toBe('waiting')
+    })
+
+    it('a sidechain record does not suppress a genuine main-agent dangling tool_use', () => {
+      // Guard against over-skipping: the MAIN agent's dangling tool_use must still count
+      // as blocked even when a later sidechain record is present (and itself ignored).
+      const p = transcript([
+        {
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            stop_reason: 'tool_use',
+            content: [{ type: 'tool_use', id: 'main-1', name: 'Bash' }]
+          }
+        },
+        {
+          type: 'assistant',
+          isSidechain: true,
+          message: { role: 'assistant', content: [{ type: 'tool_use', id: 'sub-1', name: 'Task' }] }
+        }
+      ])
+      runStatusline(p)
+      expect((readState().transcript as Record<string, unknown>).state).toBe('blocked')
+    })
+  })
+
+  // A dangling tool_use in the transcript is ambiguous: a tool merely MID-EXECUTION has
+  // the same signature as one awaiting a permission prompt. Because transcript.mtime can
+  // advance past the last hook's ts, the transcript's `blocked` would win the
+  // newer-observation-wins race and transiently flip a working session to NeedsInput.
+  // effective() therefore prefers an in-turn `working` hook over a transcript `blocked`.
+  // See DESIGN §9.7 (mid-tool tool_use) / §9.1.
+  describe('effective: transcript blocked vs in-turn working hook (§9.7 mid-tool)', () => {
+    function danglingTranscript(): string {
+      const p = join(dir, 'midtool.jsonl')
+      writeFileSync(
+        p,
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            stop_reason: 'tool_use',
+            content: [{ type: 'tool_use', id: 'tu-1', name: 'Bash' }]
+          }
+        }) + '\n',
+        'utf8'
+      )
+      return p
+    }
+
+    function runStatusline(transcriptPath: string): void {
+      run(['statusline'], JSON.stringify({ session_id: SID, transcript_path: transcriptPath }), {
+        OCTOPUS_SESSION_ID: SID
+      })
+    }
+
+    it('mid-tool: an in-turn working hook is preferred over a transcript-derived blocked', () => {
+      // Fire the working hook FIRST, then statusline, so transcript.mtime is genuinely
+      // newer than hook.ts — without the fix the transcript `blocked` would win.
+      run(['hook', 'UserPromptSubmit'], '{}', { OCTOPUS_SESSION_ID: SID }) // open a turn
+      run(['hook', 'PreToolUse'], '{}', { OCTOPUS_SESSION_ID: SID })
+      runStatusline(danglingTranscript())
+      const data = readState()
+      // The raw transcript observation is unchanged (still blocked)...
+      expect((data.transcript as Record<string, unknown>).state).toBe('blocked')
+      // ...but the effective state stays working (the in-turn working hook wins).
+      expect(data.state).toBe('working')
+    })
+
+    it('a genuine blocked hook (PermissionRequest) still wins over the transcript', () => {
+      run(['hook', 'UserPromptSubmit'], '{}', { OCTOPUS_SESSION_ID: SID })
+      run(['hook', 'PermissionRequest'], '{}', { OCTOPUS_SESSION_ID: SID })
+      runStatusline(danglingTranscript())
+      // hook.state is `blocked`, not `working`, so the guard is inert => stays blocked.
+      expect(readState().state).toBe('blocked')
+    })
+
+    it('resume path: transcript blocked with no in-turn working hook stays blocked', () => {
+      // No hooks at all — the guard cannot fire (hook is None), so the transcript wins.
+      runStatusline(danglingTranscript())
+      expect(readState().state).toBe('blocked')
+    })
+
+    it('closed turn (after Stop) does not let a working hook override transcript blocked', () => {
+      run(['hook', 'UserPromptSubmit'], '{}', { OCTOPUS_SESSION_ID: SID })
+      run(['hook', 'PreToolUse'], '{}', { OCTOPUS_SESSION_ID: SID })
+      run(['hook', 'Stop'], '{}', { OCTOPUS_SESSION_ID: SID }) // closes the turn; hook -> waiting
+      runStatusline(danglingTranscript())
+      // Turn is closed and hook.state is `waiting` (not working), so the guard is inert.
+      // Newer-observation-wins then applies to the transcript vs the Stop hook normally.
+      expect((readState().transcript as Record<string, unknown>).state).toBe('blocked')
+    })
   })
 
   it('statusline delegates to the saved original command and echoes its stdout', () => {
