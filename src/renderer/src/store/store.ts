@@ -25,6 +25,7 @@ import type {
   WindowDTO
 } from '../../../shared/dto'
 import type { EventDTO } from '../../../shared/events'
+import { type DisplayState, DISPLAY_RANK } from './display-state'
 
 /** Normalized task record: task-level metadata + an ordered list of session ids. */
 export interface TaskEntry {
@@ -282,14 +283,46 @@ export function isSessionFocused(data: StoreData, sessionId: string): boolean {
 }
 
 /**
- * Does `taskId` have ANY session flagged ready-for-review (§9.5)? The task rollup is
- * an OR over its sessions — the mirror of how the task's `state` is a worst-wins
- * aggregate over session states (derived backend-side, §3.4). A selector, not stored.
+ * The display level ONE session contributes to its own icon and its task's rollup
+ * (§3.4/§9.5). Folds the ready-for-review flag into the state priority via a single
+ * ordering. CRITICAL gate: `review` is valid ONLY while the session's CURRENT
+ * aggregation state is `waiting` (idle). A `working`/`blocked` session ignores any
+ * (possibly stale) ready-for-review flag, so a newer `working` supersedes a raised-
+ * but-unconsumed review — the session that just finished and then resumed shows
+ * `working`, not the stable review dot (the bug this fixes).
  */
-export function taskReadyForReview(data: StoreData, taskId: string): boolean {
+export function sessionDisplayState(session: SessionDTO, readyForReview: boolean): DisplayState {
+  switch (sessionAggregationState(session)) {
+    case 'blocked':
+      return 'needsInput'
+    case 'working':
+      return 'working'
+    case 'waiting':
+      return readyForReview ? 'review' : 'idle'
+    default:
+      return 'none'
+  }
+}
+
+/**
+ * A task's rollup icon: the MAX display priority across ALL its sessions, in any
+ * window (§3.4/§9.5). This replaces the old "(worst-wins state) + (separate ORed
+ * ready-for-review flag)" pair, which could not express review-on-one-session-while-
+ * another-works and let a stale flag suppress a session's real `working`. Computing
+ * the rollup from per-session display levels (each already gated by `sessionDisplayState`)
+ * makes both correct: `needsInput` > `review` > `working` > `idle`.
+ */
+export function taskDisplayState(data: StoreData, taskId: string): DisplayState {
   const task = data.tasks[taskId]
-  if (!task) return false
-  return task.sessionIds.some((id) => data.readyForReview[id] === true)
+  if (!task) return 'none'
+  let best: DisplayState = 'none'
+  for (const id of task.sessionIds) {
+    const session = data.sessions[id]
+    if (!session) continue
+    const d = sessionDisplayState(session, data.readyForReview[id] === true)
+    if (DISPLAY_RANK[d] > DISPLAY_RANK[best]) best = d
+  }
+  return best
 }
 
 /**
@@ -442,7 +475,7 @@ export function reduceEvent(data: StoreData, event: EventDTO): StoreData {
       // Switching to a task focuses its globally-active session, so the user has now
       // looked at it — clear its ready-for-review flag (§9.5). GLOBAL + unconditional,
       // mirroring activeSessionChanged: broadcast to every window on a deliberate switch,
-      // and the main-window task rollup (`taskReadyForReview`) ORs over sessions in ANY
+      // and the main-window task rollup (`taskDisplayState`) folds over sessions in ANY
       // window, so a guarded or per-window clear would leave the dot lit. Target the
       // replicated global pointer (`activeSessionByTask[taskId]`, identical in every
       // window) so all windows drop the SAME session and the rollup stays consistent.
@@ -463,7 +496,7 @@ export function reduceEvent(data: StoreData, event: EventDTO): StoreData {
       // The ready-for-review CLEAR is GLOBAL, not host-only (§9.5): switching to a
       // session focuses and raises its host window (composition-root), so the user has
       // now looked at it. The flag must clear in EVERY window's store — the task rollup
-      // (`taskReadyForReview`) is shown only in the main window yet ORs over sessions
+      // (`taskDisplayState`) is shown only in the main window yet folds over sessions
       // hosted in ANY window, so a host-only clear left the main window's task dot lit
       // after the user focused a session living in another window.
       const hosting = event.windowId === data.windowId
@@ -585,6 +618,14 @@ export function reduceEvent(data: StoreData, event: EventDTO): StoreData {
           ...next,
           readyForReview: { ...next.readyForReview, [event.sessionId]: true }
         }
+      }
+      // Defense-in-depth (§9.5): leaving `waiting` (e.g. waiting → working when the
+      // agent resumes) invalidates any stale ready-for-review flag — the session is
+      // no longer "just finished, awaiting eyes". Consumption-time gating in
+      // `sessionDisplayState` already ignores the flag off-idle, but clearing it here
+      // keeps the store honest so no consumer (or the debug read-out) is misled.
+      if (event.state !== 'waiting' && next.readyForReview[event.sessionId]) {
+        return { ...next, readyForReview: clearReady(next.readyForReview, event.sessionId) }
       }
       return next
     }

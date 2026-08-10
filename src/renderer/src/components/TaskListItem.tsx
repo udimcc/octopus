@@ -4,10 +4,10 @@
  * renames it in place (`tasks.rename`), and the row is a dnd-kit sortable handle so
  * tasks reorder by dragging (`tasks.reorder`, reconciled by `taskReordered`).
  *
- * The row leads with the task's aggregate status icon (§5.4, §9) — the worst-wins
- * roll-up of its sessions, derived backend-side and carried on `task.state`. When
- * not `ready` it also shows a "(lifecycle)" suffix so provisioning/stale/failed
- * states stay legible.
+ * The row leads with the task's aggregate status icon (§5.4, §9) — the max-priority
+ * roll-up over its sessions' display levels (`taskDisplayState`, folding state and
+ * ready-for-review, §3.4/§9.5), computed by the panel and passed in. When not `ready`
+ * it also shows a "(lifecycle)" suffix so provisioning/stale/failed states stay legible.
  */
 
 import { useSortable } from '@dnd-kit/sortable'
@@ -15,6 +15,7 @@ import { CSS } from '@dnd-kit/utilities'
 import { EditableLabel } from './EditableLabel'
 import { StatusIcon } from './StatusIcon'
 import { color, fontSize } from '../style/tokens'
+import type { DisplayState } from '../store/display-state'
 import type { TaskEntry } from '../store/store'
 
 export interface TaskListItemProps {
@@ -22,8 +23,8 @@ export interface TaskListItemProps {
   readonly active: boolean
   readonly onActivate: () => void
   readonly onRename: (name: string) => void
-  /** Any session in this task ready-for-review (§9.5); decorates the status icon. */
-  readonly readyForReview: boolean
+  /** The resolved rollup display level for this task (§3.4/§9.5). */
+  readonly display: DisplayState
   /** Indent the row under a repo header in the grouped view (§5.1). */
   readonly indent?: boolean
 }
@@ -33,7 +34,7 @@ export function TaskListItem({
   active,
   onActivate,
   onRename,
-  readyForReview,
+  display,
   indent = false
 }: TaskListItemProps): React.JSX.Element {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -69,7 +70,7 @@ export function TaskListItem({
         style={rowStyle}
       >
         <span style={{ display: 'inline-flex', width: 16, justifyContent: 'center', marginRight: 6 }}>
-          <StatusIcon state={task.state} readyForReview={readyForReview} />
+          <StatusIcon display={display} />
         </span>
         <EditableLabel
           value={task.name}

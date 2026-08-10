@@ -115,6 +115,25 @@ describe('<SessionTabBar>', () => {
     expect(screen.getByRole('button', { name: 'new session' })).toBeDisabled()
   })
 
+  it('a working session with a stale review flag shows the Working icon, not review (§9.5)', () => {
+    // The gating flows through `sessionDisplayState`: even though s1 still carries a
+    // ready-for-review flag (raised earlier on working→waiting), its CURRENT state is
+    // working, so the tab must show the pulsing Working icon — the bug this fixes.
+    seed({ sessions: [session('s1', { title: 'sh', state: 'working' })] })
+    useStore.setState({ readyForReview: { s1: true } })
+    render(<SessionTabBar taskId="t1" />)
+    const tab = screen.getByRole('tab', { name: 'sh' })
+    expect(tab.querySelector('[role="img"]')?.getAttribute('aria-label')).toBe('Working')
+  })
+
+  it('an idle session with a review flag shows the Ready-for-review icon (§9.5)', () => {
+    seed({ sessions: [session('s1', { title: 'sh', state: 'waiting' })] })
+    useStore.setState({ readyForReview: { s1: true } })
+    render(<SessionTabBar taskId="t1" />)
+    const tab = screen.getByRole('tab', { name: 'sh' })
+    expect(tab.querySelector('[role="img"]')?.getAttribute('aria-label')).toBe('Ready for review')
+  })
+
   it('offers a dropdown menu when more than one session type is available', () => {
     seed({
       lifecycle: 'ready',

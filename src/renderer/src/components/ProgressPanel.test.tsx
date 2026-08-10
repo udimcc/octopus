@@ -1,9 +1,25 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import { ProgressPanel } from './ProgressPanel'
 import { useStore, initialData } from '../store/store'
 import { installStubBridge } from '../test-support/stub-bridge'
-import type { TaskDTO } from '../../../shared/dto'
+import type { TaskDTO, SessionDTO } from '../../../shared/dto'
+
+function session(id: string, taskId: string, over: Partial<SessionDTO> = {}): SessionDTO {
+  return {
+    id,
+    taskId,
+    typeId: 'terminal',
+    title: id,
+    config: { kind: 'terminal' },
+    lifecycle: 'running',
+    state: 'unknown',
+    order: 0,
+    createdAt: 1000,
+    windowId: 'main',
+    ...over
+  }
+}
 
 function task(id: string, over: Partial<TaskDTO> = {}): TaskDTO {
   return {
@@ -162,5 +178,60 @@ describe('<ProgressPanel>', () => {
     expect(useStore.getState().settings.groupTasksByRepo).toBe(false)
     expect(window.octopusAPI.app.updateSettings).toHaveBeenCalledWith({ groupTasksByRepo: false })
     expect(screen.queryByText('Trading')).not.toBeInTheDocument()
+  })
+
+  /** The task row's status icon carries an aria-label ("Working"/"Ready for review"/…). */
+  function rowIconLabel(taskName: string): string | null {
+    const row = screen.getByRole('button', { name: taskName })
+    return row.querySelector('[role="img"]')?.getAttribute('aria-label') ?? null
+  }
+
+  it('task rollup icon shows ready-for-review from one session while another works (§9.5)', () => {
+    seed([task('t1', { name: 'Alpha', sessions: [session('s1', 't1'), session('s2', 't1')] })])
+    // s1 finished-and-flagged (idle+review), s2 working → rollup surfaces review.
+    useStore.setState({
+      sessions: {
+        s1: session('s1', 't1', { state: 'waiting' }),
+        s2: session('s2', 't1', { state: 'working' })
+      },
+      readyForReview: { s1: true }
+    })
+    render(<ProgressPanel onNewTask={vi.fn()} />)
+    expect(rowIconLabel('Alpha')).toBe('Ready for review')
+  })
+
+  it('task rollup icon shows needs-input even when a sibling is ready-for-review (§3.4)', () => {
+    seed([task('t1', { name: 'Alpha', sessions: [session('s1', 't1'), session('s2', 't1')] })])
+    useStore.setState({
+      sessions: {
+        s1: session('s1', 't1', { state: 'waiting' }),
+        s2: session('s2', 't1', { state: 'blocked' })
+      },
+      readyForReview: { s1: true }
+    })
+    render(<ProgressPanel onNewTask={vi.fn()} />)
+    expect(rowIconLabel('Alpha')).toBe('Needs input')
+  })
+
+  it('a working session with a stale review flag shows Working, not review (the bug)', () => {
+    seed([task('t1', { name: 'Alpha', sessions: [session('s1', 't1')] })])
+    useStore.setState({
+      sessions: { s1: session('s1', 't1', { state: 'working' }) },
+      readyForReview: { s1: true } // stale: raised on the earlier working→waiting
+    })
+    render(<ProgressPanel onNewTask={vi.fn()} />)
+    expect(rowIconLabel('Alpha')).toBe('Working')
+  })
+
+  it('re-renders the task icon on a pushed sessionStateChanged (subscription check)', () => {
+    seed([task('t1', { name: 'Alpha', sessions: [session('s1', 't1')] })])
+    useStore.setState({ sessions: { s1: session('s1', 't1', { state: 'working' }) } })
+    render(<ProgressPanel onNewTask={vi.fn()} />)
+    expect(rowIconLabel('Alpha')).toBe('Working')
+    // A pure session state flip (no readyForReview/tasks change) must re-render the row.
+    act(() => {
+      useStore.getState().applyEvent({ type: 'sessionStateChanged', sessionId: 's1', state: 'blocked' })
+    })
+    expect(rowIconLabel('Alpha')).toBe('Needs input')
   })
 })

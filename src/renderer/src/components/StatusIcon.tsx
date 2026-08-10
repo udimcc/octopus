@@ -1,24 +1,26 @@
 /**
- * The session/task status icon (DESIGN §5.4, §3.3, §9). Renders the state lattice
- * — `unknown | waiting | working | blocked` — as a small colored glyph with the
- * product's UI vocabulary (§3.3): **Working**, **Idle** (`waiting`), **Needs input**
- * (`blocked`). `unknown` renders nothing (no signal yet → no icon, matching V1).
+ * The session/task status icon (DESIGN §5.4, §3.3, §9). Purely presentational: it
+ * maps ONE resolved {@link DisplayState} to a glyph/color/label. All precedence —
+ * the state lattice AND the ready-for-review flag (§9.5) — is folded upstream in the
+ * store (`sessionDisplayState`/`taskDisplayState`), so this file owns only the glyph
+ * mapping (one source of truth for both the session-tab and task-list variants).
  *
- * A separate `readyForReview` flag (§9.5) is NOT a lattice state: it decorates an
- * otherwise-Idle session that *just* finished while unfocused ("wants your eyes").
- * When set it wins the glyph — a filled dot in the accent color — regardless of the
- * underlying `waiting` state, and its label becomes "Ready for review".
+ * The product's UI vocabulary (§3.3, §9.5): **Needs input** (`blocked`), **Ready for
+ * review** (a just-finished, unseen session), **Working**, **Idle** (`waiting`).
+ * `none` (unknown / no signal) renders nothing so an un-evaluated session never masks
+ * a more urgent one.
  *
- * Pure + presentational: the state string and the flag come from the store; this
- * file owns only the glyph/color/label mapping (one source of truth for both the
- * tab and the task-list variants). No icon library — glyphs are inline text so they
- * cost nothing and render identically under SwiftShader (no GPU, per project notes).
+ * `working` gently pulses ("in progress"); `review` is the SAME accent dot but static
+ * — the pulse is the only thing distinguishing "still running" from "done, wants your
+ * eyes". Because the display level is gated in the store (review is valid only while
+ * idle), a running session can never render the static review dot.
+ *
+ * No icon library — glyphs are inline text so they cost nothing and render identically
+ * under SwiftShader (no GPU, per project notes).
  */
 
 import { color } from '../style/tokens'
-
-/** The wire/domain state string (SessionDTO.state / TaskEntry.state). */
-export type StatusState = 'unknown' | 'waiting' | 'working' | 'blocked'
+import type { DisplayState } from '../store/display-state'
 
 interface Glyph {
   readonly glyph: string
@@ -28,40 +30,28 @@ interface Glyph {
   readonly pulse?: boolean
 }
 
-/** State → glyph/color/label. `unknown` is absent (renders nothing). */
-const GLYPHS: Readonly<Record<Exclude<StatusState, 'unknown'>, Glyph>> = {
+/** Display level → glyph/color/label. `none` is absent (renders nothing). */
+const GLYPHS: Readonly<Record<Exclude<DisplayState, 'none'>, Glyph>> = {
+  // ▲ warning — a permission/attention request, or an exited/failed session (§3.4 I12).
+  needsInput: { glyph: '▲', color: color.errorText, label: 'Needs input' },
+  // ● teal, static — just finished while unfocused; "wants your eyes" (§9.5).
+  review: { glyph: '●', color: color.accent, label: 'Ready for review' },
   // ● teal, gently pulsing — Claude thinking / a foreground command running.
   working: { glyph: '●', color: color.accent, label: 'Working', pulse: true },
   // ○ muted hollow — at a prompt / turn finished (the product's "Idle").
-  waiting: { glyph: '○', color: color.muted, label: 'Idle' },
-  // ▲ warning — a permission/attention request ("Needs input").
-  blocked: { glyph: '▲', color: color.errorText, label: 'Needs input' }
+  idle: { glyph: '○', color: color.muted, label: 'Idle' }
 }
 
-/** The ready-for-review decoration (§9.5): overrides the glyph on an idle session. */
-const REVIEW_GLYPH: Glyph = { glyph: '●', color: color.accent, label: 'Ready for review' }
-
 export interface StatusIconProps {
-  readonly state: string
-  /** §9.5 highlight — when true, overrides an idle glyph with the review dot. */
-  readonly readyForReview?: boolean
+  /** The resolved display level (from `sessionDisplayState`/`taskDisplayState`). */
+  readonly display: DisplayState
   /** px; the glyph scales with the surrounding text by default. */
   readonly size?: number
 }
 
-/**
- * Resolve the glyph to show, or `null` for nothing (unknown & not ready-for-review).
- * Exported for unit tests and the two call sites that want the aria-label.
- */
-export function resolveGlyph(state: string, readyForReview?: boolean): Glyph | null {
-  if (readyForReview) return REVIEW_GLYPH
-  if (state === 'working' || state === 'waiting' || state === 'blocked') return GLYPHS[state]
-  return null
-}
-
-export function StatusIcon({ state, readyForReview, size }: StatusIconProps): React.JSX.Element | null {
-  const g = resolveGlyph(state, readyForReview)
-  if (!g) return null
+export function StatusIcon({ display, size }: StatusIconProps): React.JSX.Element | null {
+  if (display === 'none') return null
+  const g = GLYPHS[display]
   return (
     <span
       role="img"

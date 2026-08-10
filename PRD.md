@@ -67,10 +67,16 @@ Status reflects **only a program that reports its own state.** In practice that 
 
 **"Ready for review" highlight.** Because the point of Octopus is to run many agents in parallel, a session
 that has **just finished** (transitioned Working → Idle) while you were not looking at it is shown with a
-distinct **ready-for-review** highlight (a checked/green icon) rather than a plain idle icon, so you can
+distinct **ready-for-review** highlight (a solid green icon) rather than a plain idle icon, so you can
 tell at a glance *which* of your parallel agents is done and awaiting your review. The highlight clears the
 moment you open (focus) that session; a session that was always idle, or that you have already seen, shows
 the plain idle icon. This highlight is a purely visual cue — it is not a new state a session "is in".
+
+The highlight applies **only while the session is idle**. If the agent starts working again before you
+look (e.g. it picks up a queued instruction, or a sub-agent resumes), the **Working** indicator takes
+precedence — a session that is *currently* working or needs input is **never** shown as ready-for-review,
+even if it briefly finished a moment ago. In other words the highlight is superseded the instant the session
+does anything new; it only ever decorates a session sitting idle with unseen finished work.
 
 Sessions report their state to the parent task.
 
@@ -86,11 +92,19 @@ A window listing all task names. Located on the left side of the screen.
   2. **Working** — at least one session is working.
   3. **Needs input** — at least one session needs the user (highest priority; demands attention).
   4. *(Unknown)* — no session has a known status yet → no icon.
-- **A task shows one status derived from all its sessions by "worst wins":** if any session needs input the
-  task needs input; else if any is working the task is working; else idle. The most-urgent session decides
-  the task icon, so a single blocked agent inside a task is never hidden by its idle siblings.
-- The **ready-for-review** highlight (above) also aggregates up: a task whose sessions just finished (and you
-  haven't looked yet) is highlighted so you can spot completed work while scanning the task list.
+- **A task shows one status derived from all its sessions by highest-priority-wins.** The task icon folds
+  the ready-for-review highlight into a single ordering across every session, highest → lowest:
+  1. **Needs input** — at least one session needs the user (demands attention first).
+  2. **Ready for review** — at least one *idle* session just finished unseen (see the highlight above).
+  3. **Working** — at least one session is working.
+  4. **Idle** — everything is idle with nothing to review.
+  5. *(Unknown)* — no session has a known status → no icon.
+
+  The most-urgent session decides the task icon, so a single blocked agent is never hidden by idle siblings,
+  and a finished-and-unseen session surfaces as ready-for-review even while a *different* session in the same
+  task is still working. Because ready-for-review is valid only for an idle session (above), a session that
+  has resumed working contributes **Working**, not ready-for-review — so the task icon can never show a
+  stable "ready" dot while one of its agents is actually running.
 
 ### Controls
 

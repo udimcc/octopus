@@ -37,7 +37,7 @@ function renderTab(over: Partial<SessionTabProps> = {}): {
     moveTargets: [],
     resolveCwd: vi.fn().mockResolvedValue(null),
     canOpenHere: true,
-    readyForReview: false,
+    display: 'idle',
     ...over
   }
   render(

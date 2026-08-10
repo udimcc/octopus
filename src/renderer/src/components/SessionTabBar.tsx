@@ -26,7 +26,7 @@ import {
 import { SortableContext, horizontalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
 import { SessionTab } from './SessionTab'
 import { NewSessionDropdown } from './NewSessionDropdown'
-import { useStore } from '../store/store'
+import { useStore, sessionDisplayState } from '../store/store'
 import { color, radius, shadow } from '../style/tokens'
 
 export interface SessionTabBarProps {
@@ -238,7 +238,7 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
                   onRename={(title) => window.octopusAPI.sessions.rename({ sessionId: sid, title })}
                   onClose={() => window.octopusAPI.sessions.close({ sessionId: sid })}
                   canOpenHere={s.config.kind === 'terminal'}
-                  readyForReview={readyForReview[sid] === true}
+                  display={sessionDisplayState(s, readyForReview[sid] === true)}
                   resolveCwd={() => window.octopusAPI.sessions.cwd({ sessionId: sid })}
                   onNewTerminalFromHere={(cwd) =>
                     window.octopusAPI.sessions.create({

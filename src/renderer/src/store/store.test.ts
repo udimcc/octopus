@@ -6,7 +6,8 @@ import {
   sessionIdsInWindow,
   activeSessionInWindow,
   isSessionFocused,
-  taskReadyForReview,
+  sessionDisplayState,
+  taskDisplayState,
   type StoreData
 } from './store'
 import type { TaskDTO, SessionDTO, WindowedWorkspaceStateDTO } from '../../../shared/dto'
@@ -165,7 +166,7 @@ describe('reduceEvent (§5.2)', () => {
   it('activeSessionChanged clears the ready-for-review flag in EVERY window (§9.5)', () => {
     // The clear is global: switching to a session focuses+raises its host window, so
     // the user HAS looked at it. Every window's store must drop the flag, because the
-    // task rollup (`taskReadyForReview`) is shown only in the main window yet ORs over
+    // task rollup (`taskDisplayState`) is shown only in the main window yet folds over
     // sessions hosted in ANY window — a host-only clear left the main window's task dot
     // lit after focusing a session that lives elsewhere.
     let d: StoreData = { ...initialData(), windowId: 'main' }
@@ -187,7 +188,8 @@ describe('reduceEvent (§5.2)', () => {
       windowId: 'win-9'
     })
     expect(elsewhere.readyForReview.s1).toBeUndefined()
-    expect(taskReadyForReview(elsewhere, 't1')).toBe(false)
+    // s1 is `waiting` with the flag cleared → rollup falls back to plain idle, not review.
+    expect(taskDisplayState(elsewhere, 't1')).toBe('idle')
 
     // Switching to it in the host window ('main') clears it too.
     const here = reduceEvent(d, {
@@ -537,7 +539,8 @@ describe('ready-for-review (§9.5)', () => {
     d = setState(d, 's2', 'working')
     d = setState(d, 's2', 'waiting')
     expect(d.readyForReview.s2).toBe(true)
-    expect(taskReadyForReview(d, 't1')).toBe(true)
+    // s2 is idle with the flag → the task rollup surfaces `review` (s1 still unknown).
+    expect(taskDisplayState(d, 't1')).toBe('review')
   })
 
   it('does NOT raise for the focused session (the user is looking at it)', () => {
@@ -608,7 +611,12 @@ describe('ready-for-review (§9.5)', () => {
     // other windows. Focusing such a session broadcasts `activeSessionChanged` with a
     // non-host windowId; the (main) window must still clear the flag so the task dot
     // stops showing ready-for-review with no session actually flagged.
-    let d: StoreData = { ...base(), readyForReview: { s2: true } }
+    // s2 is idle (waiting) AND flagged → it rolls up as `review` until focus clears it.
+    let d: StoreData = {
+      ...base(),
+      sessions: { ...base().sessions, s2: { ...base().sessions.s2, state: 'waiting' } },
+      readyForReview: { s2: true }
+    }
     // Move s2 out to a secondary window, as a detach would.
     d = reduceEvent(d, {
       type: 'sessionMovedToWindow',
@@ -617,7 +625,7 @@ describe('ready-for-review (§9.5)', () => {
       fromWindowId: 'main',
       toWindowId: 'win-2'
     })
-    expect(taskReadyForReview(d, 't1')).toBe(true)
+    expect(taskDisplayState(d, 't1')).toBe('review')
     d = reduceEvent(d, {
       type: 'activeSessionChanged',
       taskId: 't1',
@@ -625,18 +633,24 @@ describe('ready-for-review (§9.5)', () => {
       windowId: 'win-2'
     })
     expect(d.readyForReview.s2).toBeUndefined()
-    expect(taskReadyForReview(d, 't1')).toBe(false)
+    // Flag cleared, s2 still idle → the rollup falls back to plain idle, not review.
+    expect(taskDisplayState(d, 't1')).toBe('idle')
   })
 
   it('activeTaskChanged clears the flag for the task’s global active session (§9.5)', () => {
     // Switching BACK to a task (not between its sessions) must clear the dot: the active
     // session tab pointer never moves, so no activeSessionChanged fires — the clear has
     // to ride on activeTaskChanged. Model "away on t-other, then switch to t1".
-    let d: StoreData = { ...base(), activeTaskId: 't-other', readyForReview: { s1: true } }
+    let d: StoreData = {
+      ...base(),
+      sessions: { ...base().sessions, s1: { ...base().sessions.s1, state: 'waiting' } },
+      activeTaskId: 't-other',
+      readyForReview: { s1: true }
+    }
     d = reduceEvent(d, { type: 'activeTaskChanged', taskId: 't1' })
     expect(d.activeTaskId).toBe('t1')
     expect(d.readyForReview.s1).toBeUndefined()
-    expect(taskReadyForReview(d, 't1')).toBe(false)
+    expect(taskDisplayState(d, 't1')).toBe('idle')
   })
 
   it('activeTaskChanged clears globally even in a blurred / non-host window (§9.5)', () => {
@@ -679,6 +693,105 @@ describe('ready-for-review (§9.5)', () => {
     useStore.setState({ ...base(), activeSessionByTask: {}, readyForReview: { s1: true } })
     useStore.getState().setActiveTask('t1')
     expect(useStore.getState().readyForReview.s1).toBe(true)
+  })
+
+  it('a resumed session (waiting→working) drops its stale flag — the bug repro (§9.5)', () => {
+    // Claude finishes (working→waiting) while s2 is unfocused → flag raised → shows
+    // review. Then Claude resumes (waiting→working) before the user looks: the newer
+    // `working` must win, and the store must drop the now-invalid flag.
+    let d = base() // s1 focused, s2 unfocused
+    d = setState(d, 's2', 'working')
+    d = setState(d, 's2', 'waiting')
+    expect(d.readyForReview.s2).toBe(true)
+    expect(sessionDisplayState(d.sessions.s2, true)).toBe('review')
+    d = setState(d, 's2', 'working') // Claude resumed
+    expect(d.readyForReview.s2).toBeUndefined() // defense-in-depth clear
+    expect(sessionDisplayState(d.sessions.s2, d.readyForReview.s2 === true)).toBe('working')
+    expect(taskDisplayState(d, 't1')).toBe('working')
+  })
+
+  it('leaving waiting for blocked also drops a stale flag (§9.5)', () => {
+    let d: StoreData = {
+      ...base(),
+      sessions: { ...base().sessions, s2: { ...base().sessions.s2, state: 'waiting' } },
+      readyForReview: { s2: true }
+    }
+    d = setState(d, 's2', 'blocked')
+    expect(d.readyForReview.s2).toBeUndefined()
+    expect(sessionDisplayState(d.sessions.s2, false)).toBe('needsInput')
+  })
+})
+
+/**
+ * Display-state derivation (§3.4/§9.5): the icon a session/task shows is the highest-
+ * priority display level — `needsInput > review > working > idle > none` — where
+ * `review` is valid only while the session is idle (folds the ready-for-review flag).
+ */
+describe('display state (§3.4/§9.5)', () => {
+  const sess = (over: Partial<SessionDTO>): SessionDTO => session('s', 't', over)
+
+  it('a working session ignores a stale review flag → working (not review)', () => {
+    expect(sessionDisplayState(sess({ state: 'working' }), true)).toBe('working')
+  })
+
+  it('a blocked session + review flag → needsInput (attention beats a finished sibling)', () => {
+    expect(sessionDisplayState(sess({ state: 'blocked' }), true)).toBe('needsInput')
+  })
+
+  it('review is valid only while idle: waiting + flag → review, without flag → idle', () => {
+    expect(sessionDisplayState(sess({ state: 'waiting' }), true)).toBe('review')
+    expect(sessionDisplayState(sess({ state: 'waiting' }), false)).toBe('idle')
+  })
+
+  it('unknown → none (no icon), even with a flag', () => {
+    expect(sessionDisplayState(sess({ state: 'unknown' }), true)).toBe('none')
+  })
+
+  it('an exited/failed session contributes needsInput (I12), flag or not', () => {
+    expect(sessionDisplayState(sess({ lifecycle: 'exited', state: 'waiting' }), true)).toBe(
+      'needsInput'
+    )
+    expect(sessionDisplayState(sess({ lifecycle: 'start_failed', state: 'unknown' }), false)).toBe(
+      'needsInput'
+    )
+  })
+
+  /** A task `t1` with two sessions in given states + flags. */
+  function taskWith(
+    s1: Partial<SessionDTO>,
+    s2: Partial<SessionDTO>,
+    ready: Record<string, boolean> = {}
+  ): StoreData {
+    let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s1', 't1', s1) })
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s2', 't1', s2) })
+    return { ...d, readyForReview: ready }
+  }
+
+  it('rollup: review on one session beats working on another → review', () => {
+    const d = taskWith({ state: 'waiting' }, { state: 'working' }, { s1: true })
+    expect(taskDisplayState(d, 't1')).toBe('review')
+  })
+
+  it('rollup: needsInput anywhere beats a review sibling → needsInput', () => {
+    const d = taskWith({ state: 'waiting' }, { state: 'blocked' }, { s1: true })
+    expect(taskDisplayState(d, 't1')).toBe('needsInput')
+  })
+
+  it('rollup: a working session with a stale flag alongside another working → working', () => {
+    const d = taskWith({ state: 'working' }, { state: 'working' }, { s1: true })
+    expect(taskDisplayState(d, 't1')).toBe('working')
+  })
+
+  it('rollup: an empty / all-unknown task → none', () => {
+    const empty = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
+    expect(taskDisplayState(empty, 't1')).toBe('none')
+    const unknowns = taskWith({ state: 'unknown' }, { state: 'unknown' })
+    expect(taskDisplayState(unknowns, 't1')).toBe('none')
+  })
+
+  it('rollup: an unknown task id → none', () => {
+    expect(taskDisplayState(initialData(), 'nope')).toBe('none')
   })
 })
 

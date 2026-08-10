@@ -35,7 +35,7 @@ sessions while **all sessions keep running in the background**.
 | PTY hosting: in-process vs daemon vs tmux | **Phase 1: node-pty in-process behind a `SessionManager` port.** Durable backend (daemon or tmux) is a phase 2+ migration with the same message protocol. | §6.2 |
 | Task-state aggregation rule | **Worst-status-wins:** `Blocked > Working > Waiting > Unknown`. | §3.4 |
 | Status vocabulary (one, shared) | **UI and domain share ONE vocabulary: `Unknown` / `Idle` / `Working` / `NeedsInput`** — no domain-vs-label translation. The enum *member names* are these; the enum **values** stay the original wire strings (`'waiting'`/`'blocked'`) so IPC, the daemon protocol, persistence, and hook payloads need no migration (§10's "signatures never change" holds — only TS member identifiers changed). `Unknown → no icon`. | §3.3, §5.4 |
-| "Just finished" signal (many parallel agents) | **Ready-for-review is a renderer view-model flag, not a domain state.** A `Working→Waiting` transition observed while a session is unfocused raises a highlight that clears on focus. Adds **no** enum member, no port change. | §3.4, §5.4, §9.5 |
+| "Just finished" signal (many parallel agents) | **Ready-for-review is a renderer view-model flag, not a domain state.** A `Working→Waiting` transition observed while a session is unfocused raises a highlight that clears on focus. Adds **no** enum member, no port change. The displayed icon (session and task) is a single **display-state** priority — `NeedsInput > Review > Working > Idle > None` — that folds the flag into the state ordering; review is valid **only while the session is Idle**, so a newer `Working` supersedes a stale flag (a running session never shows the static review dot). | §3.4, §5.4, §9.5 |
 | How status is detected | **Claude-only, out-of-band via a python bridge.** A single stdlib-only python3 script wired into Claude's hooks + statusline writes each session's state file (keyed by `OCTOPUS_SESSION_ID`); Octopus never reads the PTY or process table. Non-Claude foreground programs stay `Unknown` (no heuristic). | §9.1, §9.2 |
 | Where state is *detected* (daemon vs main) | **Backend-agnostic: neither the runtime nor the daemon participates.** The bridge runs as Claude's own subprocesses; one app-side `ClaudeStateWatcher` (Electron main) file-watches the state dir and feeds `ingestSessionState`. Identical for the in-process and daemon backends — `SessionRuntime` has no state seam, the protocol has no state message. | §9.3, §9.6 |
 | Worktree provisioning | **Repo-local script if present, else native git.** If `<repoDir>/create_worktree.sh` (resp. `delete_worktree.sh`) exists, Octopus runs it (script owns the location); otherwise Octopus provisions the worktree itself via `git worktree`. Detected **per task** on each create/delete. | §6.4, §12.4 |
@@ -190,9 +190,28 @@ precedence can be offered as a setting without touching the `Task` entity. Empty
 "just finished" member — a finished agent is simply `Idle`. "This agent completed while I wasn't
 looking" is instead a **renderer-side view-model flag** derived from the *transition* `Working → Idle`
 observed while the session is **not focused**. It is not persisted, not aggregated by the domain, and never
-enters `sessionStateChanged`; it is pure UI memory (§9.5). The flag clears on focus. A task inherits the flag
-if **any** of its sessions carries it (an OR over children, independent of the worst-wins `TaskState`), so the
-progress panel can highlight a task with freshly-finished work even while its aggregate state is plain `Idle`.
+enters `sessionStateChanged`; it is pure UI memory (§9.5). The flag clears on focus.
+
+**The displayed icon is a single display-state priority, not `(worst-wins state) + (separate OR flag)`.**
+Both the per-session tab icon and the per-task rollup resolve to one `DisplayState` — `NeedsInput > Review >
+Working > Idle > None` (highest wins) — computed by folding the flag into the state ordering
+(`sessionDisplayState`), then taking the **max** over a task's sessions (`taskDisplayState`). Two rules fall
+out of this and are load-bearing:
+
+- **Review is valid only while Idle.** `sessionDisplayState` maps a session to `Review` *only* if its
+  current aggregation state is `Waiting` and the flag is set; a `Working`/`Blocked` session ignores the flag
+  entirely. So a session that finished-then-resumed (`Working → Waiting → Working`, raising the flag on the
+  middle step) displays `Working` — the newer state **supersedes** the stale flag. The earlier design, which
+  ORed a `taskReadyForReview` flag independently of the worst-wins `TaskState`, showed the *static* review dot
+  on a session that was actually running (a stable green dot while Claude was working) until focus cleared the
+  flag. Computing the rollup from per-session display levels removes that class of bug and also lets `Review`
+  on one session coexist with `Working` on another (the task shows the higher-priority `Review`).
+- **NeedsInput outranks Review.** A blocked session in a task demands action before a finished sibling wants a
+  look, so `NeedsInput` wins the rollup over `Review`.
+
+Defense-in-depth: the store also **clears** the flag when a session leaves `Waiting` (e.g. `Waiting →
+Working`), so the store stays honest and the debug read-out isn't misled — but correctness does not depend on
+it, because consumption is gated by `sessionDisplayState` regardless.
 
 ### 3.5 Task lifecycle
 
@@ -291,8 +310,8 @@ All `TaskView`s and their `SessionPane`s stay mounted; only the active ones are 
 
 Zustand store holds: `tasks`, `sessions`, `activeTaskId`, `activeSessionId` (per task), and (phase 2) each
 session's `state` (already a field on `SessionDTO`/`TaskEntry` — the phase-1 seam, always `'unknown'` in
-phase 1) plus a derived `taskStatuses` selector applying §3.4 and a `readyForReview` map + `taskReadyForReview`
-selector (§9.5). **High-frequency `ptyData` bypasses the store** — it is delivered by IPC directly to the
+phase 1) plus a `readyForReview` map and the `sessionDisplayState`/`taskDisplayState` selectors that fold it
+into the §3.4 display-state priority (§9.5). **High-frequency `ptyData` bypasses the store** — it is delivered by IPC directly to the
 target `TerminalPane`'s `terminal.write(data)`. On startup the renderer calls `app:getState` (§6.5) to
 hydrate; thereafter lifecycle/status events patch the store. The store already has `reduceEvent` cases for the
 dormant `sessionStateChanged`/`taskStateChanged` events (patching `sessions[id].state` / `tasks[id].state`) —
@@ -361,12 +380,15 @@ restore complexity). The serialize-and-replay path is kept available for a futur
   **NeedsInput** = warning triangle, amber; **Unknown** = no icon at all (transparent, never a
   placeholder glyph — an un-evaluated session must not draw attention). Tooltips give the plain-text label +
   reason (e.g. "Needs input — Claude is asking permission to run a tool").
-  - **Ready-for-review highlight (§3.4, §9.5):** a session flagged ready-for-review shows a distinct
-    **green check** in place of the plain gray idle icon; on a task the same green accent decorates the task
-    icon. It is the "which of my agents finished?" scan signal. Clearing is on **focus** of that session
-    (opening its tab in its window). Because it is a renderer view-model flag it survives task switches (still
-    in the store) but not an app restart (a restored session starts un-flagged — a finished-long-ago agent is
-    just idle).
+  - **Ready-for-review highlight (§3.4, §9.5):** an *idle* session flagged ready-for-review shows a distinct
+    **static accent dot** in place of the plain gray idle icon — visually the Working dot **without** the
+    pulse, so "done, wants your eyes" reads apart from "still running" at a glance. On a task the same accent
+    decorates the rollup icon. It is the "which of my agents finished?" scan signal, resolved through the
+    single display-state priority (`NeedsInput > Review > Working > Idle`, §3.4): a session that has resumed
+    `Working` shows the pulsing Working dot, never the static review dot. Clearing is on **focus** of that
+    session (opening its tab in its window). Because it is a renderer view-model flag it survives task switches
+    (still in the store) but not an app restart (a restored session starts un-flagged — a finished-long-ago
+    agent is just idle).
 - **Keyboard:** eight actions are **fully user-configurable chords** in Settings — next/prev session
   (`sessionNextKey` / `sessionPrevKey`, defaults `Ctrl+Shift+→`/`←`), next/prev task (`taskNextKey` /
   `taskPrevKey`, defaults `Ctrl+Shift+↓`/`↑`), new session (`newSessionKey`, default `Ctrl+Shift+N`), new task
@@ -890,9 +912,21 @@ stream** and lives only in the Zustand store:
   asked; resolving it isn't "new finished work"). A session that goes straight to `Waiting` without a prior
   `Working` (e.g. freshly spawned at a prompt) never raises it.
 - **Clear.** On focusing that session (its tab becomes active in a focused window) → `readyForReview[sessionId]
-  = false`. This is the only clear path.
-- **Task rollup.** `taskReadyForReview(taskId) = OR over its sessions` — a selector, exactly like
-  `taskStatuses` (§5.2) is a selector over `sessionStatuses`. Independent of `TaskState`.
+  = false`. This is the primary clear path. As **defense-in-depth**, the flag is *also* cleared when the
+  session leaves `Waiting` (a `Waiting → Working`/`Blocked` transition): once the agent is doing something
+  again the "just finished, unseen" premise no longer holds.
+- **Validity / supersession.** A raised flag is consumed **only while the session's current state is `Waiting`
+  (Idle).** Any newer non-idle transition (`Working`/`Blocked`) supersedes it — the session displays that
+  state, not `Review`. This is enforced at consumption in `sessionDisplayState` (which returns `Review` only
+  for an idle+flagged session), so even a flag the store hasn't yet cleared cannot mask a running session.
+  This fixes the bug where a session that finished-then-resumed (`Working → Waiting → Working`) showed the
+  static review dot instead of the pulsing Working dot until it was focused.
+- **Display level & task rollup.** The icon shown (session and task) is a `DisplayState` with priority
+  `NeedsInput > Review > Working > Idle > None`. `sessionDisplayState(session, flag)` gives one session's
+  level (with the idle gate above); `taskDisplayState(taskId)` is the **max** over the task's sessions —
+  replacing the old `taskReadyForReview` OR-selector, which was independent of `TaskState` and so could show
+  `Review` while a sibling (or the same session) was `Working`. `NeedsInput` still wins over `Review` (a
+  blocked session demands action before a finished one wants a look). See §3.4.
 - **Non-goals / bounds.** Not persisted (§5.4 — restart starts clean), not in any DTO, not aggregated by the
   domain, never in `sessionStateChanged`. It is pure UI memory keyed off events the store already receives, so
   it needs **no** backend, port, or protocol change — only store reducer logic + the icon variant (§5.4). The

@@ -20,6 +20,7 @@ import { CSS } from '@dnd-kit/utilities'
 import { EditableLabel, type EditableLabelHandle } from './EditableLabel'
 import { StatusIcon } from './StatusIcon'
 import { color, radius, shadow } from '../style/tokens'
+import type { DisplayState } from '../store/display-state'
 import type { SessionDTO } from '../../../shared/dto'
 
 /** A window this session can be moved to, with a human label ("Main window"/"Window 2"). */
@@ -46,8 +47,8 @@ export interface SessionTabProps {
   readonly resolveCwd: () => Promise<string | null>
   /** Whether "new terminal here" applies (terminal sessions only). */
   readonly canOpenHere: boolean
-  /** Ready-for-review highlight for this session (§9.5); decorates the status icon. */
-  readonly readyForReview: boolean
+  /** The resolved status-icon display level (folds state + ready-for-review, §9.5). */
+  readonly display: DisplayState
 }
 
 export function SessionTab({
@@ -62,7 +63,7 @@ export function SessionTab({
   moveTargets,
   resolveCwd,
   canOpenHere,
-  readyForReview
+  display
 }: SessionTabProps): React.JSX.Element {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: session.id
@@ -142,7 +143,7 @@ export function SessionTab({
     >
       {/* Live status glyph (§5.4, §9). Suppressed for a dead session — its "(exited)"
           suffix already tells the story and no state is being evaluated anymore. */}
-      {exited ? null : <StatusIcon state={session.state} readyForReview={readyForReview} />}
+      {exited ? null : <StatusIcon display={display} />}
       <EditableLabel
         ref={labelRef}
         value={session.title}
