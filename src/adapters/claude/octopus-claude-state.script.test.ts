@@ -427,6 +427,406 @@ describe.skipIf(!hasPython)('octopus-claude-state.py', () => {
     })
   })
 
+  // Subagent (Task/Agent tool) awareness. The whole session -- main agent + any
+  // subagents it launches -- is one unit: Working while EITHER is active. A subagent's
+  // life is bracketed by PreToolUse(Task|Agent) (++, at launch) .. SubagentStop (--, at
+  // true completion). A BACKGROUND subagent's PostToolUse(Agent) fires at LAUNCH (not
+  // completion), so it must NOT drive the counter. The main agent's Stop DEFERS closing
+  // the turn while any subagent is outstanding, so the session stays Working across a
+  // premature Stop and does not flash Idle. See DESIGN §9.2 / §9.7.
+  describe('subagent delegation (Agent/Task)', () => {
+    function transcript(lines: object[]): string {
+      const p = join(dir, 'deleg.jsonl')
+      writeFileSync(p, lines.map((l) => JSON.stringify(l)).join('\n') + '\n', 'utf8')
+      return p
+    }
+    const danglingTool = (name: string, id = 'tu-1'): object => ({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id, name }]
+      }
+    })
+    function runStatusline(transcriptPath: string): void {
+      run(['statusline'], JSON.stringify({ session_id: SID, transcript_path: transcriptPath }), {
+        OCTOPUS_SESSION_ID: SID
+      })
+    }
+    const pre = (tool: string): void => {
+      run(['hook', 'PreToolUse'], JSON.stringify({ tool_name: tool }), { OCTOPUS_SESSION_ID: SID })
+    }
+    const post = (tool: string): void => {
+      run(['hook', 'PostToolUse'], JSON.stringify({ tool_name: tool }), { OCTOPUS_SESSION_ID: SID })
+    }
+    const subagentStop = (): void => {
+      run(['hook', 'SubagentStop'], '{}', { OCTOPUS_SESSION_ID: SID })
+    }
+    const stop = (): void => {
+      run(['hook', 'Stop'], '{}', { OCTOPUS_SESSION_ID: SID })
+    }
+    const prompt = (): void => {
+      run(['hook', 'UserPromptSubmit'], '{}', { OCTOPUS_SESSION_ID: SID })
+    }
+
+    it('dangling Agent tool_use tail => working (not blocked)', () => {
+      runStatusline(transcript([danglingTool('Agent')]))
+      expect((readState().transcript as Record<string, unknown>).state).toBe('working')
+    })
+
+    it('dangling Task tool_use tail => working (historical name)', () => {
+      runStatusline(transcript([danglingTool('Task')]))
+      expect((readState().transcript as Record<string, unknown>).state).toBe('working')
+    })
+
+    it('mixed dangling Agent + Bash tail => blocked', () => {
+      runStatusline(
+        transcript([
+          {
+            type: 'assistant',
+            message: {
+              role: 'assistant',
+              stop_reason: 'tool_use',
+              content: [
+                { type: 'tool_use', id: 'a-1', name: 'Agent' },
+                { type: 'tool_use', id: 'b-1', name: 'Bash' }
+              ]
+            }
+          }
+        ])
+      )
+      expect((readState().transcript as Record<string, unknown>).state).toBe('blocked')
+    })
+
+    it('PreToolUse(Agent) increments the counter and forces working over a transcript blocked', () => {
+      prompt()
+      pre('Agent')
+      // A dangling BASH transcript reads blocked (delegation-aware inference is out of
+      // the way), so only the counter can hold the session working.
+      runStatusline(transcript([danglingTool('Bash')]))
+      const data = readState()
+      expect((data.transcript as Record<string, unknown>).state).toBe('blocked')
+      expect(data.subagents).toBe(1)
+      expect(data.state).toBe('working')
+    })
+
+    it('counter increments on PreToolUse(Agent), decrements on SubagentStop, across parallel subagents', () => {
+      prompt()
+      pre('Agent')
+      pre('Agent')
+      pre('Agent')
+      expect(readState().subagents).toBe(3)
+      expect(readState().state).toBe('working')
+      subagentStop()
+      subagentStop()
+      expect(readState().subagents).toBe(1)
+      expect(readState().state).toBe('working')
+      subagentStop()
+      expect(readState().subagents).toBe(0)
+    })
+
+    it('PostToolUse(Agent) does NOT move the counter (background launch fires it early)', () => {
+      // A background subagent's PostToolUse(Agent) fires at LAUNCH, not completion, so
+      // it must not close the bracket -- only SubagentStop does.
+      prompt()
+      pre('Agent')
+      post('Agent')
+      expect(readState().subagents).toBe(1)
+    })
+
+    it('SubagentStop decrement floors at zero', () => {
+      prompt()
+      subagentStop()
+      expect(readState().subagents).toBe(0)
+    })
+
+    it('a non-delegation tool does not move the counter', () => {
+      prompt()
+      pre('Bash')
+      post('Bash')
+      expect(readState().subagents).toBe(0)
+    })
+
+    it('bug 1: Stop while a background child runs stays working (deferred, turn not closed)', () => {
+      // Background Agent: Pre+Post fire at launch, then the MAIN agent Stops while the
+      // child still runs -> must stay Working (Stop defers closing while subagents > 0)
+      // and record that a Stop is pending (stop_deferred) without closing the turn.
+      prompt()
+      pre('Agent') // launch (subagents -> 1)
+      post('Agent') // background launch returns immediately; must NOT decrement
+      expect(readState().subagents).toBe(1)
+      stop() // main agent yields while child still runs
+      const data = readState()
+      expect(data.subagents).toBe(1) // NOT zeroed
+      expect(data.state).toBe('working') // NOT waiting -- Stop deferred
+      expect(data.turn_end_ts).toBeUndefined() // deferred Stop never closed the turn
+      expect(data.stop_deferred).toBe(true) // ...but it is remembered for finalization
+    })
+
+    it('fire-and-forget: SubagentStop after a deferred Stop finalizes to waiting (no stuck Working)', () => {
+      // The main agent Stopped (yielded) while a background child ran, and never resumes.
+      // When the LAST child ends, the whole session (main + sub-calls) is genuinely done,
+      // so the deferred Stop is finalized here -> waiting/Idle. Without this the session
+      // would be stuck Working forever (the deferred Stop never re-fires). See DESIGN §9.7.
+      prompt()
+      pre('Agent') // subagents -> 1
+      stop() // deferred (child still running)
+      expect(readState().state).toBe('working')
+      subagentStop() // last child ends -> finalize the deferred Stop
+      const data = readState()
+      expect(data.subagents).toBe(0)
+      expect(data.state).toBe('waiting') // Idle: the whole session is finished
+      expect(data.turn_end_ts).toBeDefined() // the turn is now closed
+      expect(data.stop_deferred).toBe(false) // and the pending-Stop flag cleared
+    })
+
+    it('multiple background children: turn finalizes only when the LAST one ends after a deferred Stop', () => {
+      prompt()
+      pre('Agent') // subagents -> 1
+      pre('Agent') // subagents -> 2
+      stop() // deferred (2 children still running)
+      expect(readState().state).toBe('working')
+      subagentStop() // subagents -> 1, one child still runs -> NOT finalized
+      let data = readState()
+      expect(data.subagents).toBe(1)
+      expect(data.state).toBe('working')
+      expect(data.turn_end_ts).toBeUndefined()
+      subagentStop() // subagents -> 0, last child -> finalize
+      data = readState()
+      expect(data.subagents).toBe(0)
+      expect(data.state).toBe('waiting')
+    })
+
+    it('SubagentStop with NO pending Stop stays working (main agent still active, no premature close)', () => {
+      // The main agent is still working (has not Stopped): a child completing must not
+      // close the turn -- stop_deferred is false, so SubagentStop only decrements. This
+      // is the case the deferred-Stop model must NOT confuse with fire-and-forget.
+      prompt()
+      pre('Agent') // subagents -> 1
+      subagentStop() // child ends but the main agent never Stopped
+      const data = readState()
+      expect(data.subagents).toBe(0)
+      expect(data.state).toBe('working') // still the main agent's turn
+      expect(data.turn_end_ts).toBeUndefined() // no Stop was pending -> turn stays open
+    })
+
+    it('Stop with no outstanding subagent closes normally to waiting', () => {
+      prompt()
+      pre('Agent')
+      subagentStop() // child done first (subagents -> 0)
+      expect(readState().subagents).toBe(0)
+      stop()
+      expect(readState().state).toBe('waiting')
+    })
+
+    it('UserPromptSubmit resets a leaked subagent counter to zero', () => {
+      prompt()
+      pre('Agent')
+      pre('Agent')
+      prompt() // new turn, counter self-heals even without any SubagentStop
+      expect(readState().subagents).toBe(0)
+      expect(readState().state).toBe('working')
+    })
+
+    it('SubagentStop mid-turn stays working and decrements the counter', () => {
+      prompt()
+      pre('Agent')
+      subagentStop()
+      const data = readState()
+      expect(data.state).toBe('working')
+      expect(data.subagents).toBe(0) // SubagentStop is the close bracket now
+    })
+
+    it('a stray SubagentStop after a clean Stop does NOT resurrect Working', () => {
+      // No outstanding child at Stop -> turn closes to waiting. A later stray
+      // SubagentStop is out-of-turn, so its write is gated out and waiting stands.
+      prompt()
+      stop()
+      expect(readState().state).toBe('waiting')
+      subagentStop()
+      expect(readState().state).toBe('waiting')
+    })
+
+    it('genuine PermissionRequest wins over an outstanding subagent counter', () => {
+      prompt()
+      pre('Agent')
+      run(['hook', 'PermissionRequest'], '{}', { OCTOPUS_SESSION_ID: SID })
+      expect(readState().state).toBe('blocked')
+      // A statusline tick over a dangling delegation transcript must not undo it.
+      runStatusline(transcript([danglingTool('Agent')]))
+      expect(readState().state).toBe('blocked')
+    })
+
+    it('outstanding counter does not revive a closed (post-Stop) turn', () => {
+      // Hand-write a file with a leaked counter but a CLOSED turn (end > start): the
+      // effective() override is turn-gated, so it must stay waiting, not go working.
+      writeFileSync(
+        join(stateDir, SID + '.json'),
+        JSON.stringify({
+          state: 'waiting',
+          reason: 'claude_stop',
+          subagents: 2,
+          turn_start_ts: 1,
+          turn_end_ts: 2,
+          hook: { state: 'waiting', reason: 'claude_stop', ts: 2, event: 'Stop' }
+        }),
+        'utf8'
+      )
+      expect(run(['get', SID], '', { OCTOPUS_SESSION_ID: SID }).trim()).toBe('waiting')
+    })
+
+    it('legacy file without a subagents field: override inert, no crash', () => {
+      writeFileSync(
+        join(stateDir, SID + '.json'),
+        JSON.stringify({
+          state: 'working',
+          reason: 'pre_tool_use',
+          turn_start_ts: 2,
+          turn_end_ts: 1,
+          hook: { state: 'working', reason: 'pre_tool_use', ts: 2, event: 'PreToolUse' },
+          transcript: { state: 'blocked', reason: 'transcript', mtime: 3 }
+        }),
+        'utf8'
+      )
+      // No subagents key => override inert; the §9.7 in-turn-working-vs-transcript-blocked
+      // guard still applies, so it reads working.
+      expect(run(['get', SID], '', { OCTOPUS_SESSION_ID: SID }).trim()).toBe('working')
+    })
+
+    // The PRIMARY subagent-tracking path: SubagentStart..SubagentStop paired by agent_id.
+    // Both events carry agent_id (verified from live payloads), so outstanding children
+    // are an id SET immune to duplicate/stray stops. SubagentStart LATCHES the capability
+    // so PreToolUse stops counting (no double-count). See DESIGN §9.1/§9.2.
+    describe('SubagentStart..SubagentStop id-set path (primary)', () => {
+      const prompt = (): void => {
+        run(['hook', 'UserPromptSubmit'], '{}', { OCTOPUS_SESSION_ID: SID })
+      }
+      const start = (id: string): void => {
+        run(['hook', 'SubagentStart'], JSON.stringify({ agent_id: id }), {
+          OCTOPUS_SESSION_ID: SID
+        })
+      }
+      const stopId = (id: string): void => {
+        run(['hook', 'SubagentStop'], JSON.stringify({ agent_id: id }), { OCTOPUS_SESSION_ID: SID })
+      }
+      const stop = (): void => {
+        run(['hook', 'Stop'], '{}', { OCTOPUS_SESSION_ID: SID })
+      }
+      const pre = (tool: string): void => {
+        run(['hook', 'PreToolUse'], JSON.stringify({ tool_name: tool }), { OCTOPUS_SESSION_ID: SID })
+      }
+
+      it('SubagentStart tracks by agent_id and forces working; SubagentStop clears it', () => {
+        prompt()
+        start('a1')
+        let data = readState()
+        expect(data.subagent_ids).toEqual(['a1'])
+        expect(data.has_subagent_start).toBe(true)
+        expect(data.state).toBe('working')
+        stopId('a1')
+        data = readState()
+        expect(data.subagent_ids).toEqual([])
+        expect(data.state).toBe('working') // turn still open, main agent still active
+      })
+
+      it('parallel subagents: the id set holds all, session working until the LAST clears', () => {
+        prompt()
+        start('a1')
+        start('a2')
+        start('a3')
+        expect(readState().subagent_ids).toEqual(['a1', 'a2', 'a3'])
+        stopId('a2')
+        expect(readState().subagent_ids).toEqual(['a1', 'a3'])
+        expect(readState().state).toBe('working')
+        stopId('a1')
+        stopId('a3')
+        expect(readState().subagent_ids).toEqual([])
+      })
+
+      it('once SubagentStart has latched, PreToolUse(Agent) does NOT also count (no double-count)', () => {
+        prompt()
+        start('a1') // latches has_subagent_start
+        pre('Agent') // must be ignored now — the launch is already in the id set
+        const data = readState()
+        expect(data.subagent_ids).toEqual(['a1'])
+        expect(data.subagents).toBe(0)
+      })
+
+      it('a duplicate/stray SubagentStop for an unknown id cannot under-count a live child', () => {
+        prompt()
+        start('a1')
+        stopId('a1') // clears a1
+        start('a2') // a real, still-live child
+        stopId('a1') // stray/duplicate close for the already-gone a1 — must be a no-op
+        const data = readState()
+        expect(data.subagent_ids).toEqual(['a2']) // a2 still tracked
+        expect(data.state).toBe('working')
+      })
+
+      it('fire-and-forget on the id-set path: SubagentStop after a deferred Stop finalizes to waiting', () => {
+        prompt()
+        start('a1')
+        stop() // deferred (a1 still outstanding)
+        expect(readState().state).toBe('working')
+        expect(readState().stop_deferred).toBe(true)
+        stopId('a1') // last child ends -> finalize
+        const data = readState()
+        expect(data.subagent_ids).toEqual([])
+        expect(data.state).toBe('waiting')
+        expect(data.turn_end_ts).toBeDefined()
+      })
+
+      it('PreToolUse BEFORE SubagentStart: the latch reclaims the pre-latch anon increment (no double-count)', () => {
+        // The live-observed ordering: PreToolUse(Agent) fires and increments the anon
+        // fallback (has_subagent_start not yet set), THEN SubagentStart latches and adds
+        // the id. Without reclaim this reads subagent_count == 2 for ONE child. The
+        // SubagentStart branch decrements the paired anon increment so the count is 1.
+        prompt()
+        pre('Agent') // anon -> 1 (latch not yet set)
+        expect(readState().subagents).toBe(1)
+        start('a1') // latches + tracks id + reclaims the anon increment
+        const data = readState()
+        expect(data.subagent_ids).toEqual(['a1'])
+        expect(data.subagents).toBe(0) // reclaimed — the single launch is counted once
+      })
+
+      it('PreToolUse-before-SubagentStart fire-and-forget still finalizes (no anon left stuck at 1)', () => {
+        // The stuck-Working risk the reclaim closes: pre-latch double-count + a child
+        // that outlives the main agent. SubagentStop clears the id; if anon were left at
+        // 1, subagent_count would never reach 0 and the deferred Stop would never
+        // finalize. With reclaim, count hits 0 and the session goes waiting.
+        prompt()
+        pre('Agent') // anon -> 1
+        start('a1') // reclaim -> anon 0, id set {a1}
+        stop() // deferred (a1 outstanding)
+        expect(readState().state).toBe('working')
+        stopId('a1') // last child ends -> finalize
+        const data = readState()
+        expect(data.subagent_ids).toEqual([])
+        expect(data.subagents).toBe(0)
+        expect(data.state).toBe('waiting')
+      })
+
+      it('SubagentStart with no agent_id falls back to the anonymous counter (still counted)', () => {
+        prompt()
+        run(['hook', 'SubagentStart'], '{}', { OCTOPUS_SESSION_ID: SID }) // latch, no id
+        const data = readState()
+        expect(data.has_subagent_start).toBe(true)
+        expect(data.subagents).toBe(1) // anonymous fallback kept the launch counted
+        expect(data.state).toBe('working')
+      })
+
+      it('UserPromptSubmit clears the id set but NOT the has_subagent_start latch', () => {
+        prompt()
+        start('a1')
+        prompt() // new turn
+        const data = readState()
+        expect(data.subagent_ids).toEqual([])
+        expect(data.has_subagent_start).toBe(true) // capability persists across turns
+      })
+    })
+  })
+
   it('get prints the effective state', () => {
     run(['hook', 'UserPromptSubmit'], '{}', { OCTOPUS_SESSION_ID: SID }) // open a turn
     run(['hook', 'PostToolUse'], '{}', { OCTOPUS_SESSION_ID: SID })

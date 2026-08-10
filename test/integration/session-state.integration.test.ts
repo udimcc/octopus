@@ -72,6 +72,10 @@ d('Claude state pipeline (integration, §9.6)', () => {
     })
   }
 
+  /** A PreToolUse/PostToolUse hook carrying a tool_name (delegation bookkeeping). */
+  const toolHook = (event: string, tool: string): void =>
+    bridge(['hook', event], JSON.stringify({ tool_name: tool }))
+
   /** Start a watcher whose sink records every push. Uses a tiny debounce for speed. */
   function startWatcher(): void {
     watcher = createClaudeStateWatcher({
@@ -161,6 +165,136 @@ d('Claude state pipeline (integration, §9.6)', () => {
     await new Promise((r) => setTimeout(r, 200))
     expect(last()).toBe(SessionState.Working)
     expect(observed.filter((o) => o.state === SessionState.NeedsInput)).toHaveLength(0)
+  })
+
+  it('a subagent run keeps the session Working end to end (counter over a frozen transcript)', async () => {
+    // Bug 1: the main agent delegates (PreToolUse(Agent)) and waits. Its transcript
+    // freezes with a dangling Agent tool_use; without the delegation counter that reads
+    // as done/blocked. The counter must hold the whole session Working until the
+    // main agent's Stop, even as the statusline ticks over the frozen transcript.
+    startWatcher()
+    bridge(['hook', 'UserPromptSubmit'])
+    toolHook('PreToolUse', 'Agent')
+    expect(await waitUntil(() => last() === SessionState.Working)).toBe(true)
+
+    const transcriptPath = join(dir, 'subagent.jsonl')
+    writeFileSync(
+      transcriptPath,
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          stop_reason: 'tool_use',
+          content: [{ type: 'tool_use', id: 'ag-1', name: 'Agent' }]
+        }
+      }) + '\n',
+      'utf8'
+    )
+    bridge(['statusline'], JSON.stringify({ session_id: SID, transcript_path: transcriptPath }))
+    await new Promise((r) => setTimeout(r, 200))
+    expect(last()).toBe(SessionState.Working)
+    expect(observed.filter((o) => o.state === SessionState.Idle)).toHaveLength(0)
+    expect(observed.filter((o) => o.state === SessionState.NeedsInput)).toHaveLength(0)
+  })
+
+  it('a genuine PermissionRequest during a subagent run still pushes NeedsInput', async () => {
+    // The counter yields to a real permission prompt: if a subagent needs approval the
+    // user must act, so that is NeedsInput even while a subagent is outstanding.
+    startWatcher()
+    bridge(['hook', 'UserPromptSubmit'])
+    toolHook('PreToolUse', 'Agent')
+    expect(await waitUntil(() => last() === SessionState.Working)).toBe(true)
+    bridge(['hook', 'PermissionRequest'])
+    expect(await waitUntil(() => last() === SessionState.NeedsInput)).toBe(true)
+  })
+
+  it('bug 1: background subagent keeps the session Working across a premature main-agent Stop', async () => {
+    // Reproduced end to end from the LIVE hook trace. A background Agent's
+    // PreToolUse+PostToolUse fire at launch, then the MAIN agent Stops while the child
+    // still runs. The session must stay Working across that premature Stop (Stop defers
+    // closing while a subagent is outstanding) and NOT flash Idle mid-run.
+    startWatcher()
+    bridge(['hook', 'UserPromptSubmit'])
+    toolHook('PreToolUse', 'Agent') // launch (subagents -> 1)
+    toolHook('PostToolUse', 'Agent') // background launch returns at once; must NOT close
+    expect(await waitUntil(() => last() === SessionState.Working)).toBe(true)
+    bridge(['hook', 'Stop']) // main agent yields WHILE the child runs
+    // Stop is deferred (subagents > 0): give the watcher time to (not) push Idle.
+    await new Promise((r) => setTimeout(r, 200))
+    expect(last()).toBe(SessionState.Working)
+    expect(observed.filter((o) => o.state === SessionState.Idle)).toHaveLength(0)
+  })
+
+  it('fire-and-forget: a background child ending after the main agent Stops drives Idle (no stuck Working)', async () => {
+    // The main agent yields while a background child runs and never resumes. When the
+    // child ends, the whole session is genuinely done, so the deferred Stop is finalized
+    // -> Idle. Without the finalize fix the session would be stuck Working forever (the
+    // deferred Stop never re-fires, and the counter override blocks the transcript). §9.7.
+    startWatcher()
+    bridge(['hook', 'UserPromptSubmit'])
+    toolHook('PreToolUse', 'Agent') // launch (subagents -> 1)
+    bridge(['hook', 'Stop']) // main agent yields WHILE the child runs (deferred)
+    await new Promise((r) => setTimeout(r, 100))
+    expect(last()).toBe(SessionState.Working)
+    bridge(['hook', 'SubagentStop']) // last child ends -> finalize the deferred Stop
+    expect(await waitUntil(() => last() === SessionState.Idle)).toBe(true)
+  })
+
+  it('SubagentStart..SubagentStop id-set path holds Working through a deferred Stop, then Idle', async () => {
+    // The primary path (when Claude emits SubagentStart): children are tracked by
+    // agent_id. Working from SubagentStart through the main agent's premature Stop, then
+    // Idle when the last child's SubagentStop finalizes the deferred close. End to end.
+    startWatcher()
+    bridge(['hook', 'UserPromptSubmit'])
+    bridge(['hook', 'SubagentStart'], JSON.stringify({ agent_id: 'a1' }))
+    expect(await waitUntil(() => last() === SessionState.Working)).toBe(true)
+    bridge(['hook', 'Stop']) // main agent yields WHILE a1 runs (deferred)
+    await new Promise((r) => setTimeout(r, 100))
+    expect(last()).toBe(SessionState.Working)
+    bridge(['hook', 'SubagentStop'], JSON.stringify({ agent_id: 'a1' })) // a1 ends -> finalize
+    expect(await waitUntil(() => last() === SessionState.Idle)).toBe(true)
+  })
+
+  it('PreToolUse-before-SubagentStart fire-and-forget: no stuck Working, finalizes to Idle', async () => {
+    // Replays the EXACT live-captured ordering: PreToolUse(Agent) fires first (anon fallback
+    // ++), THEN SubagentStart latches and tracks the id — so the one child was counted on
+    // both paths. Its SubagentStart reclaims the anon increment; when the child ends after a
+    // deferred Stop the count reaches 0 and the deferred Stop finalizes. Without the reclaim
+    // anon would stay at 1 and the session would be stuck Working forever.
+    startWatcher()
+    bridge(['hook', 'UserPromptSubmit'])
+    toolHook('PreToolUse', 'Agent') // launch: anon -> 1 (latch not yet set)
+    bridge(['hook', 'SubagentStart'], JSON.stringify({ agent_id: 'a1' })) // latch + reclaim anon
+    expect(await waitUntil(() => last() === SessionState.Working)).toBe(true)
+    bridge(['hook', 'Stop']) // main agent yields WHILE a1 runs (deferred)
+    await new Promise((r) => setTimeout(r, 100))
+    expect(last()).toBe(SessionState.Working)
+    bridge(['hook', 'SubagentStop'], JSON.stringify({ agent_id: 'a1' })) // last child ends -> finalize
+    expect(await waitUntil(() => last() === SessionState.Idle)).toBe(true)
+  })
+
+  it('resume recovery from a dangling Agent transcript reads Working (no live hooks)', async () => {
+    // After --resume the prior process's hooks (and its counter) are gone; only the
+    // transcript survives. A dangling delegation tool_use must read Working, not blocked.
+    const transcriptPath = join(dir, 'resume-subagent.jsonl')
+    writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({ type: 'user', message: { role: 'user', content: 'go' } }),
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            stop_reason: 'tool_use',
+            content: [{ type: 'tool_use', id: 'ag-1', name: 'Agent' }]
+          }
+        })
+      ].join('\n') + '\n',
+      'utf8'
+    )
+    startWatcher()
+    bridge(['statusline'], JSON.stringify({ session_id: SID, transcript_path: transcriptPath }))
+    expect(await waitUntil(() => last() === SessionState.Working)).toBe(true)
   })
 
   it('resume recovery: the initial scan replays a state file written before the watcher starts', async () => {

@@ -89,6 +89,7 @@ HOOK_STATES = {
     "StopFailure": ("waiting", "stop_failure"),
     "Notification": ("blocked", "notification"),
     "PermissionRequest": ("blocked", "permission"),
+    "SubagentStart": ("working", "subagent_start"),
     "SubagentStop": ("working", "subagent_stop"),
     "PreToolUse": ("working", "pre_tool_use"),
     "PostToolUse": ("working", "tool_use"),
@@ -101,6 +102,29 @@ TURN_START_EVENTS = ("UserPromptSubmit",)
 TURN_END_EVENTS = ("Stop", "StopFailure")
 
 WAITING_STOP_REASONS = ("end_turn", "stop_sequence")
+
+# The tools that delegate work to a subagent. "Agent" is the current CLI (2.1.x)
+# name; "Task" the historical one.
+#
+# A subagent's whole lifespan keeps the SESSION Working (main agent + subagents are one
+# unit). Two signals bracket that lifespan, and the bridge adapts to whichever the
+# running Claude version emits (capability latch on has_subagent_start):
+#
+#  - PRIMARY, when available: SubagentStart .. SubagentStop, paired by agent_id. Both
+#    events carry agent_id (verified from live payloads), so outstanding children are an
+#    id SET -- a duplicate or cross-turn SubagentStop for an unknown id is a no-op and
+#    cannot under-count (fixes the stray-stop edge). SubagentStart also LATCHES
+#    has_subagent_start, after which PreToolUse below stops counting (that same launch is
+#    already owned by the id set), so the two signals never double-count one subagent.
+#  - FALLBACK, when SubagentStart never fires (older Claude): PreToolUse(Task|Agent)
+#    increments an anonymous counter at launch and SubagentStop decrements it. This is
+#    the previously-verified model; it stays exactly correct when no SubagentStart is
+#    seen. PreToolUse is the launch signal here (NOT PostToolUse: a BACKGROUND subagent's
+#    PostToolUse(Agent) fires at launch, not completion, so it cannot mark the close).
+#
+# subagent_count() = len(id set) + anonymous counter; while it is > 0 and the turn is
+# open the whole session reads Working. See DESIGN 9.2 / 9.7.
+DELEGATION_TOOLS = ("Task", "Agent")
 
 
 def session_id():
@@ -121,6 +145,34 @@ def read_state(sid):
         return {}
 
 
+def subagent_ids(data):
+    """The set of outstanding subagent agent_ids (from the SubagentStart..SubagentStop
+    primary path). A list in the JSON file; returned as a list of unique str ids."""
+    ids = data.get("subagent_ids")
+    if not isinstance(ids, list):
+        return []
+    out = []
+    for i in ids:
+        if isinstance(i, str) and i not in out:
+            out.append(i)
+    return out
+
+
+def anon_count(data):
+    """The anonymous fallback counter (subagents field), 0 if absent/legacy."""
+    n = data.get("subagents")
+    return n if isinstance(n, (int, float)) else 0
+
+
+def subagent_count(data):
+    """How many delegated subagents are currently outstanding (0 if absent/legacy).
+
+    Sum of the two tracking paths (only one is ever populated for a given subagent, see
+    the DELEGATION_TOOLS note): the id SET from SubagentStart..SubagentStop, plus the
+    anonymous numeric fallback counter for versions that emit no SubagentStart."""
+    return len(subagent_ids(data)) + anon_count(data)
+
+
 def effective(data):
     """Newer observation wins (hook.ts vs transcript.mtime); tie -> hook.
 
@@ -134,6 +186,19 @@ def effective(data):
     """
     hook = data.get("hook") if isinstance(data.get("hook"), dict) else None
     tr = data.get("transcript") if isinstance(data.get("transcript"), dict) else None
+    # Outstanding subagent(s) => the whole session is Working, regardless of the main
+    # transcript (a background subagent's launch is NOT dangling, so the transcript
+    # reads the main agent's "waiting" -- only this override keeps the session Working)
+    # or a stale transcript "blocked". The turn stays open across the main agent's Stop
+    # while a child lives (Stop defers closing when subagents > 0, see run_hook), so this
+    # holds until the child ends. Still turn-gated so a leaked counter cannot outlive the
+    # turn: the next UserPromptSubmit zeroes it, and the eventual Stop with no child
+    # remaining closes the turn. A genuine permission prompt (a "blocked" HOOK) still
+    # wins -- if a subagent needs approval the user must act (NeedsInput). See DESIGN 9.2 / 9.7.
+    if subagent_count(data) > 0 and turn_open(data):
+        if hook and hook.get("state") == "blocked":
+            return hook.get("state", "unknown"), hook.get("reason")
+        return "working", "subagent"
     if (
         hook
         and tr
@@ -194,14 +259,19 @@ def write_state(sid, mutate):
 def derive_transcript_state(path):
     """Infer state from the transcript tail. Returns a state string or None.
 
-    - a tool_use with no matching tool_result (dangling) => blocked (at rest this is a
-      pending permission / interrupted tool; live, a hook overrides it via newer ts);
+    - a dangling tool_use (no matching tool_result) whose tool is a delegation tool
+      (Agent/Task) => working: the main agent is waiting on a subagent, i.e. the whole
+      session is still working (this is the resume / no-hook path -- live, the subagent
+      counter already forces working). See DESIGN 9.2 / 9.7.
+    - any OTHER dangling tool_use => blocked (at rest this is a pending permission /
+      interrupted tool; live, a hook overrides it via newer ts);
     - else the last assistant turn ended (end_turn/stop_sequence) => waiting;
     - else => working.
     """
     if not path:
         return None
     issued = set()
+    issued_names = {}
     answered = set()
     last_assistant = None
     try:
@@ -232,6 +302,7 @@ def derive_transcript_state(path):
                         for block in content:
                             if isinstance(block, dict) and block.get("type") == "tool_use":
                                 issued.add(block.get("id"))
+                                issued_names[block.get("id")] = block.get("name")
                 elif rtype == "user":
                     if isinstance(content, list):
                         for block in content:
@@ -239,7 +310,15 @@ def derive_transcript_state(path):
                                 answered.add(block.get("tool_use_id"))
     except OSError:
         return None
-    if issued - answered:
+    dangling = issued - answered
+    if dangling:
+        # A dangling delegation tool_use (Agent/Task) means the main agent is waiting on
+        # a subagent -- Working, not awaiting input. Only when EVERY dangling tool_use is
+        # a delegation call do we read working; a mix with a non-delegation dangling tool
+        # (a possible real permission prompt) still reads blocked, letting the counter /
+        # in-turn hook correct it live if it was merely mid-execution.
+        if all(issued_names.get(i) in DELEGATION_TOOLS for i in dangling):
+            return "working"
         return "blocked"
     if last_assistant is not None:
         if last_assistant.get("stop_reason") in WAITING_STOP_REASONS:
@@ -263,9 +342,23 @@ def run_hook(event):
     state, reason = mapped
     is_turn_start = event in TURN_START_EVENTS
     is_turn_end = event in TURN_END_EVENTS
+    # PreToolUse/PostToolUse carry the tool name on stdin (no matcher is wired, so
+    # this is the only way to know which tool fired). Best-effort parse -- a missing
+    # or malformed payload just yields no tool_name and leaves the counter untouched.
+    tool_name = None
+    agent_id = None
+    try:
+        parsed = json.loads(payload) if payload else None
+        if isinstance(parsed, dict):
+            tool_name = parsed.get("tool_name")
+            aid = parsed.get("agent_id")
+            agent_id = aid if isinstance(aid, str) and aid else None
+    except ValueError:
+        pass
 
     def mutate(data):
         now = time.time()
+        rec_state, rec_reason = state, reason
         # Turn-boundary events always record; everything else is a WITHIN-turn
         # observation and is honored only while a turn is open. A stray sub-event
         # (e.g. a SubagentStop arriving minutes after Stop with no new prompt) would
@@ -276,9 +369,92 @@ def run_hook(event):
             return False
         if is_turn_start:
             data["turn_start_ts"] = now
+            # A fresh turn owns a fresh subagent tally on BOTH paths; also self-heals a
+            # leaked entry (a subagent whose SubagentStop never arrived) at the next
+            # prompt. has_subagent_start is a SESSION-lifetime capability latch, so it is
+            # deliberately NOT reset here.
+            data["subagents"] = 0
+            data["subagent_ids"] = []
+            data["stop_deferred"] = False
         elif is_turn_end:
-            data["turn_end_ts"] = now
-        data["hook"] = {"state": state, "reason": reason, "ts": now, "event": event}
+            # Stop means the MAIN agent finished -- but the whole session isn't done
+            # while a background subagent it launched is still running. Claude fires
+            # Stop as soon as the main agent yields (often BEFORE a background child
+            # ends), so closing here would flash Idle mid-run (bug 1). Defer: if any
+            # subagent is outstanding, do NOT close the turn and do NOT zero the tally;
+            # keep the session Working (the effective() override holds while the turn is
+            # open) but REMEMBER that a Stop is pending via stop_deferred. That flag is
+            # what lets the LATER SubagentStop that drains the counter to 0 finalize the
+            # close itself (see below), so a fire-and-forget child whose parent never
+            # resumes cannot leave the session stuck Working.
+            if subagent_count(data) > 0:
+                rec_state, rec_reason = "working", "subagent_active"
+                data["stop_deferred"] = True
+            else:
+                data["turn_end_ts"] = now
+                data["stop_deferred"] = False
+        elif event == "SubagentStart":
+            # PRIMARY launch signal (when this Claude version emits it). Latch the
+            # capability so PreToolUse below stops counting -- this same launch is now
+            # owned by the id set, and double-counting it would stick the session
+            # Working. Track the child by agent_id when present (exact pairing); if a
+            # version fires SubagentStart with no agent_id, fall back to the anonymous
+            # counter so the launch is still counted.
+            data["has_subagent_start"] = True
+            if agent_id is not None:
+                ids = subagent_ids(data)
+                if agent_id not in ids:
+                    ids.append(agent_id)
+                    # RECLAIM the pre-latch PreToolUse increment for THIS launch. The
+                    # latch stops PreToolUse from counting only AFTER it is set, but
+                    # PreToolUse(Agent) often fires BEFORE SubagentStart (verified live:
+                    # a bg subagent read anon=1 alongside its own id), so the launch got
+                    # counted on BOTH paths. PreToolUse(Agent) is 1:1 with SubagentStart,
+                    # so decrementing one anon count per newly-tracked id exactly cancels
+                    # that increment (floored at 0 -> a no-op when there was none, or when
+                    # the latch was already set on a prior turn). Without this a
+                    # fire-and-forget child leaves anon stuck at 1 after its SubagentStop
+                    # clears the id set, so subagent_count never reaches 0 and the deferred
+                    # Stop never finalizes -- stuck Working forever.
+                    data["subagents"] = max(0, anon_count(data) - 1)
+                data["subagent_ids"] = ids
+            else:
+                data["subagents"] = anon_count(data) + 1
+        elif event == "SubagentStop":
+            # A launched subagent truly ended -- the close bracket for both paths. NOT
+            # PostToolUse: a BACKGROUND subagent's PostToolUse(Agent) fires at LAUNCH, so
+            # only SubagentStop marks real completion. Remove by agent_id from the id set
+            # (a duplicate / cross-turn stop for an unknown id is a no-op, so it cannot
+            # under-count a still-live child); otherwise decrement the anonymous counter
+            # (floored at 0). Note agent_id is present even on the FALLBACK path's stops,
+            # so we only treat the id set as authoritative when it actually holds this id.
+            ids = subagent_ids(data)
+            if agent_id is not None and agent_id in ids:
+                ids.remove(agent_id)
+                data["subagent_ids"] = ids
+            else:
+                data["subagents"] = max(0, anon_count(data) - 1)
+            if subagent_count(data) == 0 and data.get("stop_deferred"):
+                # The main agent already Stopped (we deferred it) and the LAST child just
+                # ended -- so the whole session (main + all sub-calls) is genuinely
+                # finished NOW. Finalize the deferred Stop: close the turn and record
+                # waiting, exactly as a non-deferred Stop would, so effective() reads
+                # Idle. If the main agent instead resumes to consume the result, that is
+                # a genuinely new working period (a fresh UserPromptSubmit reopens the
+                # turn) -- not the false done of bug 2, whose "done" was premature; here
+                # the main agent truly had yielded. Without this a fire-and-forget child
+                # whose parent never resumes would leave the session stuck Working with no
+                # event left to close the turn (the deferred Stop never re-fires).
+                data["turn_end_ts"] = now
+                data["stop_deferred"] = False
+                rec_state, rec_reason = "waiting", "claude_stop"
+        elif event == "PreToolUse" and tool_name in DELEGATION_TOOLS:
+            # FALLBACK launch signal: only counts when SubagentStart has never been seen
+            # for this session. Once SubagentStart has latched, the launch it represents
+            # is already tracked by the id set, so counting here too would double-count.
+            if not data.get("has_subagent_start"):
+                data["subagents"] = anon_count(data) + 1
+        data["hook"] = {"state": rec_state, "reason": rec_reason, "ts": now, "event": event}
         return None
 
     write_state(sid, mutate)

@@ -800,6 +800,10 @@ to `<dataDir>/claude-state/<OCTOPUS_SESSION_ID>.json`:
 ```
 { state, reason, updated_at,
   turn_start_ts, turn_end_ts,               // turn boundaries (§9.1 turn gating)
+  subagent_ids,                             // outstanding subagent agent_ids (primary path, §9.1)
+  subagents,                                // anonymous fallback counter (no-SubagentStart versions, §9.1)
+  has_subagent_start,                       // capability latch: SubagentStart seen this session (§9.1)
+  stop_deferred,                            // a Stop was deferred pending subagents (§9.1)
   hook:       { state, reason, ts, event }, // last in-turn hook observation
   transcript: { state, reason, mtime } }    // last transcript-derived observation
 ```
@@ -813,6 +817,71 @@ mitigation: a transcript-derived `blocked` is overridden by an in-turn `working`
 `working` and the turn is open), since a dangling `tool_use` mid-execution is indistinguishable from an
 awaiting-permission one. A real permission prompt records a `blocked` hook, so it is unaffected; with no fresh
 hook (resume), or a closed turn, the transcript still wins.
+
+**Subagent gating (the fix for "delegating session reads done / flickers").** "State" means the *whole* Claude
+session — the main agent **and** any subagents it spawns (foreground **or** background). A subagent inherits the
+parent's `OCTOPUS_SESSION_ID`, so its own hooks write to the *parent's* state file. The bridge tracks each
+subagent's true lifespan and, while **any** is outstanding **and the turn is open**, `effective()` forces
+`working` regardless of either observation slot — so a session waiting on subagents never reads Idle (bug 1) and
+never flickers done-then-working when a subagent returns and the main agent resumes (bug 2).
+
+**Two tracking paths, one capability latch.** Octopus registers **both** `SubagentStart` and `SubagentStop` via
+its own merge-safe injector (`HOOK_EVENTS`, §9.2) — never a hand-edit — so the signal is available on every
+install without the user touching their Claude config. The bridge adapts to whichever the running Claude version
+actually emits:
+- **Primary — `SubagentStart` .. `SubagentStop`, paired by `agent_id`.** Both events carry `agent_id` (verified
+  from live payloads), so outstanding children are an **id set** (`subagent_ids`), not a count. `SubagentStop`
+  *removes* its id; a duplicate or cross-turn stop for an unknown id is a **no-op**, so it can never under-count
+  a still-live child (this closes the stray-stop edge a bare counter had). `SubagentStart` also **latches**
+  `has_subagent_start` (a session-lifetime flag), after which the fallback below stops counting so one launch is
+  never counted twice. **Ordering reclaim:** the latch only blocks *future* `PreToolUse` — but live traces show
+  `PreToolUse(Agent)` fires *before* `SubagentStart`, so the launch was already counted on the fallback by the
+  time the latch is set. Because `PreToolUse(Agent)` is 1:1 with `SubagentStart`, when `SubagentStart` adds a
+  **new** id it also decrements the anonymous counter by one (floored at 0), reclaiming that paired pre-latch
+  increment. Without this a single background child reads `subagent_count == 2`, and after its `SubagentStop`
+  clears the id the anonymous counter stays at 1 — so `subagent_count` never reaches 0, the deferred `Stop`
+  never finalizes, and a fire-and-forget child leaves the session stuck `working` forever.
+- **Fallback — `PreToolUse(Task|Agent)` .. `SubagentStop`, anonymous counter.** On a Claude version that emits
+  **no** `SubagentStart`, `PreToolUse` for a delegation tool increments the `subagents` counter at launch and
+  `SubagentStop` decrements it (floored at 0). This is the previously-verified model; it stays exactly correct
+  when no `SubagentStart` is seen, so adding the primary path is a strict, no-regression superset. (If a version
+  ever fires `SubagentStart` with no `agent_id`, that path degrades to this same anonymous counter.)
+
+`subagent_count = len(subagent_ids) + subagents`; the two paths never both count the same child (the latch).
+
+**Why the close bracket is `SubagentStop`, not `PostToolUse` (this was the background bug).** A *background*
+subagent's `PreToolUse(Agent)` **and** `PostToolUse(Agent)` both fire at **launch** — the delegation tool
+returns a handle immediately and the main agent moves on — so `PostToolUse` marks launch, not completion.
+Keying the decrement to it left the counter at 0 for the child's entire run. Worse, Claude fires the main
+agent's `Stop` as soon as *it* yields, typically **before** a background child ends; the old code closed the
+turn and zeroed the counter there, flashing Idle mid-run. The fix: **`Stop`/`StopFailure` defers closing while
+`subagents > 0`** — it records `working`, leaves `turn_end_ts` and the counter untouched, and sets a
+**`stop_deferred`** flag so the pending close is remembered; the turn stays open and the override holds.
+
+The turn then closes on **whichever comes first**:
+- **the main agent resumes and `Stop`s again** — when a background child ends, the harness usually re-invokes
+  the main agent to consume its result (a fresh `UserPromptSubmit`, which clears `stop_deferred`), and it later
+  `Stop`s with `subagents == 0`, closing normally; or
+- **the last child's `SubagentStop` finalizes the deferred `Stop`** — when the decrement drops the counter to 0
+  *and* `stop_deferred` is set, the main agent had already yielded, so the whole session (main + all sub-calls)
+  is genuinely finished: `SubagentStop` sets `turn_end_ts`, records `waiting`, and clears the flag → Idle.
+
+The `stop_deferred` distinction is what makes `SubagentStop` correct in *both* directions: a `SubagentStop`
+with **no** pending Stop means the main agent is still working, so it only decrements and stays Working (no
+premature close, no bug-2 flicker in the common resume case where the child ends *before* the main agent
+yields); a `SubagentStop` **after** a deferred Stop means the parent already finished and will not necessarily
+resume, so it must close — otherwise a *fire-and-forget* child (parent never resumes) would leave the session
+**stuck Working forever**, since the deferred `Stop` never re-fires and the `subagents == 0 … turn_open`
+override blocks the transcript backstop. The residual bug-2 exposure is a sub-second, watcher-coalesced Idle
+blip *only if* the main agent does resume after the finalize — strictly better than an unbounded silent
+stuck-Working (see §9.7 edge 2).
+
+Two deliberate constraints: (a) the override yields to a genuine `blocked` **hook** — if a subagent needs
+approval the user must act, so that is NeedsInput, not Working; (b) it is turn-gated, so a leaked counter can
+never stick a finished session Working past a *closed* turn. Self-healing on both edges: `UserPromptSubmit`
+resets the counter to 0 (a missed `SubagentStop` cannot leak past the next prompt), and a stray `SubagentStop`
+after a clean `Stop` (counter already 0) is out-of-turn, so the turn gate drops its write and `waiting` stands.
+A legacy file with no `subagents` field reads 0 (override inert).
 
 **Turn gating (the fix for "idle session flaps back to Working").** The hook slot holds the last *in-turn*
 observation, not the last hook of any kind. A turn **opens** on `UserPromptSubmit` (`turn_start_ts`) and
@@ -850,16 +919,31 @@ tell us, via its own hooks and statusline, both pointed at the bridge (§9.1).
     command (to `claude-state/original-statusline`) so the bridge can chain to it and the user's bar is
     unchanged.
 - **Event → state map** (`HOOK_STATES`), interpreted through the turn gate (§9.1):
-  - `Stop` / `StopFailure` → `waiting` (turn finished → Idle; **closes** the turn).
-  - `UserPromptSubmit` → `working` (**opens** the turn).
-  - `PreToolUse` / `PostToolUse` / `SubagentStop` → `working` (in-turn; a delegated subagent finishing does not
-    mean the MAIN agent is idle, so `SubagentStop`→Working — honored while the turn is open).
+  - `Stop` / `StopFailure` → `waiting` (main agent finished → Idle; **closes** the turn) — **except** when a
+    subagent is still outstanding (`subagents > 0`), where it records `working`, **defers** closing the turn,
+    and sets `stop_deferred` (§9.1 subagent gating), so a background child outliving the main agent's turn does
+    not flash Idle.
+  - `UserPromptSubmit` → `working` (**opens** the turn; resets both `subagent_ids` and the `subagents` counter,
+    clears `stop_deferred`; the `has_subagent_start` capability latch persists).
+  - `SubagentStart` / `PreToolUse` / `PostToolUse` / `SubagentStop` → `working` (in-turn; a delegated subagent
+    finishing does not by itself mean the MAIN agent is idle, so `SubagentStop`→Working — honored while the turn
+    is open). Subagent bookkeeping (§9.1, two-path): `SubagentStart` (primary) adds its `agent_id` to
+    `subagent_ids` and latches `has_subagent_start`; `PreToolUse` for a delegation tool (`Task`/`Agent`)
+    increments the anonymous `subagents` counter **only until that latch is set** (fallback for versions with no
+    `SubagentStart`); **`SubagentStop` removes** its `agent_id` (or decrements the counter) and, when
+    `subagent_count` reaches 0 *while a Stop was deferred* (`stop_deferred`), **finalizes the deferred close** —
+    sets `turn_end_ts`, records `waiting`, clears the flag → Idle. `PostToolUse` never touches subagent state —
+    a background subagent's `PostToolUse(Agent)` fires at launch, not completion, so it cannot mark the close.
   - `Notification` / `PermissionRequest` → `blocked` (Needs input; in-turn) — EXCEPT the idle "waiting for your
     input" reminder Claude fires after a turn already ended, which the bridge suppresses (reads the payload on
     stdin; emits no write) so it can't overwrite `Stop`→Idle with a false Needs-input.
   - Any unlisted/renamed event → `working` (still the agent's turn; never mis-read as Idle).
 - **Transcript inference** (`statusline` mode): a `tool_use` with no matching `tool_result` (dangling) →
-  `blocked`; else the last assistant turn ended (`end_turn`/`stop_sequence`) → `waiting`; else → `working`.
+  `blocked` — **except** when *every* dangling `tool_use` is a delegation tool (`Task`/`Agent`), which → `working`
+  (the main agent is waiting on a subagent, i.e. the whole session is still working; this is the resume/no-hook
+  path — live, the `subagents` counter already forces `working`). A mix of a dangling delegation call and a
+  dangling non-delegation tool (a possible real permission prompt) still → `blocked`. Else the last assistant
+  turn ended (`end_turn`/`stop_sequence`) → `waiting`; else → `working`.
 - **Graceful degradation.** Every hook is `python3 <script> … 2>/dev/null || true` and the bridge wraps every
   write, so a failure is a silent no-op and the session stays `Unknown`. Nothing from Claude's payloads is ever
   executed; the bridge only reads/writes JSON.
@@ -969,8 +1053,9 @@ state machine. It classifies the common path (prompt → work → tools → fini
 correctly the large majority of the time, but the following edges are known and **cannot** be eliminated
 without a richer signal (e.g. an Octopus MCP server, deferred in §9.2). They are ordered by user impact.
 
-- **Mid-tool `tool_use` can transiently read as `Blocked`.** `derive_transcript_state` maps *any* dangling
-  `tool_use` (a `tool_use` with no matching `tool_result`) → `blocked`. A tool that is merely *mid-execution*
+- **Mid-tool `tool_use` can transiently read as `Blocked`.** `derive_transcript_state` maps a dangling
+  `tool_use` (a `tool_use` with no matching `tool_result`) → `blocked`, unless every dangling one is a
+  delegation tool (§9.2). A non-delegation tool that is merely *mid-execution*
   has the identical transcript signature to a tool awaiting a permission prompt. Because `transcript.mtime`
   advances when the assistant streams a fresh `tool_use` block — potentially *before* the next `PreToolUse`
   hook fires — a `statusline` tick in that window wins the newer-observation race and flips a `working` session
@@ -988,13 +1073,40 @@ without a richer signal (e.g. an Octopus MCP server, deferred in §9.2). They ar
   observations are gated out and **no state file is created** — the session stays `Unknown` until the next
   prompt. The transcript backstop only helps if a `statusline` fires and the transcript is not frozen at a
   dangling state.
-- **Subagent sidechains are not distinguished from the main agent.** `derive_transcript_state` ignores
-  `isSidechain`. Today this is benign: the installed Claude version writes subagent activity to *separate*
-  `subagents/agent-*.jsonl` files and the `statusline` payload's `transcript_path` names only the main
-  transcript, so a subagent's dangling `tool_use` never appears there. It is a **latent version-coupling risk**:
-  a Claude version that inlines sidechain records into the main transcript would make a long-running subagent's
-  dangling `tool_use` read as `blocked` on the parent session. Guarded defensively (`derive_transcript_state`
-  skips `isSidechain` records) so the inference is correct regardless of which layout a Claude version uses.
+- **Subagent delegation (background & foreground) is actively handled; residual edges remain.** A session that
+  delegates to subagents (`Task`/`Agent`) is held `Working` for the whole run by the `subagents` counter
+  (`PreToolUse(Task|Agent)`++ .. `SubagentStop`--, with `Stop` deferring turn-close while the count is `> 0`) and
+  by delegation-aware transcript inference on the resume/no-hook path — see §9.1/§9.2. Edges persist, ordered by
+  impact.
+  (1) **A truly *absent* `SubagentStop` latches the session Working with no automatic release.** The
+  `subagent_count > 0` override short-circuits `effective()` *before* the transcript backstop, so a leaked entry
+  (a `SubagentStop` that never fires at all — child crash/kill, or an interrupt (Esc) mid-subagent that surfaces
+  as a deferred `StopFailure`) holds Working until the next `UserPromptSubmit` clears both tracking paths.
+  Because the false state is *Working* (not the milder NeedsInput), it also suppresses the §9.5 ready-for-review
+  highlight, so the very tab that needs attention looks busy. Recovery is the next prompt only; there is no
+  timeout. **This is the accepted residual cost of never reading a delegating session as prematurely-done.**
+  Note the related *duplicate/stray* `SubagentStop` under-count — a spurious stop wrongly cancelling a *live*
+  child — is **closed** on the primary path: `subagent_ids` removal by `agent_id` is a no-op for an id that is
+  not in the set, so only the matching child is ever cleared (the anonymous fallback counter, used only on
+  versions with no `SubagentStart`, remains vulnerable to it).
+  (2) **Fire-and-forget converges without a resume (fixed):** when the main agent `Stop`s while a background
+  child runs, the Stop is deferred with a `stop_deferred` flag; the last child's `SubagentStop` (counter → 0
+  with the flag set) finalizes the close to Idle even if the main agent never resumes (§9.1). The residual
+  exposure is the reverse: if the main agent *does* resume right after that finalize (to consume the child's
+  result), Idle shows for the gap before the fresh `UserPromptSubmit` — a sub-second blip the §9.3 watcher's
+  ~40 ms coalescing usually swallows. Accepted as strictly better than the pre-fix unbounded stuck-Working.
+  (3) **A main-agent `blocked` can be masked by a concurrent background child's routine hooks.** The single
+  `hook` slot cannot represent "main awaiting permission AND child working" at once: while `subagents > 0`, a
+  genuine `PermissionRequest`/`Notification` (→ NeedsInput, correctly) is overwritten back to `working` by the
+  still-running child's next in-turn `PreToolUse`/`PostToolUse`, hiding the prompt behind Working until the main
+  agent re-emits it or the child ends. A permission prompt raised while no child is outstanding is unaffected.
+  (4) **Nested subagents** (a subagent spawning its own subagent) are tracked only if their hooks carry the same
+  `OCTOPUS_SESSION_ID`; a mismatch would under/over-count, but on the primary path a mismatched `agent_id` is a
+  distinct set entry (no collision), and the `UserPromptSubmit` reset still bounds any drift to one turn.
+  (5) **Sidechain layout is version-coupled but guarded:** today's Claude writes subagent activity to *separate*
+  `subagents/agent-*.jsonl` files and the `statusline` `transcript_path` names only the main transcript, so a
+  subagent's own dangling `tool_use` never appears there; `derive_transcript_state` additionally skips
+  `isSidechain` records, so even a future version that inlines sidechains into the main transcript stays correct.
 - **Lost-update race between the hook and statusline processes.** The hook and statusline run as independent OS
   processes doing read-modify-write on the same `<id>.json`; `os.replace` makes each *swap* atomic but not the
   read-modify-write *pair*, so a sufficiently tight interleave can drop one observation (e.g. a hook write

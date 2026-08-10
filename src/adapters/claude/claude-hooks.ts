@@ -88,6 +88,7 @@ export const HOOK_EVENTS: readonly string[] = [
   'StopFailure',
   'Notification',
   'PermissionRequest',
+  'SubagentStart',
   'SubagentStop',
   'PreToolUse',
   'PostToolUse',
