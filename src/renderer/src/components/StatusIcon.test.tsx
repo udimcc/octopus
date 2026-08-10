@@ -8,7 +8,7 @@ describe('<StatusIcon> (§5.4/§9.5)', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('`working` is a pulsing accent dot labelled "Working"', () => {
+  it('`working` is a pulsing blue dot labelled "Working"', () => {
     const { getByRole } = render(<StatusIcon display="working" />)
     const el = getByRole('img', { name: 'Working' })
     expect(el.textContent).toBe('●')

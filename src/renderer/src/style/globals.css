@@ -41,6 +41,9 @@
   --accent-subtle: rgba(45, 212, 191, 0.14);
   --on-accent: #04211d;
 
+  /* Working-status dot — blue, distinct from the teal accent (§9.5). */
+  --status-working: #4f8cff;
+
   /* Semantic */
   --error-fg: #ff9a92;
   --error-bg: #2a1615;

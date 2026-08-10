@@ -36,8 +36,8 @@ const GLYPHS: Readonly<Record<Exclude<DisplayState, 'none'>, Glyph>> = {
   needsInput: { glyph: '▲', color: color.errorText, label: 'Needs input' },
   // ● teal, static — just finished while unfocused; "wants your eyes" (§9.5).
   review: { glyph: '●', color: color.accent, label: 'Ready for review' },
-  // ● teal, gently pulsing — Claude thinking / a foreground command running.
-  working: { glyph: '●', color: color.accent, label: 'Working', pulse: true },
+  // ● blue, gently pulsing — Claude thinking / a foreground command running.
+  working: { glyph: '●', color: color.statusWorking, label: 'Working', pulse: true },
   // ○ muted hollow — at a prompt / turn finished (the product's "Idle").
   idle: { glyph: '○', color: color.muted, label: 'Idle' }
 }

@@ -37,6 +37,7 @@ export const color = {
   accentActive: 'var(--accent-active)',
   accentSubtle: 'var(--accent-subtle)',
   onAccent: 'var(--on-accent)',
+  statusWorking: 'var(--status-working)',
 
   /* Semantic */
   errorBg: 'var(--error-bg)',
