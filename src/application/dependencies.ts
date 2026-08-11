@@ -61,6 +61,22 @@ export interface RuntimeRegistry {
   clear(): void
 }
 
+/**
+ * A meaningful session state change worth surfacing as an in-app notification
+ * (§9.5). Emitted by `ingestSessionState` through {@link AppDependencies.onSessionStateNotification}
+ * with the resolved task/session names so the composition root (which owns the
+ * windows) can route the toast without re-traversing the workspace. Deliberately
+ * carries NO from/to states: the toast only says "state changed" and the user checks
+ * the session themselves, so the notification no longer depends on Claude's hook
+ * timing to reconstruct a from→to delta. Domain-only import (`SessionId`) keeps the
+ * application layer free of `shared`.
+ */
+export interface SessionStateNotification {
+  readonly sessionId: SessionId
+  readonly taskName: string
+  readonly sessionName: string
+}
+
 export interface AppDependencies {
   /** In-memory workspace aggregate; mutated only via the command loop (§6.6). */
   readonly workspace: Workspace
@@ -120,6 +136,16 @@ export interface AppDependencies {
    * calls it; absent ⇒ refresh is a no-op (detection opted out).
    */
   refreshClaudeState?: (sessionId: SessionId) => void
+  /**
+   * Late-bound sink for a MEANINGFUL session state change to surface as an in-app
+   * notification (§9.5). Bound by the composition root — like {@link onSessionState}
+   * — to a handler that gates on the `terminal.statusChangeNotifications` setting,
+   * resolves the active window (main-window fallback), and routes the toast there.
+   * `ingestSessionState` is the sole caller; it fires only on a real transition
+   * (not the initial `Unknown →`, not a `→ Unknown`, not a no-op). Absent ⇒ no
+   * notifications (the application stays unaware of windows/settings).
+   */
+  onSessionStateNotification?: (notification: SessionStateNotification) => void
 }
 
 /** Simple `Map`-backed runtime registry (composition-root default). */

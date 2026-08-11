@@ -102,7 +102,7 @@ describe('<SettingsModal>', () => {
 
     expect(bridge.api.app.updateSettings).toHaveBeenCalledWith({
       worktree: { location: '/new/loc' },
-      terminal: { shell: '/bin/zsh', stateDetection: true },
+      terminal: { shell: '/bin/zsh', stateDetection: true, statusChangeNotifications: true },
       sessionNextKey: 'Ctrl+Shift+ArrowRight',
       sessionPrevKey: 'Ctrl+Shift+ArrowLeft',
       taskNextKey: 'Ctrl+Shift+ArrowDown',
@@ -126,7 +126,7 @@ describe('<SettingsModal>', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(bridge.api.app.updateSettings).toHaveBeenCalledWith({
       worktree: { location: '/repos' },
-      terminal: { shell: undefined, stateDetection: true },
+      terminal: { shell: undefined, stateDetection: true, statusChangeNotifications: true },
       sessionNextKey: 'Ctrl+Shift+ArrowRight',
       sessionPrevKey: 'Ctrl+Shift+ArrowLeft',
       taskNextKey: 'Ctrl+Shift+ArrowDown',
@@ -167,6 +167,35 @@ describe('<SettingsModal>', () => {
     installStubBridge({ state: off })
     render(<SettingsModal onClose={vi.fn()} />)
     expect(screen.getByLabelText('session state detection')).not.toBeChecked()
+  })
+
+  it('defaults status-change notifications ON and sends the opt-out when unchecked (§9.5)', () => {
+    const bridge = installStubBridge({ state: seededState })
+    render(<SettingsModal onClose={vi.fn()} />)
+    // Seeded settings omit the flag → the checkbox reflects the default (on).
+    const box = screen.getByLabelText('status change notifications')
+    expect(box).toBeChecked()
+    fireEvent.click(box)
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(bridge.api.app.updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        terminal: expect.objectContaining({ statusChangeNotifications: false })
+      })
+    )
+  })
+
+  it('reflects an explicit notifications opt-out from the stored settings (§9.5)', () => {
+    const off: WindowedWorkspaceStateDTO = {
+      ...seededState,
+      settings: {
+        ...seededState.settings,
+        terminal: { statusChangeNotifications: false }
+      }
+    }
+    useStore.getState().hydrate(off)
+    installStubBridge({ state: off })
+    render(<SettingsModal onClose={vi.fn()} />)
+    expect(screen.getByLabelText('status change notifications')).not.toBeChecked()
   })
 
   it('captures an arbitrary modifier chord for each direction and saves both', () => {

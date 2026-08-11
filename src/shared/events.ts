@@ -152,6 +152,22 @@ export interface TaskStateChangedEventDTO {
   readonly state: string
 }
 
+/**
+ * An in-app notification that a session's status changed (§9.5). Unlike
+ * `sessionStateChanged`, this rides its OWN direct delivery: the composition root
+ * routes it only to the ACTIVE window (main-window fallback) via the window
+ * registry — it is never published on the domain bus, so it never broadcasts. It
+ * carries only the already-resolved task/session NAMES: the toast says just "state
+ * changed" (no from/to), so the user checks the session themselves rather than the
+ * notification depending on Claude's hook timing to reconstruct a delta.
+ */
+export interface SessionStateNotificationEventDTO {
+  readonly type: 'sessionStateNotification'
+  readonly sessionId: string
+  readonly taskName: string
+  readonly sessionName: string
+}
+
 /** Every event that can flow over the `app:event` channel. Discriminated on `type`. */
 export type EventDTO =
   | PtyDataEventDTO
@@ -175,3 +191,4 @@ export type EventDTO =
   | SessionMovedToWindowEventDTO
   | SessionStateChangedEventDTO
   | TaskStateChangedEventDTO
+  | SessionStateNotificationEventDTO

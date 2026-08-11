@@ -63,6 +63,28 @@ describe('parseSettings (§6.3)', () => {
     expect(parseSettings('{}').terminal.backend).toBeUndefined()
   })
 
+  it('statusChangeNotifications is absent by default (→ on) and round-trips an explicit false (§9.5)', () => {
+    // Absent by default (no key in DEFAULT_SETTINGS) → the `!== false` read-site
+    // convention treats it as on. Absence is preserved (not materialized to true),
+    // so DEFAULT_SETTINGS stays a serialize→parse fixed point.
+    expect(parseSettings('{}').terminal.statusChangeNotifications).toBeUndefined()
+    // Explicit false round-trips.
+    expect(
+      parseSettings(JSON.stringify({ terminal: { statusChangeNotifications: false } })).terminal
+        .statusChangeNotifications
+    ).toBe(false)
+    // A patch flips it and back without disturbing sibling terminal keys.
+    const off = mergeSettings(DEFAULT_SETTINGS, { terminal: { statusChangeNotifications: false } })
+    expect(off.terminal.statusChangeNotifications).toBe(false)
+    const on = mergeSettings(off, { terminal: { statusChangeNotifications: true } })
+    expect(on.terminal.statusChangeNotifications).toBe(true)
+    // A wrong-typed value falls back to the current value (undefined by default).
+    const bad = mergeSettings(DEFAULT_SETTINGS, {
+      terminal: { statusChangeNotifications: 'yes' as unknown as boolean }
+    })
+    expect(bad.terminal.statusChangeNotifications).toBeUndefined()
+  })
+
   it('defaults the configurable chords to their Ctrl+Shift bindings', () => {
     expect(DEFAULT_SETTINGS.sessionNextKey).toBe('Ctrl+Shift+ArrowRight')
     expect(DEFAULT_SETTINGS.sessionPrevKey).toBe('Ctrl+Shift+ArrowLeft')

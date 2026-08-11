@@ -15,6 +15,7 @@
  */
 
 import { create } from 'zustand'
+import { createNotificationThrottle } from './notification-throttle'
 import type {
   WindowedWorkspaceStateDTO,
   TaskDTO,
@@ -45,6 +46,8 @@ export type ToastKind = 'info' | 'error'
 export interface Toast {
   readonly id: number
   readonly kind: ToastKind
+  /** Optional bold heading rendered above `message` (e.g. "State changed" for §9.5). */
+  readonly title?: string
   readonly message: string
 }
 
@@ -415,11 +418,30 @@ function removeSession(data: StoreData, taskId: string, sessionId: string): Stor
 }
 
 /**
+ * Gate for the §9.5 status-change toast: returns `true` (and arms a cooldown) when the
+ * toast should be shown, `false` while the session is throttled. Passed into
+ * {@link reduceEvent} by `applyEvent`; defaults to always-admit so direct-reducer tests
+ * (and any non-throttled caller) behave as before. See {@link createNotificationThrottle}.
+ */
+export type NotificationAdmit = (sessionId: string) => boolean
+
+const ADMIT_ALL: NotificationAdmit = () => true
+
+/**
  * The pure event reducer. Returns the next `StoreData` for every wire event.
  * `ptyData` is ignored here (it bypasses the store, §5.2); the dormant
  * state-changed events (§10) patch the `state` field but nobody emits them in V1.
+ *
+ * `admit` gates ONLY the §9.5 notification toast and is consulted AFTER focus suppression,
+ * so a toast the user would never see never consumes the throttle window (that anchoring
+ * is the whole reason the throttle lives renderer-side — see notification-throttle.ts).
+ * It defaults to always-admit; `applyEvent` supplies the real per-window throttle.
  */
-export function reduceEvent(data: StoreData, event: EventDTO): StoreData {
+export function reduceEvent(
+  data: StoreData,
+  event: EventDTO,
+  admit: NotificationAdmit = ADMIT_ALL
+): StoreData {
   switch (event.type) {
     case 'ptyData':
       return data // bypasses the store entirely (§5.2)
@@ -634,6 +656,37 @@ export function reduceEvent(data: StoreData, event: EventDTO): StoreData {
       // Dormant seam (§10): patch the task's derived state. Unused in V1.
       return patchTask(data, event.taskId, { state: event.state })
 
+    case 'sessionStateNotification':
+      // In-app status-change notification (§9.5): render as an info toast with a bold
+      // "State changed" title over a `<Task> - <Session>` body. The notification
+      // deliberately carries NO old/new state — the user glances at it and checks the
+      // session themselves; it no longer depends on Claude's hook timing for a from→to.
+      //
+      // SUPPRESS when the user is already looking at the session that changed: if I
+      // can see Claude myself, I don't need a toast about it. `isSessionFocused` is
+      // the authoritative per-window "on screen right now" check (live DOM focus +
+      // active task/tab + this-window host) — the SAME predicate ready-for-review
+      // uses. Deciding this in the renderer (not main) makes it symmetric across
+      // both transition directions: main's focus snapshot at ingestion is racy for
+      // `working → waiting` (repaint + post-Stop hook), which is why "finished"
+      // toasts previously leaked through while "started" ones were suppressed.
+      if (isSessionFocused(data, event.sessionId)) {
+        return data
+      }
+      // Leading-edge throttle, consulted ONLY once we know the toast would be shown, so a
+      // focus-suppressed change never arms the window (§9.5). `admit` is false while the
+      // session is still within the cooldown of the last SHOWN toast — drop without a
+      // toast; the tab/task icons already reflect every state via `sessionStateChanged`.
+      if (!admit(event.sessionId)) {
+        return data
+      }
+      return pushToastData(
+        data,
+        'info',
+        `${event.taskName} - ${event.sessionName}`,
+        'State changed'
+      )
+
     case 'sessionMovedToWindow': {
       // A pure view re-assignment (§6.7, I18): only `windowId` changes — never
       // `taskId` or lifecycle. Each window renders sessions where
@@ -671,17 +724,32 @@ export function reduceEvent(data: StoreData, event: EventDTO): StoreData {
   }
 }
 
-function pushToastData(data: StoreData, kind: ToastKind, message: string): StoreData {
-  const toast: Toast = { id: data.nextToastId, kind, message }
+function pushToastData(
+  data: StoreData,
+  kind: ToastKind,
+  message: string,
+  title?: string
+): StoreData {
+  const toast: Toast = { id: data.nextToastId, kind, title, message }
   return { ...data, toasts: [...data.toasts, toast], nextToastId: data.nextToastId + 1 }
 }
+
+/**
+ * This window's leading-edge notification throttle (§9.5). Module-scoped (one store per
+ * window) so its cooldown is per-window and survives across `applyEvent` calls — a pure
+ * reducer can't hold a timer. It is consulted only for toasts that pass focus suppression,
+ * so the window is anchored to the toast the user actually saw. Never disposed: it lives
+ * for the window's lifetime and holds at most one short-lived timer per active session.
+ */
+const notificationThrottle = createNotificationThrottle()
 
 export const useStore = create<Store>((set) => ({
   ...initialData(),
 
   hydrate: (state) => set(hydrateData(state)),
 
-  applyEvent: (event) => set((data) => reduceEvent(data, event)),
+  applyEvent: (event) =>
+    set((data) => reduceEvent(data, event, notificationThrottle.admit)),
 
   setActiveTask: (taskId) =>
     set((data) => {

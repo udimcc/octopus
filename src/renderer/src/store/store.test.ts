@@ -863,3 +863,84 @@ describe('debug-overlay transition ring (§11)', () => {
     expect(useStore.getState().debugOverlayOpen).toBe(false)
   })
 })
+
+describe('sessionStateNotification → toast (§9.5)', () => {
+  it('pushes one info toast: bold "State changed" title over a task-session body', () => {
+    const d = reduceEvent(initialData(), {
+      type: 'sessionStateNotification',
+      sessionId: 's1',
+      taskName: 'Refactor auth',
+      sessionName: 'claude'
+    })
+    expect(d.toasts).toHaveLength(1)
+    expect(d.toasts[0].kind).toBe('info')
+    // Bold title + names body, no old/new state (§9.5).
+    expect(d.toasts[0].title).toBe('State changed')
+    expect(d.toasts[0].message).toBe('Refactor auth - claude')
+  })
+
+  // Suppression (§9.5): "if I can see Claude myself, I don't need a toast." A store
+  // with task `t1`, sessions `s1`(active tab)/`s2`, both in the main window, focused.
+  function viewing(): StoreData {
+    let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s1', 't1') })
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s2', 't1') })
+    return { ...d, activeTaskId: 't1', activeSessionByTask: { t1: 's1' }, windowFocused: true }
+  }
+
+  const notify = (d: StoreData, sessionId: string): StoreData =>
+    reduceEvent(d, {
+      type: 'sessionStateNotification',
+      sessionId,
+      taskName: 'T',
+      sessionName: 'S'
+    })
+
+  it('SUPPRESSES the toast when the changed session is the one on screen', () => {
+    // s1 is the focused, on-screen session — the tab icon already shows the change.
+    expect(notify(viewing(), 's1').toasts).toHaveLength(0)
+  })
+
+  it('still notifies for a background tab in the same (viewed) task', () => {
+    // s2 is in the viewed task but is not the active tab → off screen → notify.
+    expect(notify(viewing(), 's2').toasts).toHaveLength(1)
+  })
+
+  it('still notifies when the hosting window is blurred, even for the active tab', () => {
+    const blurred = { ...viewing(), windowFocused: false }
+    expect(notify(blurred, 's1').toasts).toHaveLength(1)
+  })
+
+  it('still notifies when the user has switched to a different task', () => {
+    const away = { ...viewing(), activeTaskId: 't-other' }
+    expect(notify(away, 's1').toasts).toHaveLength(1)
+  })
+
+  it('drops the toast when the throttle rejects the (would-be-shown) change', () => {
+    // A rejecting `admit` (session still hot from the last shown toast) suppresses the
+    // toast even though focus does NOT suppress it. Only consulted after the focus check.
+    const away = { ...viewing(), activeTaskId: 't-other' }
+    const d = reduceEvent(
+      away,
+      { type: 'sessionStateNotification', sessionId: 's1', taskName: 'T', sessionName: 'S' },
+      () => false
+    )
+    expect(d.toasts).toHaveLength(0)
+  })
+
+  it('does NOT consult the throttle for a focus-suppressed change (window stays cold)', () => {
+    // The changed session is on screen → focus suppresses BEFORE `admit`. If `admit` were
+    // consulted it would have armed the window; assert it is never called here.
+    let admitCalls = 0
+    const d = reduceEvent(
+      viewing(),
+      { type: 'sessionStateNotification', sessionId: 's1', taskName: 'T', sessionName: 'S' },
+      () => {
+        admitCalls++
+        return true
+      }
+    )
+    expect(d.toasts).toHaveLength(0)
+    expect(admitCalls).toBe(0)
+  })
+})

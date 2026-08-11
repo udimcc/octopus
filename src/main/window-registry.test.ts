@@ -143,4 +143,59 @@ describe('createWindowRegistry routing (§6.7)', () => {
     bus.publish({ type: 'activeTaskChanged', taskId: asTaskId('t1') })
     expect(main.sent).toEqual([])
   })
+
+  describe('sendTo (direct, non-broadcast — §9.5 notifications)', () => {
+    const note = (windowLabel: string): EventDTO => ({
+      type: 'sessionStateNotification',
+      sessionId: `s-${windowLabel}`,
+      taskName: 'T',
+      sessionName: 'S'
+    })
+
+    it('sends to ONLY the target window, never the others', () => {
+      const { main, win2 } = twoWindows(() => WIN2)
+      const dto = note('a')
+      // sendTo is on the registry; grab it via a fresh registry that shares nothing.
+      const bus = new InMemoryEventBus()
+      const registry = createWindowRegistry(bus, () => MAIN)
+      const m = new FakeWebContents()
+      const w = new FakeWebContents()
+      registry.register(MAIN, m.as())
+      registry.register(WIN2, w.as())
+      registry.markReady(MAIN)
+      registry.markReady(WIN2)
+
+      registry.sendTo(WIN2, dto)
+      expect(m.sent).toEqual([])
+      expect(w.sent).toEqual([dto])
+      // The unrelated two-window fixture is untouched (no bus publish happened).
+      expect(main.sent).toEqual([])
+      expect(win2.sent).toEqual([])
+    })
+
+    it('buffers for a not-ready target and flushes on markReady', () => {
+      const bus = new InMemoryEventBus()
+      const registry = createWindowRegistry(bus, () => MAIN)
+      const main = new FakeWebContents()
+      registry.register(MAIN, main.as())
+
+      const dto = note('b')
+      registry.sendTo(MAIN, dto) // not ready yet → buffered
+      expect(main.sent).toEqual([])
+
+      registry.markReady(MAIN)
+      expect(main.sent).toEqual([dto])
+    })
+
+    it('silently drops when the target window is unknown', () => {
+      const bus = new InMemoryEventBus()
+      const registry = createWindowRegistry(bus, () => MAIN)
+      const main = new FakeWebContents()
+      registry.register(MAIN, main.as())
+      registry.markReady(MAIN)
+
+      expect(() => registry.sendTo(WIN2, note('c'))).not.toThrow()
+      expect(main.sent).toEqual([])
+    })
+  })
 })

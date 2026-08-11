@@ -21,6 +21,22 @@ describe('<Toaster>', () => {
     expect(screen.getByText('heads up').closest('[role="status"]')).not.toBeNull()
   })
 
+  it('renders a bold title above the body, with a green info "i" icon', () => {
+    act(() =>
+      useStore.setState({
+        toasts: [{ id: 1, kind: 'info', title: 'State changed', message: 'Refactor auth - claude' }]
+      })
+    )
+    render(<Toaster />)
+    const title = screen.getByText('State changed')
+    expect(title).toBeInTheDocument()
+    expect(getComputedStyle(title).fontWeight).toBe('700')
+    // The body is a separate node from the title.
+    expect(screen.getByText('Refactor auth - claude')).toBeInTheDocument()
+    // The info badge glyph is present (aria-hidden, so query by text).
+    expect(screen.getByText('i')).toBeInTheDocument()
+  })
+
   it('dismisses a toast when its × is clicked', () => {
     act(() => useStore.getState().pushToast('info', 'closable'))
     render(<Toaster />)

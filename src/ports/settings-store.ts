@@ -44,6 +44,12 @@ export interface TerminalSettings {
    * heuristic). Never clobbers existing user hooks — it only adds the Octopus ones.
    */
   readonly injectClaudeHooks?: boolean
+  /**
+   * Whether an in-app notification pops in the active window when a session's
+   * status changes (§9.5). `true` (default when unset) shows the "State has changed
+   * from … to …" toast; `false` opts out. Read live at each transition.
+   */
+  readonly statusChangeNotifications?: boolean
 }
 
 export interface Settings {

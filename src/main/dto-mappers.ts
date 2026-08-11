@@ -98,7 +98,11 @@ function toSessionTypeDTO(v: SessionTypeView): SessionTypeDTO {
 export function toSettingsDTO(s: Settings): SettingsDTO {
   return {
     worktree: { location: s.worktree.location },
-    terminal: { shell: s.terminal.shell, stateDetection: s.terminal.stateDetection },
+    terminal: {
+      shell: s.terminal.shell,
+      stateDetection: s.terminal.stateDetection,
+      statusChangeNotifications: s.terminal.statusChangeNotifications
+    },
     defaultSessionTypeId: s.defaultSessionTypeId,
     worktreeCreateTimeoutMs: s.worktreeCreateTimeoutMs,
     groupTasksByRepo: s.groupTasksByRepo,

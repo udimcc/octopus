@@ -94,6 +94,8 @@ export interface SettingsDTO {
     readonly shell?: string
     /** Session state detection (§9); default on. Applies to newly-created sessions. */
     readonly stateDetection?: boolean
+    /** In-app status-change notifications (§9.5); default on. */
+    readonly statusChangeNotifications?: boolean
   }
   readonly defaultSessionTypeId: string
   readonly worktreeCreateTimeoutMs?: number
@@ -125,6 +127,7 @@ export interface SettingsPatchDTO {
   readonly terminal?: {
     readonly shell?: string
     readonly stateDetection?: boolean
+    readonly statusChangeNotifications?: boolean
   }
   readonly defaultSessionTypeId?: string
   readonly worktreeCreateTimeoutMs?: number

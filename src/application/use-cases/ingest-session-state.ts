@@ -15,6 +15,7 @@
 
 import type { AppDependencies } from '../dependencies'
 import type { IngestSessionStateInput } from '../commands'
+import { SessionState } from '../../domain/state'
 import { locateSession } from './locate-session'
 
 export function ingestSessionState(deps: AppDependencies, input: IngestSessionStateInput): void {
@@ -22,13 +23,13 @@ export function ingestSessionState(deps: AppDependencies, input: IngestSessionSt
   if (!located) {
     return
   }
-  const { task } = located
+  const { task, session } = located
 
   // Capture the prior state BEFORE the mutation so the transition log records the
   // from → to delta (§11), then apply the evaluated state to the session; the
   // task's aggregate is always DERIVED (I11) via the injected aggregator (§3.4).
-  const from = located.session.state
-  located.session.setState(input.state)
+  const from = session.state
+  session.setState(input.state)
   const taskState = task.deriveState(deps.aggregator)
 
   // Best-effort record for threshold tuning + the debug overlay (§11, R1). The
@@ -55,4 +56,23 @@ export function ingestSessionState(deps: AppDependencies, input: IngestSessionSt
     taskId: task.id,
     state: taskState
   })
+
+  // Best-effort in-app notification (§9.5) on a MEANINGFUL transition: skip the
+  // initial `Unknown → …` (every session's first signal — noise) and any
+  // `… → Unknown`, and skip a no-op (redundant debounced signal). The sink itself
+  // (composition root) gates on the user setting, throttles a burst per task+session
+  // (6s), and routes to the active window; this use-case stays unaware of
+  // windows/settings so it remains a pure writer. The notification carries only names
+  // (no from/to) — the toast just says "state changed" and the user checks the session.
+  if (
+    from !== input.state &&
+    from !== SessionState.Unknown &&
+    input.state !== SessionState.Unknown
+  ) {
+    deps.onSessionStateNotification?.({
+      sessionId: input.sessionId,
+      taskName: task.name,
+      sessionName: session.title
+    })
+  }
 }

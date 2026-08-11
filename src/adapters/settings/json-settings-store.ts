@@ -70,7 +70,14 @@ export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
     },
     terminal: {
       shell: pickString(patch.terminal?.shell, base.terminal.shell),
-      backend: pickBackend(patch.terminal?.backend, base.terminal.backend)
+      backend: pickBackend(patch.terminal?.backend, base.terminal.backend),
+      // Preserve absence (undefined) like `shell`/`backend`: an unset value means
+      // "on" via the `!== false` convention at the read sites (§9.5). This keeps
+      // DEFAULT_SETTINGS a fixed point under serialize→parse.
+      statusChangeNotifications: pickBoolean(
+        patch.terminal?.statusChangeNotifications,
+        base.terminal.statusChangeNotifications
+      )
     },
     defaultSessionTypeId: pickString(patch.defaultSessionTypeId, base.defaultSessionTypeId),
     worktreeCreateTimeoutMs: pickNumber(
@@ -101,7 +108,9 @@ function pickNumber(value: unknown, fallback: number | undefined): number | unde
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
 }
 
-function pickBoolean(value: unknown, fallback: boolean): boolean {
+function pickBoolean(value: unknown, fallback: boolean): boolean
+function pickBoolean(value: unknown, fallback: boolean | undefined): boolean | undefined
+function pickBoolean(value: unknown, fallback: boolean | undefined): boolean | undefined {
   return typeof value === 'boolean' ? value : fallback
 }
 

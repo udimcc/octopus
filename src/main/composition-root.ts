@@ -62,7 +62,11 @@ import { existsFile } from '../adapters/fs/file-exists'
 import { ElectronClipboard } from '../adapters/clipboard/electron-clipboard'
 import { BrowserWindow } from 'electron'
 import { createAjvConfigValidator } from '../application/config-validator'
-import { MapRuntimeRegistry, type AppDependencies } from '../application/dependencies'
+import {
+  MapRuntimeRegistry,
+  type AppDependencies,
+  type SessionStateNotification
+} from '../application/dependencies'
 import { CommandLoop } from '../application/command-loop'
 import { reconcileOnStartup } from '../application/reconcile'
 import { shutdown } from '../application/quit'
@@ -71,6 +75,7 @@ import { Workspace } from '../domain/workspace'
 import { TaskLifecycle } from '../domain/lifecycle'
 import type { Settings } from '../ports/settings-store'
 import type { EventBus } from '../ports/event-bus'
+import type { EventDTO } from '../shared/events'
 import { MAIN_WINDOW_ID, asSessionId, type SessionId, type WindowId } from '../domain/ids'
 import { locateSession } from '../application/use-cases/locate-session'
 import { CURRENT_VERSION } from '../shared/version'
@@ -120,6 +125,28 @@ export interface AppContext {
    * handler.
    */
   readonly shutdown: () => void
+}
+
+/**
+ * Resolve which window an in-app notification (§9.5) should target: the currently
+ * focused window if we can map its `webContents.id` to a known `WindowId`,
+ * otherwise the main window. Pure so it's unit-testable without Electron —
+ * `focusedWebContentsId` is `undefined` when the app is blurred (the common case
+ * for a background status change) or when the focused surface isn't a tracked
+ * Octopus window (e.g. devtools).
+ */
+export function resolveNotificationTargetWindow(
+  focusedWebContentsId: number | undefined,
+  windowIds: ReadonlyMap<number, WindowId>,
+  mainId: WindowId
+): WindowId {
+  if (focusedWebContentsId !== undefined) {
+    const mapped = windowIds.get(focusedWebContentsId)
+    if (mapped !== undefined) {
+      return mapped
+    }
+  }
+  return mainId
 }
 
 export function bootstrap(): AppContext {
@@ -316,8 +343,7 @@ export function bootstrap(): AppContext {
   if (getSettings().terminal.injectClaudeHooks !== false) {
     claudeStateWatcher = createClaudeStateWatcher({
       dir: paths.claudeStateDir,
-      sink: (sessionId, state, meta) =>
-        deps.onSessionState?.(asSessionId(sessionId), state, meta),
+      sink: (sessionId, state, meta) => deps.onSessionState?.(asSessionId(sessionId), state, meta),
       onError: (message) => console.warn(`[octopus] claude state watcher: ${message}`)
     })
     // The "refresh state" affordance (§5.4 R1): re-read one session's file NOW and
@@ -356,6 +382,70 @@ export function bootstrap(): AppContext {
       return
     }
   })
+
+  // In-app status-change notification (§9.5): bound AFTER `windowRegistry` (line
+  // above) and `windowIds` exist — it closes over both. `ingestSessionState` calls
+  // this on a meaningful transition; here we gate on the user setting (read live),
+  // resolve the ACTIVE window (main-window fallback), and send the toast to just
+  // that window (never broadcast — it's not on the bus). Kept in the composition
+  // root because only main owns `BrowserWindow`; the use-case stays window-agnostic.
+  // Emit ONE toast: route it to the active window and force the VDI repaint. Kept
+  // separate from `push` so the throttle (below) owns the burst suppression and this
+  // owns the window plumbing.
+  const emitStateNotification = (n: SessionStateNotification): void => {
+    // NOTE: whether to SUPPRESS the toast because the user is already looking at the
+    // session that changed (§9.5) is decided in the RENDERER, not here. Only the
+    // renderer authoritatively knows what's on screen in its window — `isSessionFocused`
+    // (store.ts) folds live DOM focus (`windowFocused`) with the active task/tab and
+    // this-window host. Deciding it here from `BrowserWindow.getFocusedWindow()` +
+    // domain `activeSessionId` sampled at ingestion is racy and direction-asymmetric
+    // (the `working → waiting` path's repaint + post-Stop hook shift focus after the
+    // sample), which let "finished" toasts leak through while "started" ones were
+    // suppressed. Main just routes to the focused window (main fallback); the renderer
+    // drops it if that window is in fact viewing the session.
+    const focused = BrowserWindow.getFocusedWindow()
+    const target = resolveNotificationTargetWindow(
+      focused && !focused.isDestroyed() ? focused.webContents.id : undefined,
+      windowIds,
+      MAIN_WINDOW_ID
+    )
+    const dto: EventDTO = {
+      type: 'sessionStateNotification',
+      sessionId: n.sessionId,
+      taskName: n.taskName,
+      sessionName: n.sessionName
+    }
+    windowRegistry.sendTo(target, dto)
+    // A status change is a PASSIVE update — it arrives while the user is looking at
+    // (or typing in) some other window, not interacting with the target. On the
+    // GPU-less VMware VDI, Chromium's SwiftShader compositor doesn't push a fresh
+    // frame for a passive DOM mutation until some input/resize wakes it, so the
+    // freshly-pushed toast paints late (or not until the next interaction) — exactly
+    // the "I can't see any notification" symptom. Force a full repaint of the target
+    // window so the toast shows immediately. No-op cost on a real GPU; `invalidate`
+    // just schedules a paint. Guard against a destroyed/absent webContents.
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue
+      if (windowIds.get(win.webContents.id) !== target) continue
+      win.webContents.invalidate()
+      break
+    }
+  }
+
+  // Gate on the user setting and route to the active window (§9.5). The BURST throttle
+  // (Claude's `working → waiting → blocked` turn-end double-write → ONE toast) lives in
+  // the RENDERER (store.ts + store/notification-throttle.ts), NOT here: its cooldown must
+  // be anchored to the toast the user actually SAW, and whether a toast is shown depends
+  // on per-window focus suppression (`isSessionFocused`) that only the renderer knows.
+  // Throttling here armed the window on every emit attempt, so a focus-suppressed
+  // `waiting → working` swallowed the later `working → waiting` "it finished" toast — the
+  // "I don't always see the toast" bug. Main just forwards; the renderer throttles.
+  deps.onSessionStateNotification = (n): void => {
+    if (getSettings().terminal.statusChangeNotifications === false) {
+      return
+    }
+    emitStateNotification(n)
+  }
 
   // `onHydrate(windowId)` marks THAT window ready so its buffered startup events
   // flush exactly when its renderer can receive them (§6.7, generalizes §6.5).

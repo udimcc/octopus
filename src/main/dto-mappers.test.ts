@@ -88,7 +88,7 @@ describe('snapshot → DTO mappers (§5.2)', () => {
   it('maps settings', () => {
     const settings: Settings = {
       worktree: { location: '/home/u/octopus_repos' },
-      terminal: { shell: '/bin/zsh', stateDetection: false },
+      terminal: { shell: '/bin/zsh', stateDetection: false, statusChangeNotifications: false },
       defaultSessionTypeId: 'terminal',
       worktreeCreateTimeoutMs: 45000,
       groupTasksByRepo: false,
@@ -99,7 +99,7 @@ describe('snapshot → DTO mappers (§5.2)', () => {
     }
     expect(toSettingsDTO(settings)).toEqual({
       worktree: { location: '/home/u/octopus_repos' },
-      terminal: { shell: '/bin/zsh', stateDetection: false },
+      terminal: { shell: '/bin/zsh', stateDetection: false, statusChangeNotifications: false },
       defaultSessionTypeId: 'terminal',
       worktreeCreateTimeoutMs: 45000,
       groupTasksByRepo: false,

@@ -93,6 +93,10 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
   const [shell, setShell] = useState(settings.terminal.shell ?? '')
   // State detection defaults ON; only an explicit `false` opts out (§9).
   const [stateDetection, setStateDetection] = useState(settings.terminal.stateDetection !== false)
+  // Status-change notifications default ON; only an explicit `false` opts out (§9.5).
+  const [statusNotifications, setStatusNotifications] = useState(
+    settings.terminal.statusChangeNotifications !== false
+  )
   // Current value of every configurable chord, keyed by its settings field.
   const [chords, setChords] = useState<Record<ChordKey, string>>(() =>
     CHORD_FIELDS.reduce(
@@ -184,7 +188,11 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
     setError(null)
     const patch: SettingsPatchDTO = {
       worktree: { location: location.trim() },
-      terminal: { shell: shell.trim() || undefined, stateDetection },
+      terminal: {
+        shell: shell.trim() || undefined,
+        stateDetection,
+        statusChangeNotifications: statusNotifications
+      },
       sessionNextKey: chords.sessionNextKey,
       sessionPrevKey: chords.sessionPrevKey,
       taskNextKey: chords.taskNextKey,
@@ -333,6 +341,22 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
                   Detect session status (Working / Idle / Needs input)
                   <span style={{ display: 'block', color: color.muted, fontSize: fontSize.sm }}>
                     Applies to newly-created sessions.
+                  </span>
+                </span>
+              </label>
+
+              <label style={{ ...field, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="checkbox"
+                  aria-label="status change notifications"
+                  checked={statusNotifications}
+                  disabled={busy}
+                  onChange={(e) => setStatusNotifications(e.target.checked)}
+                />
+                <span>
+                  Enable status changes notifications
+                  <span style={{ display: 'block', color: color.muted, fontSize: fontSize.sm }}>
+                    Pops a notification in the active window when a session status changes.
                   </span>
                 </span>
               </label>

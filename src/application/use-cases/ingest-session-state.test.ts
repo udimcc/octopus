@@ -5,6 +5,7 @@ import { ingestSessionState } from './ingest-session-state'
 import { makeDeps, taskInput, type FakeDeps } from './test-fakes'
 import { asTaskId, type SessionId } from '../../domain/ids'
 import { SessionState } from '../../domain/state'
+import type { SessionStateNotification } from '../dependencies'
 
 /** Seed one ready task with a single Running session; return its ids. */
 async function seedSession(): Promise<
@@ -79,5 +80,56 @@ describe('ingestSessionState (§9.6, §3.4)', () => {
 
     expect(fd.bus.ofType('sessionStateChanged')).toEqual([])
     expect(fd.stateLog.records).toEqual([])
+  })
+
+  describe('in-app notification sink (§9.5)', () => {
+    /** Seed a session and capture every notification fired through the sink. */
+    async function seedWithNotifications(): Promise<
+      Awaited<ReturnType<typeof seedSession>> & { notes: SessionStateNotification[] }
+    > {
+      const fd = await seedSession()
+      const notes: SessionStateNotification[] = []
+      fd.deps.onSessionStateNotification = (n) => notes.push(n)
+      return { ...fd, notes }
+    }
+
+    it('fires on a meaningful transition with resolved task/session names', async () => {
+      const { deps, sessionId, notes } = await seedWithNotifications()
+      const sessionName = deps.workspace.tasks()[0].sessions()[0].title
+
+      // Unknown → Working is the initial signal (suppressed); Working → Idle fires.
+      // The notification carries only names (no from/to) — the toast just says "state
+      // changed" and the user checks the session themselves.
+      ingestSessionState(deps, { sessionId, state: SessionState.Working })
+      ingestSessionState(deps, { sessionId, state: SessionState.Idle })
+
+      expect(notes).toEqual([{ sessionId, taskName: 'T', sessionName }])
+    })
+
+    it('does NOT fire on the initial Unknown → Working signal', async () => {
+      const { deps, sessionId, notes } = await seedWithNotifications()
+
+      ingestSessionState(deps, { sessionId, state: SessionState.Working })
+
+      expect(notes).toEqual([])
+    })
+
+    it('does NOT fire on a transition to Unknown', async () => {
+      const { deps, sessionId, notes } = await seedWithNotifications()
+
+      ingestSessionState(deps, { sessionId, state: SessionState.Working })
+      ingestSessionState(deps, { sessionId, state: SessionState.Unknown })
+
+      expect(notes).toEqual([])
+    })
+
+    it('does NOT fire on a redundant no-op (state unchanged)', async () => {
+      const { deps, sessionId, notes } = await seedWithNotifications()
+
+      ingestSessionState(deps, { sessionId, state: SessionState.Working })
+      ingestSessionState(deps, { sessionId, state: SessionState.Working })
+
+      expect(notes).toEqual([])
+    })
   })
 })

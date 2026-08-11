@@ -403,7 +403,8 @@ restore complexity). The serialize-and-replay path is kept available for a futur
   never *also* written to the terminal (the `window` listener's `preventDefault` alone is unreliable —
   xterm's textarea handler runs first).
 - **Empty states & toasts:** "No tasks yet", "No sessions", inline "Connecting…" written into the terminal;
-  bottom-right toasts for script failures, unexpected PTY exit, Jenkins errors (phase 3).
+  top-right toasts for script failures, unexpected PTY exit, the §9.5.1 status-change cue, Jenkins errors
+  (phase 3).
 
 ### 5.5 Renderer / main split
 
@@ -1019,6 +1020,44 @@ stream** and lives only in the Zustand store:
   domain, never in `sessionStateChanged`. It is pure UI memory keyed off events the store already receives, so
   it needs **no** backend, port, or protocol change — only store reducer logic + the icon variant (§5.4). The
   focus signal it needs (which session is active in which window) is already in the store (§5.2, §5.6).
+
+### 9.5.1 Status-change notification (in-app toast)
+
+Alongside the passive ready-for-review dot, a state change raises an **active** cue: a top-right info toast so
+the user notices a session changed even while looking elsewhere. It is deliberately minimal and does **not**
+try to reconstruct a `from → to` delta:
+
+- **Stateless message.** The toast is a bold **"State changed"** title over a `<Task> - <Session>` body — no
+  old/new state. The user glances at it and checks the session themselves. This is a direct response to
+  Claude's hook timing: a turn that ends *and* needs input makes the bridge write **two** genuine states
+  (`Working → Waiting` on `Stop`, then `→ Blocked` on `Notification`/`PermissionRequest`) an arbitrary gap
+  apart (often >1 s). A `from → to` toast double-fired or showed a stale delta; a stateless "something changed,
+  go look" cue sidesteps the race entirely. `SessionStateNotification` (the application-layer sink payload) and
+  its `SessionStateNotificationEventDTO` therefore carry **only names**, never states.
+- **Fire on a meaningful transition.** `ingestSessionState` calls the `onSessionStateNotification` sink on any
+  transition that is not `Unknown → X`, `X → Unknown`, or a no-op (it still keeps a *local* `from` for the
+  transition guard and the §11 state log — it just doesn't send it). The use-case stays window/settings-unaware.
+- **Per-session leading-edge throttle — in the RENDERER.** A burst (the `Working → Waiting → Blocked`
+  double-write, or a mid-turn permission flip) must collapse to **one** toast. The throttle emits the first
+  change immediately, then drops further changes for that session for a cooldown window (6 s) **without
+  re-arming** — so the window is anchored to the last toast the user *actually saw*, not the last emit attempt.
+  Critically it lives in the renderer store (`store/notification-throttle.ts`, an `admit(sessionId)` gate
+  consulted inside the reducer), **not** in main: whether a toast is shown depends on per-window focus
+  suppression (below) that only the renderer knows. A main-side throttle armed the window on every *attempt*,
+  so a focus-suppressed `Waiting → Working` (the user pressed Enter while watching) started a cooldown that
+  swallowed the later `Working → Waiting` "it finished" toast — the "I don't always see the toast" bug. Each
+  window has its own store, so the throttle is naturally per-window.
+- **Suppress when already looking.** The reducer drops the toast when `isSessionFocused(sessionId)` — the same
+  authoritative "on screen right now" predicate ready-for-review uses (this window has OS focus, hosts the
+  session, and it's the active tab of the active task). Deciding this in the renderer (not from main's racy
+  `getFocusedWindow()` snapshot at ingestion) makes it symmetric across both transition directions.
+- **Delivery.** Main gates on the `terminal.statusChangeNotifications` setting (default on — only an explicit
+  `false` suppresses), routes the DTO to the focused window (main-window fallback) via a direct
+  `windowRegistry.sendTo` (never broadcast — it's not a bus event), and forces `webContents.invalidate()` so
+  the passive DOM update actually paints on the GPU-less VMware VDI (SwiftShader won't repaint a passive
+  mutation until some input wakes it, §6.7). The renderer then makes the final show/suppress/throttle decision.
+- **Non-goals.** Like ready-for-review: not persisted, not aggregated by the domain, touches only the toast —
+  tab/task **icons** update instantly off the separate `sessionStateChanged` path regardless of the throttle.
 
 ### 9.6 Where detection runs: out-of-band, backend-agnostic
 

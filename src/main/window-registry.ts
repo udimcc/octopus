@@ -53,6 +53,13 @@ export interface WindowRegistry {
   unregister(windowId: WindowId): void
   /** Mark a window's renderer ready (its `getState` landed); flush its buffer. */
   markReady(windowId: WindowId): void
+  /**
+   * Send an event to ONE window directly (not via the bus), buffering it if that
+   * window isn't ready yet and dropping if it's unknown/destroyed. Used for events
+   * that must NOT broadcast — e.g. the active-window status-change notification
+   * (§9.5) the composition root targets after resolving the focused window.
+   */
+  sendTo(windowId: WindowId, dto: EventDTO): void
   /** Stop routing and release the bus subscription (on quit). */
   dispose(): void
 }
@@ -162,6 +169,9 @@ export function createWindowRegistry(
         entry.webContents.send(CHANNELS.event, dto)
       }
       entry.pending.length = 0
+    },
+    sendTo(windowId: WindowId, dto: EventDTO): void {
+      sendToWindow(windowId, dto)
     },
     dispose(): void {
       unsubscribe()
