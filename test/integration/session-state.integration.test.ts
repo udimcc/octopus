@@ -103,6 +103,29 @@ d('Claude state pipeline (integration, §9.6)', () => {
     expect(await waitUntil(() => last() === SessionState.Idle)).toBe(true)
   })
 
+  it('a /clear-prefix statusline after Stop keeps the session Idle (not Working)', async () => {
+    // The reported bug, end to end: /clear starts a fresh turn-less transcript (no
+    // assistant record) whose statusline read has a newer mtime than the prior Stop
+    // hook. derive_transcript_state must read it as waiting, so the watcher never
+    // pushes Working — the dot stays Idle.
+    startWatcher()
+    bridge(['hook', 'Stop'])
+    expect(await waitUntil(() => last() === SessionState.Idle)).toBe(true)
+    const transcriptPath = join(dir, 'cleared.jsonl')
+    writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({ type: 'mode' }),
+        JSON.stringify({ type: 'user', message: { role: 'user', content: '/clear' } })
+      ].join('\n') + '\n',
+      'utf8'
+    )
+    bridge(['statusline'], JSON.stringify({ session_id: SID, transcript_path: transcriptPath }))
+    await new Promise((r) => setTimeout(r, 200))
+    expect(last()).toBe(SessionState.Idle)
+    expect(observed.filter((o) => o.state === SessionState.Working)).toHaveLength(0)
+  })
+
   it('a PermissionRequest hook drives NeedsInput, carrying the reason', async () => {
     startWatcher()
     bridge(['hook', 'UserPromptSubmit']) // open a turn — permission prompts only occur mid-turn

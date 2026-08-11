@@ -942,8 +942,12 @@ tell us, via its own hooks and statusline, both pointed at the bridge (§9.1).
   `blocked` — **except** when *every* dangling `tool_use` is a delegation tool (`Task`/`Agent`), which → `working`
   (the main agent is waiting on a subagent, i.e. the whole session is still working; this is the resume/no-hook
   path — live, the `subagents` counter already forces `working`). A mix of a dangling delegation call and a
-  dangling non-delegation tool (a possible real permission prompt) still → `blocked`. Else the last assistant
-  turn ended (`end_turn`/`stop_sequence`) → `waiting`; else → `working`.
+  dangling non-delegation tool (a possible real permission prompt) still → `blocked`. A transcript with **no
+  assistant turn at all** (a fresh session, or the brand-new transcript a `/clear` starts) → `waiting`: no work
+  has begun, and `/clear` fires no `UserPromptSubmit` hook, so this transcript read is the only signal — falling
+  through to `working` here is what surfaced a cleared session as Working (§9.7). Else the last assistant turn
+  ended (`end_turn`/`stop_sequence`) → `waiting`; else (an assistant turn exists but did not end cleanly) →
+  `working`.
 - **Graceful degradation.** Every hook is `python3 <script> … 2>/dev/null || true` and the bridge wraps every
   write, so a failure is a silent no-op and the session stays `Unknown`. Nothing from Claude's payloads is ever
   executed; the bridge only reads/writes JSON.
@@ -1063,6 +1067,14 @@ without a richer signal (e.g. an Octopus MCP server, deferred in §9.2). They ar
   a stuck state. Mitigation shipped: transcript-derived `blocked` is only honored when it is not contradicted by
   a recent in-turn `working` hook (see §9.1) — this collapses the window to the rare case where no hook fires at
   all.
+- **A turn-less transcript read as `Working` after `/clear` (fixed).** `/clear` starts a brand-new transcript
+  containing only `mode`/`file-history-snapshot`/`user`/`system`/`attachment` records — **no `assistant`
+  record** — and fires **no** `UserPromptSubmit` hook, so no fresh hook observation is recorded. Claude re-renders
+  its status bar, invoking the bridge's `statusline` mode; `derive_transcript_state` found no dangling `tool_use`
+  and no assistant turn and fell through to the terminal `working`. Recorded with a fresh `transcript.mtime`, it
+  beat the prior turn's older `Stop`→`waiting` hook in the newer-observation race, so the session showed Working.
+  Fixed: `derive_transcript_state` returns `waiting` when there is no assistant turn at all (§9.2). Safe because
+  live work always writes an `assistant` record before a `statusline` tick could read the transcript as turn-less.
 - **Interrupt (Esc) mid-tool → sticky `NeedsInput` until the next prompt.** An interrupt leaves a dangling
   `tool_use` in the transcript with no clean-up hook, so at rest the transcript inference reads `blocked`. There
   is no event that clears it; it resolves on the next `UserPromptSubmit`. Untested by construction (no hook

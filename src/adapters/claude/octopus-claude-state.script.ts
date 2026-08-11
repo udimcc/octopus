@@ -265,8 +265,12 @@ def derive_transcript_state(path):
       counter already forces working). See DESIGN 9.2 / 9.7.
     - any OTHER dangling tool_use => blocked (at rest this is a pending permission /
       interrupted tool; live, a hook overrides it via newer ts);
+    - no assistant turn at all (a fresh session, or the brand-new transcript a /clear
+      starts) => waiting: no turn has run, so the session is idle, not working. /clear
+      fires no UserPromptSubmit hook, so this transcript read is the only signal and it
+      must not fall through to working. See DESIGN 9.2 / 9.7;
     - else the last assistant turn ended (end_turn/stop_sequence) => waiting;
-    - else => working.
+    - else (an assistant turn exists but did not end cleanly) => working.
     """
     if not path:
         return None
@@ -320,9 +324,14 @@ def derive_transcript_state(path):
         if all(issued_names.get(i) in DELEGATION_TOOLS for i in dangling):
             return "working"
         return "blocked"
-    if last_assistant is not None:
-        if last_assistant.get("stop_reason") in WAITING_STOP_REASONS:
-            return "waiting"
+    if last_assistant is None:
+        # No assistant turn at all: a fresh session, or the new transcript a /clear
+        # starts. No work has begun, so this is idle -- not working. (/clear fires no
+        # UserPromptSubmit hook, so this transcript read is the sole signal; falling
+        # through to working here is what made a cleared session show Working.)
+        return "waiting"
+    if last_assistant.get("stop_reason") in WAITING_STOP_REASONS:
+        return "waiting"
     return "working"
 
 

@@ -148,6 +148,49 @@ describe.skipIf(!hasPython)('octopus-claude-state.py', () => {
       expect(data.state).toBe('waiting')
     })
 
+    it('empty transcript (no records) => waiting, not working', () => {
+      // A transcript with no assistant turn must read idle. Before the fix this fell
+      // through derive_transcript_state to the terminal `working`.
+      const p = transcript([])
+      runStatusline(p)
+      const data = readState()
+      expect((data.transcript as Record<string, unknown>).state).toBe('waiting')
+      expect(data.state).toBe('waiting')
+    })
+
+    it('/clear-prefix transcript (no assistant record) => waiting (the reported bug)', () => {
+      // The realistic record sequence a /clear leaves in a brand-new transcript: mode,
+      // snapshot, the /clear user command, a system record, an attachment -- but NO
+      // assistant record. This is the exact reproduction of the "shows Working after
+      // /clear" report.
+      const p = transcript([
+        { type: 'mode' },
+        { type: 'file-history-snapshot' },
+        { type: 'user', message: { role: 'user', content: '/clear' } },
+        { type: 'system' },
+        { type: 'attachment' }
+      ])
+      runStatusline(p)
+      const data = readState()
+      expect((data.transcript as Record<string, unknown>).state).toBe('waiting')
+      expect(data.state).toBe('waiting')
+    })
+
+    it('Stop then a /clear-prefix statusline stays waiting (effective-state race)', () => {
+      // The full interaction that produced the bug: a prior turn ended (Stop -> waiting
+      // hook, turn closed), then /clear starts a fresh turn-less transcript whose
+      // statusline read has a NEWER mtime. Before the fix derive returned `working` and
+      // won the newer-observation race, flipping the dot to Working. It must stay waiting.
+      run(['hook', 'Stop'], '{}', { OCTOPUS_SESSION_ID: SID })
+      expect(readState().state).toBe('waiting')
+      const p = transcript([
+        { type: 'mode' },
+        { type: 'user', message: { role: 'user', content: '/clear' } }
+      ])
+      runStatusline(p)
+      expect(readState().state).toBe('waiting')
+    })
+
     it('dangling tool_use tail => blocked', () => {
       const p = transcript([
         {
