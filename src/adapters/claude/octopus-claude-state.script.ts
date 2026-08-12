@@ -107,23 +107,36 @@ WAITING_STOP_REASONS = ("end_turn", "stop_sequence")
 # name; "Task" the historical one.
 #
 # A subagent's whole lifespan keeps the SESSION Working (main agent + subagents are one
-# unit). Two signals bracket that lifespan, and the bridge adapts to whichever the
-# running Claude version emits (capability latch on has_subagent_start):
+# unit). Its life is bracketed by two signals, and the ONE invariant that makes counting
+# correct is the live-verified ordering: for every subagent, PreToolUse(Agent|Task) fires
+# FIRST (before the main agent's Stop), and SubagentStart fires LATER (for a BACKGROUND
+# child, even AFTER that Stop). So:
 #
-#  - PRIMARY, when available: SubagentStart .. SubagentStop, paired by agent_id. Both
-#    events carry agent_id (verified from live payloads), so outstanding children are an
-#    id SET -- a duplicate or cross-turn SubagentStop for an unknown id is a no-op and
-#    cannot under-count (fixes the stray-stop edge). SubagentStart also LATCHES
-#    has_subagent_start, after which PreToolUse below stops counting (that same launch is
-#    already owned by the id set), so the two signals never double-count one subagent.
-#  - FALLBACK, when SubagentStart never fires (older Claude): PreToolUse(Task|Agent)
-#    increments an anonymous counter at launch and SubagentStop decrements it. This is
-#    the previously-verified model; it stays exactly correct when no SubagentStart is
-#    seen. PreToolUse is the launch signal here (NOT PostToolUse: a BACKGROUND subagent's
-#    PostToolUse(Agent) fires at launch, not completion, so it cannot mark the close).
+#  - PreToolUse(Task|Agent) is the LAUNCH signal and ALWAYS increments the anonymous
+#    counter. This is the load-bearing bridge: the main agent's Stop fires before a
+#    background child's SubagentStart, so only this early increment keeps subagent_count
+#    > 0 at Stop time, making Stop DEFER instead of flashing the whole session Idle. It
+#    is PreToolUse, NOT PostToolUse: a BACKGROUND subagent's PostToolUse(Agent) fires at
+#    launch (not completion), so it cannot mark the close.
+#  - SubagentStart (when the running Claude emits it) PROMOTES the launch from the
+#    anonymous counter into an agent_id SET -- outstanding children become an id set that
+#    is immune to duplicate/cross-turn stops (a stop for an unknown id cannot under-count
+#    a live child). Because PreToolUse already counted this same launch, SubagentStart
+#    RECLAIMS one anonymous increment as it adds the id, so the child is counted exactly
+#    once. A SubagentStart with no agent_id is a no-op (its PreToolUse already counted it;
+#    its SubagentStop decrements the anonymous counter).
+#  - SubagentStop is the close bracket: it removes the agent_id from the set, or (no id /
+#    untracked id) decrements the anonymous counter.
+#
+# There is deliberately NO session-lifetime capability latch. An earlier version latched
+# "SubagentStart was seen" and then STOPPED counting PreToolUse -- which silently removed
+# the gap bridge on a session's 2nd+ delegating turn (and after any mid-turn foreground
+# SubagentStart), so Stop closed the turn while a background child was still starting and
+# the session wrongly read Idle/"done". Reclaim (not a latch) is what prevents the
+# double-count, and reclaim needs no latch. See DESIGN 9.2 / 9.7.
 #
 # subagent_count() = len(id set) + anonymous counter; while it is > 0 and the turn is
-# open the whole session reads Working. See DESIGN 9.2 / 9.7.
+# open the whole session reads Working.
 DELEGATION_TOOLS = ("Task", "Agent")
 
 
@@ -380,8 +393,7 @@ def run_hook(event):
             data["turn_start_ts"] = now
             # A fresh turn owns a fresh subagent tally on BOTH paths; also self-heals a
             # leaked entry (a subagent whose SubagentStop never arrived) at the next
-            # prompt. has_subagent_start is a SESSION-lifetime capability latch, so it is
-            # deliberately NOT reset here.
+            # prompt.
             data["subagents"] = 0
             data["subagent_ids"] = []
             data["stop_deferred"] = False
@@ -403,32 +415,27 @@ def run_hook(event):
                 data["turn_end_ts"] = now
                 data["stop_deferred"] = False
         elif event == "SubagentStart":
-            # PRIMARY launch signal (when this Claude version emits it). Latch the
-            # capability so PreToolUse below stops counting -- this same launch is now
-            # owned by the id set, and double-counting it would stick the session
-            # Working. Track the child by agent_id when present (exact pairing); if a
-            # version fires SubagentStart with no agent_id, fall back to the anonymous
-            # counter so the launch is still counted.
-            data["has_subagent_start"] = True
+            # PROMOTE this launch from the anonymous counter into the agent_id SET so
+            # outstanding children become an id set that a duplicate / cross-turn
+            # SubagentStop cannot under-count. PreToolUse(Agent) ALWAYS counted this same
+            # launch first (verified live: it fires before SubagentStart), so RECLAIM one
+            # anonymous increment as we add the id -- the child ends up counted exactly
+            # once (len(id set) instead of an anon tally). The decrement is floored at 0,
+            # so it is a harmless no-op if this Start had no matching PreToolUse increment
+            # (e.g. a version that emits Start without a delegation PreToolUse). Without
+            # the reclaim a fire-and-forget child would leave anon stuck at 1 after its
+            # SubagentStop clears the id, so subagent_count never reaches 0 and the
+            # deferred Stop never finalizes -- stuck Working forever.
+            #
+            # A SubagentStart with NO agent_id needs no action: its PreToolUse(Agent)
+            # increment already counts the launch and its SubagentStop will decrement it.
+            # (We do NOT re-increment here, which would double-count that same launch.)
             if agent_id is not None:
                 ids = subagent_ids(data)
                 if agent_id not in ids:
                     ids.append(agent_id)
-                    # RECLAIM the pre-latch PreToolUse increment for THIS launch. The
-                    # latch stops PreToolUse from counting only AFTER it is set, but
-                    # PreToolUse(Agent) often fires BEFORE SubagentStart (verified live:
-                    # a bg subagent read anon=1 alongside its own id), so the launch got
-                    # counted on BOTH paths. PreToolUse(Agent) is 1:1 with SubagentStart,
-                    # so decrementing one anon count per newly-tracked id exactly cancels
-                    # that increment (floored at 0 -> a no-op when there was none, or when
-                    # the latch was already set on a prior turn). Without this a
-                    # fire-and-forget child leaves anon stuck at 1 after its SubagentStop
-                    # clears the id set, so subagent_count never reaches 0 and the deferred
-                    # Stop never finalizes -- stuck Working forever.
                     data["subagents"] = max(0, anon_count(data) - 1)
                 data["subagent_ids"] = ids
-            else:
-                data["subagents"] = anon_count(data) + 1
         elif event == "SubagentStop":
             # A launched subagent truly ended -- the close bracket for both paths. NOT
             # PostToolUse: a BACKGROUND subagent's PostToolUse(Agent) fires at LAUNCH, so
@@ -458,11 +465,14 @@ def run_hook(event):
                 data["stop_deferred"] = False
                 rec_state, rec_reason = "waiting", "claude_stop"
         elif event == "PreToolUse" and tool_name in DELEGATION_TOOLS:
-            # FALLBACK launch signal: only counts when SubagentStart has never been seen
-            # for this session. Once SubagentStart has latched, the launch it represents
-            # is already tracked by the id set, so counting here too would double-count.
-            if not data.get("has_subagent_start"):
-                data["subagents"] = anon_count(data) + 1
+            # LAUNCH signal: ALWAYS count the delegation into the anonymous counter. This
+            # is the gap bridge -- the main agent's Stop fires before a background child's
+            # SubagentStart, so this early increment is what makes Stop defer instead of
+            # flashing Idle. If SubagentStart later fires for this launch, it PROMOTES the
+            # child into the id set and reclaims this increment (see above), so the child
+            # is never double-counted. Counting unconditionally here (no capability latch)
+            # is what keeps the bridge working on a session's 2nd+ delegating turn.
+            data["subagents"] = anon_count(data) + 1
         data["hook"] = {"state": rec_state, "reason": rec_reason, "ts": now, "event": event}
         return None
 

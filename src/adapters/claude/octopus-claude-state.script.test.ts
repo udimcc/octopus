@@ -764,7 +764,6 @@ describe.skipIf(!hasPython)('octopus-claude-state.py', () => {
         start('a1')
         let data = readState()
         expect(data.subagent_ids).toEqual(['a1'])
-        expect(data.has_subagent_start).toBe(true)
         expect(data.state).toBe('working')
         stopId('a1')
         data = readState()
@@ -786,13 +785,19 @@ describe.skipIf(!hasPython)('octopus-claude-state.py', () => {
         expect(readState().subagent_ids).toEqual([])
       })
 
-      it('once SubagentStart has latched, PreToolUse(Agent) does NOT also count (no double-count)', () => {
+      it('a PreToolUse(Agent) after a SubagentStart is a NEW launch and still counts (no latch)', () => {
+        // Regression: an earlier version LATCHED "SubagentStart was seen" and then
+        // stopped counting PreToolUse for the rest of the session, which killed the
+        // gap-bridge on later launches (the reported "flashes done while a background
+        // child runs" bug). There is no latch now: this second PreToolUse is a genuinely
+        // distinct launch and must be counted, so subagent_count reflects BOTH children.
         prompt()
-        start('a1') // latches has_subagent_start
-        pre('Agent') // must be ignored now — the launch is already in the id set
+        start('a1') // first child, tracked by id
+        pre('Agent') // a SECOND, distinct launch — must still count
         const data = readState()
         expect(data.subagent_ids).toEqual(['a1'])
-        expect(data.subagents).toBe(0)
+        expect(data.subagents).toBe(1)
+        expect(data.state).toBe('working')
       })
 
       it('a duplicate/stray SubagentStop for an unknown id cannot under-count a live child', () => {
@@ -819,15 +824,58 @@ describe.skipIf(!hasPython)('octopus-claude-state.py', () => {
         expect(data.turn_end_ts).toBeDefined()
       })
 
-      it('PreToolUse BEFORE SubagentStart: the latch reclaims the pre-latch anon increment (no double-count)', () => {
-        // The live-observed ordering: PreToolUse(Agent) fires and increments the anon
-        // fallback (has_subagent_start not yet set), THEN SubagentStart latches and adds
-        // the id. Without reclaim this reads subagent_count == 2 for ONE child. The
-        // SubagentStart branch decrements the paired anon increment so the count is 1.
+      it('2nd delegating turn with a background child does NOT flash Idle (the reported bug)', () => {
+        // THE REPORTED BUG. A session that already delegated once (turn 1) launches
+        // another BACKGROUND child on a later turn. Live ordering for a background child:
+        //   PreToolUse(Agent) -> Stop(main) -> [async] SubagentStart -> SubagentStop.
+        // The main agent's Stop fires BEFORE the child's SubagentStart, so ONLY the
+        // PreToolUse increment can keep subagent_count > 0 at Stop time and make Stop
+        // defer. The old session-lifetime latch (set on turn 1's SubagentStart) disabled
+        // PreToolUse counting on turn 2, so Stop saw count == 0, closed the turn, and the
+        // session wrongly read Idle/"done" while the background child was still starting.
+
+        // --- Turn 1: a normal delegated subagent that completes cleanly. This is what
+        //     latched has_subagent_start in the buggy version.
         prompt()
-        pre('Agent') // anon -> 1 (latch not yet set)
+        pre('Agent')
+        start('t1') // (buggy version) latches the capability here
+        stopId('t1')
+        stop()
+        expect(readState().state).toBe('waiting')
+
+        // --- Turn 2: launch a background child, then the main agent Stops before the
+        //     child's SubagentStart arrives.
+        prompt()
+        pre('Agent') // MUST count even though turn 1 saw a SubagentStart
         expect(readState().subagents).toBe(1)
-        start('a1') // latches + tracks id + reclaims the anon increment
+        stop() // main yields; child's SubagentStart not yet delivered
+        let data = readState()
+        expect(data.state).toBe('working') // NOT waiting -- Stop deferred by the count
+        expect(data.stop_deferred).toBe(true)
+        // The deferred Stop did NOT advance the turn end past this turn's start, so the
+        // turn is still open (turn_end_ts carries turn 1's older value from that Stop).
+        expect(data.turn_end_ts).toBeLessThan(data.turn_start_ts as number)
+
+        // The child boots (SubagentStart lands after Stop), runs, then completes.
+        start('t2') // promotes into the id set, reclaims the anon increment
+        expect(readState().state).toBe('working')
+        stopId('t2') // last child ends -> finalize the deferred Stop
+        data = readState()
+        expect(data.subagents).toBe(0)
+        expect(data.subagent_ids).toEqual([])
+        expect(data.state).toBe('waiting') // Idle only now, once the child is truly done
+        expect(data.turn_end_ts).toBeDefined()
+      })
+
+      it('PreToolUse BEFORE SubagentStart: SubagentStart reclaims the anon increment (no double-count)', () => {
+        // The live-observed ordering: PreToolUse(Agent) fires and increments the anon
+        // counter, THEN SubagentStart promotes the same launch into the id set. Without
+        // reclaim this reads subagent_count == 2 for ONE child. The SubagentStart branch
+        // decrements the paired anon increment as it adds the id, so the count is 1.
+        prompt()
+        pre('Agent') // anon -> 1
+        expect(readState().subagents).toBe(1)
+        start('a1') // tracks id + reclaims the anon increment
         const data = readState()
         expect(data.subagent_ids).toEqual(['a1'])
         expect(data.subagents).toBe(0) // reclaimed — the single launch is counted once
@@ -850,22 +898,34 @@ describe.skipIf(!hasPython)('octopus-claude-state.py', () => {
         expect(data.state).toBe('waiting')
       })
 
-      it('SubagentStart with no agent_id falls back to the anonymous counter (still counted)', () => {
+      it('SubagentStart with no agent_id is a no-op: the PreToolUse increment carries the launch', () => {
+        // Live ordering: PreToolUse(Agent) always counts the launch first. A SubagentStart
+        // that carries no agent_id cannot be promoted into the id set, so it does nothing
+        // (re-incrementing here would double-count the same launch); the anonymous counter
+        // from PreToolUse holds it, and its SubagentStop will decrement it.
         prompt()
-        run(['hook', 'SubagentStart'], '{}', { OCTOPUS_SESSION_ID: SID }) // latch, no id
+        pre('Agent') // launch counted on the anon path
+        run(['hook', 'SubagentStart'], '{}', { OCTOPUS_SESSION_ID: SID }) // no id -> no-op
         const data = readState()
-        expect(data.has_subagent_start).toBe(true)
-        expect(data.subagents).toBe(1) // anonymous fallback kept the launch counted
+        expect(data.subagent_ids ?? []).toEqual([])
+        expect(data.subagents).toBe(1) // still exactly one outstanding launch
         expect(data.state).toBe('working')
       })
 
-      it('UserPromptSubmit clears the id set but NOT the has_subagent_start latch', () => {
+      it('a no-id SubagentStart without any PreToolUse does NOT invent a phantom subagent', () => {
+        // Guard the no-op above from the other side: with no preceding PreToolUse there is
+        // nothing to count, so a bare no-id SubagentStart leaves the tally at zero rather
+        // than fabricating a child that would stick the session Working forever.
+        prompt()
+        run(['hook', 'SubagentStart'], '{}', { OCTOPUS_SESSION_ID: SID })
+        expect(readState().subagents).toBe(0)
+      })
+
+      it('UserPromptSubmit clears the id set', () => {
         prompt()
         start('a1')
         prompt() // new turn
-        const data = readState()
-        expect(data.subagent_ids).toEqual([])
-        expect(data.has_subagent_start).toBe(true) // capability persists across turns
+        expect(readState().subagent_ids).toEqual([])
       })
     })
   })

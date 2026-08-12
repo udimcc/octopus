@@ -801,9 +801,8 @@ to `<dataDir>/claude-state/<OCTOPUS_SESSION_ID>.json`:
 ```
 { state, reason, updated_at,
   turn_start_ts, turn_end_ts,               // turn boundaries (§9.1 turn gating)
-  subagent_ids,                             // outstanding subagent agent_ids (primary path, §9.1)
-  subagents,                                // anonymous fallback counter (no-SubagentStart versions, §9.1)
-  has_subagent_start,                       // capability latch: SubagentStart seen this session (§9.1)
+  subagent_ids,                             // outstanding subagent agent_ids (id-set path, §9.1)
+  subagents,                                // anonymous launch counter (PreToolUse increments, §9.1)
   stop_deferred,                            // a Stop was deferred pending subagents (§9.1)
   hook:       { state, reason, ts, event }, // last in-turn hook observation
   transcript: { state, reason, mtime } }    // last transcript-derived observation
@@ -826,29 +825,39 @@ subagent's true lifespan and, while **any** is outstanding **and the turn is ope
 `working` regardless of either observation slot — so a session waiting on subagents never reads Idle (bug 1) and
 never flickers done-then-working when a subagent returns and the main agent resumes (bug 2).
 
-**Two tracking paths, one capability latch.** Octopus registers **both** `SubagentStart` and `SubagentStop` via
-its own merge-safe injector (`HOOK_EVENTS`, §9.2) — never a hand-edit — so the signal is available on every
-install without the user touching their Claude config. The bridge adapts to whichever the running Claude version
-actually emits:
-- **Primary — `SubagentStart` .. `SubagentStop`, paired by `agent_id`.** Both events carry `agent_id` (verified
-  from live payloads), so outstanding children are an **id set** (`subagent_ids`), not a count. `SubagentStop`
-  *removes* its id; a duplicate or cross-turn stop for an unknown id is a **no-op**, so it can never under-count
-  a still-live child (this closes the stray-stop edge a bare counter had). `SubagentStart` also **latches**
-  `has_subagent_start` (a session-lifetime flag), after which the fallback below stops counting so one launch is
-  never counted twice. **Ordering reclaim:** the latch only blocks *future* `PreToolUse` — but live traces show
-  `PreToolUse(Agent)` fires *before* `SubagentStart`, so the launch was already counted on the fallback by the
-  time the latch is set. Because `PreToolUse(Agent)` is 1:1 with `SubagentStart`, when `SubagentStart` adds a
-  **new** id it also decrements the anonymous counter by one (floored at 0), reclaiming that paired pre-latch
-  increment. Without this a single background child reads `subagent_count == 2`, and after its `SubagentStop`
-  clears the id the anonymous counter stays at 1 — so `subagent_count` never reaches 0, the deferred `Stop`
-  never finalizes, and a fire-and-forget child leaves the session stuck `working` forever.
-- **Fallback — `PreToolUse(Task|Agent)` .. `SubagentStop`, anonymous counter.** On a Claude version that emits
-  **no** `SubagentStart`, `PreToolUse` for a delegation tool increments the `subagents` counter at launch and
-  `SubagentStop` decrements it (floored at 0). This is the previously-verified model; it stays exactly correct
-  when no `SubagentStart` is seen, so adding the primary path is a strict, no-regression superset. (If a version
-  ever fires `SubagentStart` with no `agent_id`, that path degrades to this same anonymous counter.)
+**One count, two representations — promote-and-reclaim (no capability latch).** Octopus registers **both**
+`SubagentStart` and `SubagentStop` via its own merge-safe injector (`HOOK_EVENTS`, §9.2) — never a hand-edit —
+so the signals are available on every install without the user touching their Claude config. The whole model
+rests on one live-verified ordering invariant: for **every** subagent, `PreToolUse(Agent|Task)` fires **first**
+(before the main agent's `Stop`), and `SubagentStart` fires **later** — for a *background* child, even *after*
+that `Stop`.
+- **`PreToolUse(Task|Agent)` is the launch signal and ALWAYS increments the `subagents` counter.** This is the
+  load-bearing **gap bridge**: because the main agent's `Stop` fires *before* a background child's
+  `SubagentStart`, only this early increment keeps `subagent_count > 0` at `Stop` time, so the `Stop` **defers**
+  instead of flashing the whole session Idle. It is `PreToolUse`, **not** `PostToolUse` — a background subagent's
+  `PostToolUse(Agent)` fires at launch, not completion.
+- **`SubagentStart` PROMOTES that launch from the counter into an `agent_id` set (`subagent_ids`).** Both
+  `SubagentStart` and `SubagentStop` carry `agent_id` (verified from live payloads), so an outstanding child
+  tracked by id is immune to a duplicate or cross-turn `SubagentStop` (a stop for an unknown id is a **no-op**,
+  never under-counting a still-live child — this closes the stray-stop edge a bare counter had). Because
+  `PreToolUse(Agent)` already counted this same launch, `SubagentStart` **reclaims** one anonymous increment as
+  it adds the id (decrement floored at 0), so the child is counted **exactly once** (in the id set). A
+  `SubagentStart` carrying **no** `agent_id` is a no-op: its `PreToolUse` increment already holds the launch and
+  its `SubagentStop` will decrement it.
+- **`SubagentStop` is the close bracket:** it removes its `agent_id` from the set, or (no id / untracked id)
+  decrements the anonymous counter (floored at 0).
 
-`subagent_count = len(subagent_ids) + subagents`; the two paths never both count the same child (the latch).
+**No session-lifetime latch — and why the old one was the background bug.** An earlier version latched a
+`has_subagent_start` flag on the first `SubagentStart` and thereafter **stopped counting `PreToolUse`** (to avoid
+double-counting a launch already promoted into the id set). But the latch was session-lifetime, so it silently
+removed the gap bridge on a session's **2nd+ delegating turn** (and after any mid-turn foreground `SubagentStart`):
+`PreToolUse(Agent)` no longer counted, so a subsequent background launch left `subagent_count == 0` at `Stop`
+time, the turn closed, and the session wrongly read **Idle/"done"** while the background child was still starting
+— exactly the reported symptom. **Reclaim, not a latch, is what prevents the double-count**, and reclaim needs no
+latch: it works identically on turn 1 and turn N. Removing the latch restores the bridge on every turn.
+
+`subagent_count = len(subagent_ids) + subagents`; promote-and-reclaim guarantees a child is counted in exactly
+one representation at a time.
 
 **Why the close bracket is `SubagentStop`, not `PostToolUse` (this was the background bug).** A *background*
 subagent's `PreToolUse(Agent)` **and** `PostToolUse(Agent)` both fire at **launch** — the delegation tool
@@ -924,14 +933,15 @@ tell us, via its own hooks and statusline, both pointed at the bridge (§9.1).
     subagent is still outstanding (`subagents > 0`), where it records `working`, **defers** closing the turn,
     and sets `stop_deferred` (§9.1 subagent gating), so a background child outliving the main agent's turn does
     not flash Idle.
-  - `UserPromptSubmit` → `working` (**opens** the turn; resets both `subagent_ids` and the `subagents` counter,
-    clears `stop_deferred`; the `has_subagent_start` capability latch persists).
+  - `UserPromptSubmit` → `working` (**opens** the turn; resets both `subagent_ids` and the `subagents` counter
+    and clears `stop_deferred`, so a leaked child self-heals at the next prompt).
   - `SubagentStart` / `PreToolUse` / `PostToolUse` / `SubagentStop` → `working` (in-turn; a delegated subagent
     finishing does not by itself mean the MAIN agent is idle, so `SubagentStop`→Working — honored while the turn
-    is open). Subagent bookkeeping (§9.1, two-path): `SubagentStart` (primary) adds its `agent_id` to
-    `subagent_ids` and latches `has_subagent_start`; `PreToolUse` for a delegation tool (`Task`/`Agent`)
-    increments the anonymous `subagents` counter **only until that latch is set** (fallback for versions with no
-    `SubagentStart`); **`SubagentStop` removes** its `agent_id` (or decrements the counter) and, when
+    is open). Subagent bookkeeping (§9.1, promote-and-reclaim): `PreToolUse` for a delegation tool (`Task`/`Agent`)
+    **always** increments the anonymous `subagents` counter at launch (the gap bridge — the main agent's `Stop`
+    fires before a background child's `SubagentStart`); `SubagentStart` promotes that launch into `subagent_ids`
+    by `agent_id` and reclaims one counter increment (no double-count, no session-lifetime latch); **`SubagentStop`
+    removes** its `agent_id` (or decrements the counter) and, when
     `subagent_count` reaches 0 *while a Stop was deferred* (`stop_deferred`), **finalizes the deferred close** —
     sets `turn_end_ts`, records `waiting`, clears the flag → Idle. `PostToolUse` never touches subagent state —
     a background subagent's `PostToolUse(Agent)` fires at launch, not completion, so it cannot mark the close.
@@ -1137,9 +1147,10 @@ without a richer signal (e.g. an Octopus MCP server, deferred in §9.2). They ar
   highlight, so the very tab that needs attention looks busy. Recovery is the next prompt only; there is no
   timeout. **This is the accepted residual cost of never reading a delegating session as prematurely-done.**
   Note the related *duplicate/stray* `SubagentStop` under-count — a spurious stop wrongly cancelling a *live*
-  child — is **closed** on the primary path: `subagent_ids` removal by `agent_id` is a no-op for an id that is
-  not in the set, so only the matching child is ever cleared (the anonymous fallback counter, used only on
-  versions with no `SubagentStart`, remains vulnerable to it).
+  child — is **closed** once a child is tracked by `agent_id`: `subagent_ids` removal is a no-op for an id not in
+  the set, so only the matching child is ever cleared. The anonymous `subagents` counter (a launch that
+  `PreToolUse` counted but `SubagentStart` has not yet promoted, or a version that emits no `SubagentStart`)
+  remains vulnerable to it — a narrow window, since `SubagentStart` normally promotes the launch promptly.
   (2) **Fire-and-forget converges without a resume (fixed):** when the main agent `Stop`s while a background
   child runs, the Stop is deferred with a `stop_deferred` flag; the last child's `SubagentStop` (counter → 0
   with the flag set) finalizes the close to Idle even if the main agent never resumes (§9.1). The residual
@@ -1152,8 +1163,8 @@ without a richer signal (e.g. an Octopus MCP server, deferred in §9.2). They ar
   still-running child's next in-turn `PreToolUse`/`PostToolUse`, hiding the prompt behind Working until the main
   agent re-emits it or the child ends. A permission prompt raised while no child is outstanding is unaffected.
   (4) **Nested subagents** (a subagent spawning its own subagent) are tracked only if their hooks carry the same
-  `OCTOPUS_SESSION_ID`; a mismatch would under/over-count, but on the primary path a mismatched `agent_id` is a
-  distinct set entry (no collision), and the `UserPromptSubmit` reset still bounds any drift to one turn.
+  `OCTOPUS_SESSION_ID`; a mismatch would under/over-count, but a mismatched `agent_id` is a distinct
+  `subagent_ids` entry (no collision), and the `UserPromptSubmit` reset still bounds any drift to one turn.
   (5) **Sidechain layout is version-coupled but guarded:** today's Claude writes subagent activity to *separate*
   `subagents/agent-*.jsonl` files and the `statusline` `transcript_path` names only the main transcript, so a
   subagent's own dangling `tool_use` never appears there; `derive_transcript_state` additionally skips
