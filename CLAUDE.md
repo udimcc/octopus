@@ -13,6 +13,11 @@ Three source-of-truth docs govern all work — read the relevant one before chan
 - `DESIGN.md` — the technical architecture. **Sections are cited throughout the code** (e.g. `DESIGN §6.4`);
   when a comment references a `§`, that section is the authority for the decision.
 - `TASKS.md` — version-scoped task breakdown with `[ ]`/`[~]`/`[x]` status.
+- `CLAUDE_STATE_PRD.md` — product spec for session/task **status** (states, icons, priority,
+  ready-for-review, notifications). Authoritative for status *behavior*.
+
+**Project rules** live in `.claude/rules/` and are binding when they apply:
+@.claude/rules/claude-state-prd.md
 
 ## Current status: V0 (foundation only)
 
