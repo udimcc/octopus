@@ -38,27 +38,48 @@ Notes:
 **Ready for review** is a UI highlight layered on top of the states — not a fifth state. It answers
 "which agent _just_ finished, and I haven't looked yet?"
 
+The cue is a **raise-unconditionally / suppress-at-display-time** split. Raising records a durable
+fact — "a turn finished since this session was last on screen" — without consulting focus at that
+instant; whether the highlight actually *shows* is re-decided continuously as the UI renders. This
+is deliberate: on the GPU-less VDI host the on-screen/focus signal is briefly unreliable at the exact
+moment a turn ends, so a focus check taken *at the transition instant* is fragile (it caused a stuck
+review dot for a session the user watched finish). Evaluating "is it on screen?" at display time uses
+the reliable steady-state truth instead.
+
 **When it is raised:**
-- A session transitions **Working → Idle** (Claude finished a turn) **while the session is not
-  focused** (not the active tab of a focused window). This raises the ready-for-review highlight.
+- A session transitions **Working → Idle** (Claude finished a turn). This is **unconditional** — the
+  marker is set regardless of whether the session is on screen at that moment.
 
 **When it is NOT raised:**
-- A **Working → Idle** transition while the user **is already looking at** that session (if I can see
-  Claude finish myself, I don't need a cue).
 - A session that goes straight to Idle **without** a prior Working turn (e.g. freshly spawned at a
   prompt) — nothing was "finished".
 - A **Needs input → Idle** transition (the user was already being asked; resolving it isn't new
   finished work).
 
-**When it clears:**
-- **Primary:** the user **focuses** the session (its tab becomes active in a focused window) — they
-  have now looked.
+**When it is shown (the highlight surfaces):** only while the session is **currently Idle** AND
+**not currently on screen** (not the active tab of a focused window) — both gates re-checked every
+render. A session the user is looking at shows **no** cue while they look (display-time suppression),
+and being on screen also **marks it seen**: as long as it is the visible tab of a focused window the
+unseen-marker is cleared continuously, so a turn that finishes **in place while the user is watching**
+is recorded as seen and does **not** resurface the cue when the user later switches away. The cue
+surfaces only for a finished turn the user has **not** had on screen since it finished — honoring "if
+I can see Claude finish myself I don't need a cue" at display time (via settled present-time focus),
+not by withholding the raise.
+
+**When the marker clears:**
+- **Primary:** the user has the session **on screen** — either by *bringing* it there (its tab
+  becomes active in a focused window) or by *watching it there* when the turn finishes in place. Being
+  on screen clears the "unseen" memory continuously — re-checked every render against the reliable
+  present-time focus, never the flaky finish instant — so the cue won't appear when they switch away.
+  The bring-on-screen (focus-transition) clear is **global** across windows so the task rollup stays
+  consistent; the watch-in-place clear is local to the hosting window (its cross-window corollary is a
+  documented known limitation, below).
 - **Defense-in-depth:** the session **leaves Idle** again (starts Working, or goes to Needs input) —
   the "just finished, unseen" premise no longer holds.
 
-**Validity / supersession:** ready-for-review is shown **only while the session is currently Idle**.
-If the agent starts working again before the user looks, the current state (Working / Needs input)
-is shown instead — a running session never displays the static review dot.
+**Validity / supersession:** because the highlight is gated to the Idle branch at display time, if the
+agent starts working again before the user looks, the current state (Working / Needs input) is shown
+instead — a running session never displays the static review dot.
 
 ## Icons
 
@@ -155,3 +176,10 @@ Accepted, low-frequency edge cases (detail in `DESIGN.md §9.7`):
   Unknown until the next turn.
 - A main agent that is blocked _while_ a background sub-agent is working may briefly show Working
   instead of Needs input (a single status can't hold both at once).
+- If a session finishes a turn **in place** in a _secondary_ window where it was already the active
+  tab, the **main window's task rollup** can still show Ready for review for it. The watch-in-place
+  clear is **local** to the hosting window (the secondary window itself shows no cue), and a finish
+  fires no on-screen *event* to broadcast, so the main window — which knows only its own focus — never
+  learns the session was seen. It clears as soon as the user brings that session on screen from any
+  window (a focus transition, which does broadcast). Low-frequency (needs the session hosted in a
+  different window than the summary being read).

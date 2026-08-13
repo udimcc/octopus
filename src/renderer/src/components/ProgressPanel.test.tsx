@@ -194,7 +194,7 @@ describe('<ProgressPanel>', () => {
         s1: session('s1', 't1', { state: 'waiting' }),
         s2: session('s2', 't1', { state: 'working' })
       },
-      readyForReview: { s1: true }
+      hasUnseenFinishedTurn: { s1: true }
     })
     render(<ProgressPanel onNewTask={vi.fn()} />)
     expect(rowIconLabel('Alpha')).toBe('Ready for review')
@@ -207,7 +207,7 @@ describe('<ProgressPanel>', () => {
         s1: session('s1', 't1', { state: 'waiting' }),
         s2: session('s2', 't1', { state: 'blocked' })
       },
-      readyForReview: { s1: true }
+      hasUnseenFinishedTurn: { s1: true }
     })
     render(<ProgressPanel onNewTask={vi.fn()} />)
     expect(rowIconLabel('Alpha')).toBe('Needs input')
@@ -217,7 +217,7 @@ describe('<ProgressPanel>', () => {
     seed([task('t1', { name: 'Alpha', sessions: [session('s1', 't1')] })])
     useStore.setState({
       sessions: { s1: session('s1', 't1', { state: 'working' }) },
-      readyForReview: { s1: true } // stale: raised on the earlier working→waiting
+      hasUnseenFinishedTurn: { s1: true } // stale: raised on the earlier working→waiting
     })
     render(<ProgressPanel onNewTask={vi.fn()} />)
     expect(rowIconLabel('Alpha')).toBe('Working')
@@ -228,7 +228,7 @@ describe('<ProgressPanel>', () => {
     useStore.setState({ sessions: { s1: session('s1', 't1', { state: 'working' }) } })
     render(<ProgressPanel onNewTask={vi.fn()} />)
     expect(rowIconLabel('Alpha')).toBe('Working')
-    // A pure session state flip (no readyForReview/tasks change) must re-render the row.
+    // A pure session state flip (no hasUnseenFinishedTurn/tasks change) must re-render the row.
     act(() => {
       useStore.getState().applyEvent({ type: 'sessionStateChanged', sessionId: 's1', state: 'blocked' })
     })

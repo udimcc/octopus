@@ -310,12 +310,12 @@ All `TaskView`s and their `SessionPane`s stay mounted; only the active ones are 
 
 Zustand store holds: `tasks`, `sessions`, `activeTaskId`, `activeSessionId` (per task), and (phase 2) each
 session's `state` (already a field on `SessionDTO`/`TaskEntry` — the phase-1 seam, always `'unknown'` in
-phase 1) plus a `readyForReview` map and the `sessionDisplayState`/`taskDisplayState` selectors that fold it
-into the §3.4 display-state priority (§9.5). **High-frequency `ptyData` bypasses the store** — it is delivered by IPC directly to the
+phase 1) plus a `hasUnseenFinishedTurn` map and the `sessionDisplayState`/`taskDisplayState` selectors that
+fold it (with a display-time on-screen check) into the §3.4 display-state priority (§9.5). **High-frequency `ptyData` bypasses the store** — it is delivered by IPC directly to the
 target `TerminalPane`'s `terminal.write(data)`. On startup the renderer calls `app:getState` (§6.5) to
 hydrate; thereafter lifecycle/status events patch the store. The store already has `reduceEvent` cases for the
 dormant `sessionStateChanged`/`taskStateChanged` events (patching `sessions[id].state` / `tasks[id].state`) —
-phase 2 only makes them fire and adds the `readyForReview` bookkeeping off the same `sessionStateChanged`.
+phase 2 only makes them fire and adds the `hasUnseenFinishedTurn` bookkeeping off the same `sessionStateChanged`.
 
 ```
 Keystroke:  xterm onData → octopusAPI.pty.input → ipcMain → pty.write
@@ -323,7 +323,8 @@ Output:     pty onData → (batched, §6.5) → webContents.send('pty:data') →
 New task:   modal → octopusAPI.tasks.create → provision worktree (script or native git) → persist → resolve → store.createTask
 Status(phase 2): evaluator (main, or octopusd→CONTROL) → ingest → sessionStateChanged → store patches
                  session.state (+ taskStateChanged) → TaskStatusIcon/SessionStatusIcon re-render;
-                 Working→Idle on an unfocused session → store.readyForReview[id]=true → green check
+                 Working→Idle → store.hasUnseenFinishedTurn[id]=true → green check (shown at display time
+                 while the session is idle + off-screen)
 ```
 
 ### 5.3 Keep-alive on task switch (critical)
@@ -1005,27 +1006,54 @@ The product's core scan — *"ten agents running, which one just finished and wa
 distinction "*just* finished, and I haven't looked" is **derived in the renderer from the state-change
 stream** and lives only in the Zustand store:
 
-- **Raise.** On a `sessionStateChanged` reducing to `Working → Waiting` (Working→Idle) for a session that is
-  **not currently focused** (not the active tab of its window, or its window unfocused), set
-  `readyForReview[sessionId] = true`. `Blocked → Waiting` does **not** raise it (the user was already being
-  asked; resolving it isn't "new finished work"). A session that goes straight to `Waiting` without a prior
-  `Working` (e.g. freshly spawned at a prompt) never raises it.
-- **Clear.** On focusing that session (its tab becomes active in a focused window) → `readyForReview[sessionId]
-  = false`. This is the primary clear path. As **defense-in-depth**, the flag is *also* cleared when the
-  session leaves `Waiting` (a `Waiting → Working`/`Blocked` transition): once the agent is doing something
-  again the "just finished, unseen" premise no longer holds.
-- **Validity / supersession.** A raised flag is consumed **only while the session's current state is `Waiting`
-  (Idle).** Any newer non-idle transition (`Working`/`Blocked`) supersedes it — the session displays that
-  state, not `Review`. This is enforced at consumption in `sessionDisplayState` (which returns `Review` only
-  for an idle+flagged session), so even a flag the store hasn't yet cleared cannot mask a running session.
-  This fixes the bug where a session that finished-then-resumed (`Working → Waiting → Working`) showed the
-  static review dot instead of the pulsing Working dot until it was focused.
+- **Raise.** On a `sessionStateChanged` reducing to `Working → Waiting` (Working→Idle), set
+  `hasUnseenFinishedTurn[sessionId] = true` **unconditionally** — the on-screen decision is *not* made here.
+  The raise is a durable "a turn finished here" marker; whether to *show* the review dot is decided later, at
+  display time (see **Validity**). Raising unconditionally is deliberate: on the GPU-less VDI/SwiftShader host
+  the focus signal is briefly unreliable at the exact finish instant (§9.7), so gating the raise on focus then
+  left a stuck dot for a session the user was actually watching. `Blocked → Waiting` does **not** raise it (the
+  user was already being asked; resolving it isn't "new finished work"). A session that goes straight to
+  `Waiting` without a prior `Working` (e.g. freshly spawned at a prompt) never raises it — both exclusions fall
+  out of the `Working → Waiting` guard.
+- **Clear.** This clears the underlying *"looked" memory* (display-time suppression, below, additionally hides
+  the dot in the instant before a clear lands). There are two on-screen clear mechanisms:
+  - **Bring on screen (focus transition, global).** When the session's tab becomes active in a focused window
+    (`setActiveSession`/`activeSessionChanged`/`setActiveTask`/`activeTaskChanged`/`setWindowFocused` regain) →
+    `hasUnseenFinishedTurn[sessionId] = false`. This clear is **global** (broadcast to every window's store),
+    which also keeps the cross-window task rollup honest: a session on screen in *its own* window is not-focused
+    from the main window's perspective, so the display-time gate alone can't suppress its `Review` in the
+    main-window rollup — the global clear can.
+  - **Watch in place (continuous, local).** A turn that finishes *in place* — the session was already the active
+    tab of a focused window — fires **no** focus transition, so the bring-on-screen clear never runs and the dot
+    would resurface the moment the user switches away from a session they watched finish. `markVisibleSessionSeen`
+    (driven by an effect in `App` on every settled render) closes that gap: it clears the flag for THIS window's
+    currently on-screen session (via the same `isSessionFocused` predicate the display uses). It runs against the
+    *settled* present-time focus, never the flaky finish instant (§9.7) — the same robustness the display-time
+    gate relies on. It is **local** to the hosting window: it does *not* cover a session that finishes in place in
+    a *secondary* window while the **main window's** rollup is read (no event broadcasts the local clear, and each
+    window knows only its own focus, so the main-window rollup shows `Review` for a turn watched to end elsewhere).
+    That cross-window corollary is the accepted low-severity limitation inherent to per-window focus knowledge — see §9.7.
+
+  As **defense-in-depth**, the flag is *also* cleared when the session leaves `Waiting` (a `Waiting →
+  Working`/`Blocked` transition): once the agent is doing something again the "just finished, unseen" premise no
+  longer holds.
+- **Validity / supersession (display-time gates).** `sessionDisplayState(session, flag, isOnScreen)` returns
+  `Review` **only** for a session that is (a) currently `Waiting` (Idle), (b) flagged, and (c) **not currently
+  on screen**. Both gates are evaluated at *consumption*, continuously, on every render — never latched when the
+  turn ended:
+  - The **idle** gate means any newer non-idle transition (`Working`/`Blocked`) supersedes the flag — the
+    session shows that state, not `Review` — so even a flag the store hasn't yet cleared cannot mask a running
+    session (fixes the `Working → Waiting → Working` finished-then-resumed dot).
+  - The **on-screen** gate (via `isSessionFocused`) means a session the user is looking at never shows `Review`;
+    computing it at display time against the *settled* present-time focus value — rather than at the flaky
+    finish instant — is what makes it robust on the VDI host (§9.7).
 - **Display level & task rollup.** The icon shown (session and task) is a `DisplayState` with priority
-  `NeedsInput > Review > Working > Idle > None`. `sessionDisplayState(session, flag)` gives one session's
-  level (with the idle gate above); `taskDisplayState(taskId)` is the **max** over the task's sessions —
-  replacing the old `taskReadyForReview` OR-selector, which was independent of `TaskState` and so could show
-  `Review` while a sibling (or the same session) was `Working`. `NeedsInput` still wins over `Review` (a
-  blocked session demands action before a finished one wants a look). See §3.4.
+  `NeedsInput > Review > Working > Idle > None`. `sessionDisplayState(session, flag, isOnScreen)` gives one
+  session's level (with the gates above); `taskDisplayState(taskId)` is the **max** over the task's sessions
+  (each passed its own `isSessionFocused`) — replacing the old `taskReadyForReview` OR-selector, which was
+  independent of `TaskState` and so could show `Review` while a sibling (or the same session) was `Working`.
+  `NeedsInput` still wins over `Review` (a blocked session demands action before a finished one wants a look).
+  See §3.4.
 - **Non-goals / bounds.** Not persisted (§5.4 — restart starts clean), not in any DTO, not aggregated by the
   domain, never in `sessionStateChanged`. It is pure UI memory keyed off events the store already receives, so
   it needs **no** backend, port, or protocol change — only store reducer logic + the icon variant (§5.4). The
@@ -1180,6 +1208,17 @@ without a richer signal (e.g. an Octopus MCP server, deferred in §9.2). They ar
   shape — degrades the affected session to `Unknown` with no error surfaced. This is the intended
   graceful-degradation posture, and it is why detection is not, and cannot be advertised as, correct 100% of the
   time.
+- **Ready-for-review can linger on the cross-window task rollup for a turn watched to completion in a
+  *secondary* window.** `hasUnseenFinishedTurn` is raised unconditionally in *every* window's store (§9.5), and
+  the finish (`Working → Waiting`) carries no focus transition, so a session that finishes *in place* while it is
+  already the active tab of a focused secondary window never triggers a clear. From the **main** window's store
+  `isSessionFocused` is false for that session (different `windowId`), so `taskDisplayState` rolls `Review` onto
+  the task in the main list even though the user saw the turn end. Self-clears the moment the user brings that
+  session on screen from any window (global clear broadcast). **Pre-existing** — the old focus-gated raise set the
+  same flag in the main store — and **inherent**: each renderer knows only its own OS focus, so no display-time
+  gate in the main window can tell that the session is on screen elsewhere. Low frequency (needs the session
+  hosted in a *different* window than the rollup the user is reading), accepted rather than adding a cross-window
+  on-screen broadcast.
 
 ---
 

@@ -92,16 +92,21 @@ export interface StoreData {
   /** All open windows (V1.5, §6.7); patched by window lifecycle events. */
   readonly windows: readonly WindowDTO[]
   /**
-   * Ready-for-review highlight (§9.5): session id → true once it went `Working →
-   * Waiting` while UNFOCUSED, cleared on focus. A pure renderer view-model derived
-   * from the `sessionStateChanged` stream — NOT a domain state, not persisted, not
-   * in any DTO. Absent/false → not flagged.
+   * "Unseen finished turn" memory (§9.5): session id → true once it went `Working →
+   * Waiting` (a turn finished) and hasn't been looked at since. Raised
+   * UNCONDITIONALLY on that transition — the on-screen decision is made LATER, at
+   * display time (see `sessionDisplayState`), because on the VDI/SwiftShader host the
+   * focus signal is briefly unreliable at the finish instant (§9.7). Cleared when the
+   * user brings the session on screen (a focus transition) or it leaves `Waiting`. A
+   * pure renderer view-model derived from the `sessionStateChanged` stream — NOT a
+   * domain state, not persisted, not in any DTO. Absent/false → no finished-unseen turn.
    */
-  readonly readyForReview: Readonly<Record<string, boolean>>
+  readonly hasUnseenFinishedTurn: Readonly<Record<string, boolean>>
   /**
    * Whether THIS window currently has OS focus (§9.5). A session in a blurred window
-   * counts as unfocused, so a `Working → Waiting` there raises ready-for-review even
-   * if it is the active tab. Patched by `App`'s focus/blur listeners; defaults true.
+   * counts as not-on-screen, so at display time its finished-unseen turn shows the
+   * review dot even if it is the active tab. Patched by `App`'s focus/blur listeners;
+   * defaults true.
    */
   readonly windowFocused: boolean
   /**
@@ -133,6 +138,18 @@ export interface StoreActions {
   dismissToast(id: number): void
   /** Record this window's OS focus (§9.5); regaining focus clears the active tab's flag. */
   setWindowFocused(focused: boolean): void
+  /**
+   * "Watched it finish in place" clear (§9.5). A session that finishes (Working → Idle)
+   * while it is ALREADY the on-screen tab fires no focus *transition*, so none of the
+   * transition-based clears mark it seen — and the review dot would then surface the
+   * moment the user switches away from a session they watched finish. This clears the
+   * finished-unseen flag for THIS window's currently on-screen session (via the same
+   * `isSessionFocused` predicate the display uses). Driven by an effect on every settled
+   * render (App), so it reads the reliable present-time focus, never the flaky finish
+   * instant (§9.7). No-op unless the visible session is flagged. Local to this window —
+   * the cross-window secondary-window corollary stays a documented known limitation.
+   */
+  markVisibleSessionSeen(): void
   /** Toggle the keyboard-triggered debug overlay for this window (§11). */
   toggleDebugOverlay(): void
 }
@@ -174,7 +191,7 @@ export function initialData(): StoreData {
     windowId: 'main',
     windowRole: 'main',
     windows: [],
-    readyForReview: {},
+    hasUnseenFinishedTurn: {},
     windowFocused: true,
     debugTransitions: [],
     nextDebugSeq: 1,
@@ -287,21 +304,31 @@ export function isSessionFocused(data: StoreData, sessionId: string): boolean {
 
 /**
  * The display level ONE session contributes to its own icon and its task's rollup
- * (§3.4/§9.5). Folds the ready-for-review flag into the state priority via a single
- * ordering. CRITICAL gate: `review` is valid ONLY while the session's CURRENT
- * aggregation state is `waiting` (idle). A `working`/`blocked` session ignores any
- * (possibly stale) ready-for-review flag, so a newer `working` supersedes a raised-
- * but-unconsumed review — the session that just finished and then resumed shows
- * `working`, not the stable review dot (the bug this fixes).
+ * (§3.4/§9.5). Folds the "unseen finished turn" memory into the state priority via a
+ * single ordering. Two CRITICAL display-time gates decide `review`:
+ * - STATE gate: `review` is valid ONLY while the session's CURRENT aggregation state
+ *   is `waiting` (idle). A `working`/`blocked` session ignores any (possibly stale)
+ *   flag, so a newer `working` supersedes a raised-but-unconsumed review — a session
+ *   that just finished and then resumed shows `working`, not the stable review dot.
+ * - ON-SCREEN gate: a session the user is currently looking at never shows review
+ *   (`isOnScreen`) — "if I can see it, I don't need a cue". This is evaluated HERE, at
+ *   display time and continuously, NOT latched when the turn ended: on the GPU-less
+ *   VDI/SwiftShader host the focus signal is briefly unreliable at the finish instant
+ *   (§9.7), so the raise is unconditional and the on-screen decision is deferred to
+ *   the settled present-time value read on each render.
  */
-export function sessionDisplayState(session: SessionDTO, readyForReview: boolean): DisplayState {
+export function sessionDisplayState(
+  session: SessionDTO,
+  hasUnseenFinishedTurn: boolean,
+  isOnScreen: boolean
+): DisplayState {
   switch (sessionAggregationState(session)) {
     case 'blocked':
       return 'needsInput'
     case 'working':
       return 'working'
     case 'waiting':
-      return readyForReview ? 'review' : 'idle'
+      return hasUnseenFinishedTurn && !isOnScreen ? 'review' : 'idle'
     default:
       return 'none'
   }
@@ -322,7 +349,11 @@ export function taskDisplayState(data: StoreData, taskId: string): DisplayState 
   for (const id of task.sessionIds) {
     const session = data.sessions[id]
     if (!session) continue
-    const d = sessionDisplayState(session, data.readyForReview[id] === true)
+    const d = sessionDisplayState(
+      session,
+      data.hasUnseenFinishedTurn[id] === true,
+      isSessionFocused(data, id)
+    )
     if (DISPLAY_RANK[d] > DISPLAY_RANK[best]) best = d
   }
   return best
@@ -397,7 +428,7 @@ function removeSession(data: StoreData, taskId: string, sessionId: string): Stor
   let next: StoreData = {
     ...data,
     sessions,
-    readyForReview: clearReady(data.readyForReview, sessionId)
+    hasUnseenFinishedTurn: clearReady(data.hasUnseenFinishedTurn, sessionId)
   }
   if (task) {
     const sessionIds = task.sessionIds.filter((id) => id !== sessionId)
@@ -504,7 +535,7 @@ export function reduceEvent(
       const next: StoreData = { ...data, activeTaskId: event.taskId }
       const active = event.taskId ? data.activeSessionByTask[event.taskId] : undefined
       if (!active) return next
-      return { ...next, readyForReview: clearReady(next.readyForReview, active) }
+      return { ...next, hasUnseenFinishedTurn: clearReady(next.hasUnseenFinishedTurn, active) }
     }
 
     case 'activeSessionChanged': {
@@ -526,7 +557,7 @@ export function reduceEvent(
         ...data,
         activeSessionByTask: { ...data.activeSessionByTask, [event.taskId]: event.sessionId },
         activeTaskId: hosting ? event.taskId : data.activeTaskId,
-        readyForReview: clearReady(data.readyForReview, event.sessionId)
+        hasUnseenFinishedTurn: clearReady(data.hasUnseenFinishedTurn, event.sessionId)
       }
       return next
     }
@@ -606,11 +637,11 @@ export function reduceEvent(
       return data // surfaced by the New-Task modal, not the global store
 
     case 'sessionStateChanged': {
-      // Patch the session's state field (§9). Also derive the ready-for-review
-      // highlight (§9.5): a `working → waiting` transition on an UNFOCUSED session
-      // means "just finished, and the user hasn't looked". `blocked → waiting`
-      // (an answered prompt) and a straight-to-waiting (fresh prompt, no prior
-      // `working`) do NOT raise it.
+      // Patch the session's state field (§9). Also raise the "finished, unseen"
+      // memory (§9.5): a `working → waiting` transition means "just finished". It is
+      // raised UNCONDITIONALLY (the on-screen check is deferred to display time, see
+      // the raise site below). `blocked → waiting` (an answered prompt) and a
+      // straight-to-waiting (fresh prompt, no prior `working`) do NOT raise it.
       const s = data.sessions[event.sessionId]
       if (!s) return data
       const prev = s.state
@@ -634,20 +665,29 @@ export function reduceEvent(
       // Roll the change up into the task's derived state in the same transition
       // (§3.4, bug 2.1) — don't wait for the separate taskStateChanged message.
       const next = recomputeTaskState(withSession, s.taskId)
+      // Raise the "finished, unseen" memory UNCONDITIONALLY on Working → Waiting
+      // (§9.5). It is a durable marker that a turn finished here; whether to SHOW the
+      // review dot is decided later in `sessionDisplayState` against the settled
+      // present-time on-screen value. We deliberately do NOT consult focus at this
+      // instant: on the VDI/SwiftShader host the focus signal churns at turn-end
+      // (§9.7), so gating the raise here produced a stuck dot for a session the user
+      // was actually watching. The `working → waiting` guard already excludes a fresh
+      // session that goes straight to `waiting` (no prior Working) and a
+      // `blocked → waiting` resolution — neither "just finished" work.
       const justFinished = prev === 'working' && event.state === 'waiting'
-      if (justFinished && !isSessionFocused(next, event.sessionId)) {
+      if (justFinished) {
         return {
           ...next,
-          readyForReview: { ...next.readyForReview, [event.sessionId]: true }
+          hasUnseenFinishedTurn: { ...next.hasUnseenFinishedTurn, [event.sessionId]: true }
         }
       }
       // Defense-in-depth (§9.5): leaving `waiting` (e.g. waiting → working when the
-      // agent resumes) invalidates any stale ready-for-review flag — the session is
+      // agent resumes) invalidates any stale finished-unseen flag — the session is
       // no longer "just finished, awaiting eyes". Consumption-time gating in
       // `sessionDisplayState` already ignores the flag off-idle, but clearing it here
       // keeps the store honest so no consumer (or the debug read-out) is misled.
-      if (event.state !== 'waiting' && next.readyForReview[event.sessionId]) {
-        return { ...next, readyForReview: clearReady(next.readyForReview, event.sessionId) }
+      if (event.state !== 'waiting' && next.hasUnseenFinishedTurn[event.sessionId]) {
+        return { ...next, hasUnseenFinishedTurn: clearReady(next.hasUnseenFinishedTurn, event.sessionId) }
       }
       return next
     }
@@ -759,14 +799,14 @@ export const useStore = create<Store>((set) => ({
       // focusing a task clears its globally-active session's ready-for-review flag (§9.5).
       const active = data.activeSessionByTask[taskId]
       if (!active) return { activeTaskId: taskId }
-      return { activeTaskId: taskId, readyForReview: clearReady(data.readyForReview, active) }
+      return { activeTaskId: taskId, hasUnseenFinishedTurn: clearReady(data.hasUnseenFinishedTurn, active) }
     }),
 
   setActiveSession: (taskId, sessionId) =>
     set((data) => ({
       activeSessionByTask: { ...data.activeSessionByTask, [taskId]: sessionId },
       // Focusing a session is the ONLY clear path for its ready-for-review flag (§9.5).
-      readyForReview: clearReady(data.readyForReview, sessionId)
+      hasUnseenFinishedTurn: clearReady(data.hasUnseenFinishedTurn, sessionId)
     })),
 
   setGroupTasksByRepo: (value) =>
@@ -788,7 +828,22 @@ export const useStore = create<Store>((set) => ({
         ? activeSessionInWindow(next, activeTaskId, data.windowId)
         : undefined
       if (!visible) return next
-      return { ...next, readyForReview: clearReady(data.readyForReview, visible) }
+      return { ...next, hasUnseenFinishedTurn: clearReady(data.hasUnseenFinishedTurn, visible) }
+    }),
+
+  markVisibleSessionSeen: () =>
+    set((data) => {
+      // The session on screen in THIS window right now: its task's active tab, in this
+      // window, with the window focused. `isSessionFocused` is the same on-screen
+      // predicate `sessionDisplayState` uses to suppress the dot — so a session watched
+      // to completion in place has its flag cleared the moment focus is settled, and the
+      // cue never resurfaces when the user switches away (§9.5, "watched it finish").
+      const taskId = data.activeTaskId
+      if (!taskId) return data
+      const sid = data.activeSessionByTask[taskId]
+      if (!sid || !data.hasUnseenFinishedTurn[sid]) return data
+      if (!isSessionFocused(data, sid)) return data
+      return { ...data, hasUnseenFinishedTurn: clearReady(data.hasUnseenFinishedTurn, sid) }
     }),
 
   toggleDebugOverlay: () => set((data) => ({ debugOverlayOpen: !data.debugOverlayOpen }))

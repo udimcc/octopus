@@ -26,7 +26,7 @@ import {
 import { SortableContext, horizontalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
 import { SessionTab } from './SessionTab'
 import { NewSessionDropdown } from './NewSessionDropdown'
-import { useStore, sessionDisplayState } from '../store/store'
+import { useStore, sessionDisplayState, isSessionFocused } from '../store/store'
 import { color, radius, shadow } from '../style/tokens'
 
 export interface SessionTabBarProps {
@@ -39,11 +39,17 @@ const OVERFLOW_MENU_THRESHOLD = 8
 export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element {
   const task = useStore((s) => s.tasks[taskId])
   const sessions = useStore((s) => s.sessions)
-  const readyForReview = useStore((s) => s.readyForReview)
+  const hasUnseenFinishedTurn = useStore((s) => s.hasUnseenFinishedTurn)
   const windowId = useStore((s) => s.windowId)
   const windows = useStore((s) => s.windows)
   const activeSessionId = useStore((s) => s.activeSessionByTask[taskId])
   const setActiveSession = useStore((s) => s.setActiveSession)
+  // Subscribe to the on-screen inputs so a tab's icon recomputes when window focus or
+  // the active task changes (§9.5): the review dot is suppressed at DISPLAY time for an
+  // on-screen session, so a focus change with no state change must still re-render.
+  // `isSessionFocused` reads the settled values off `useStore.getState()` below.
+  useStore((s) => s.windowFocused)
+  useStore((s) => s.activeTaskId)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const [overflowing, setOverflowing] = useState(false)
@@ -238,7 +244,11 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
                   onRename={(title) => window.octopusAPI.sessions.rename({ sessionId: sid, title })}
                   onClose={() => window.octopusAPI.sessions.close({ sessionId: sid })}
                   canOpenHere={s.config.kind === 'terminal'}
-                  display={sessionDisplayState(s, readyForReview[sid] === true)}
+                  display={sessionDisplayState(
+                    s,
+                    hasUnseenFinishedTurn[sid] === true,
+                    isSessionFocused(useStore.getState(), sid)
+                  )}
                   resolveCwd={() => window.octopusAPI.sessions.cwd({ sessionId: sid })}
                   onNewTerminalFromHere={(cwd) =>
                     window.octopusAPI.sessions.create({

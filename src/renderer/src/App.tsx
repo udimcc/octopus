@@ -55,6 +55,36 @@ function useWindowFocus(): void {
   }, [setWindowFocused])
 }
 
+/**
+ * Record "I watched it finish in place" (§9.5). A session that finishes (Working →
+ * Idle) while it is ALREADY the on-screen tab fires no focus *transition*, so the
+ * transition-based clears never mark it seen — and the review dot would then surface
+ * the moment the user switches away from a session they watched finish. This effect
+ * closes that gap: on every settled render it clears the finished-unseen flag for the
+ * currently on-screen session. It reads the reliable present-time focus (never the flaky
+ * Working→Idle instant, §9.7), the same robustness the display-time suppression relies
+ * on. The action is idempotent (a no-op unless the visible session is flagged), so
+ * re-running it on unrelated store changes is harmless.
+ */
+function useMarkVisibleSessionSeen(): void {
+  const markVisibleSessionSeen = useStore((s) => s.markVisibleSessionSeen)
+  const windowFocused = useStore((s) => s.windowFocused)
+  const activeTaskId = useStore((s) => s.activeTaskId)
+  const activeSessionByTask = useStore((s) => s.activeSessionByTask)
+  const sessions = useStore((s) => s.sessions)
+  const hasUnseenFinishedTurn = useStore((s) => s.hasUnseenFinishedTurn)
+  useEffect(() => {
+    markVisibleSessionSeen()
+  }, [
+    markVisibleSessionSeen,
+    windowFocused,
+    activeTaskId,
+    activeSessionByTask,
+    sessions,
+    hasUnseenFinishedTurn
+  ])
+}
+
 /** Subscribe to events + hydrate the store once on mount (shared by both roles). */
 function useBoot(): void {
   const hydrate = useStore((s) => s.hydrate)
@@ -120,6 +150,7 @@ function SecondaryWindowApp(): React.JSX.Element {
 export function App(): React.JSX.Element {
   useBoot()
   useWindowFocus()
+  useMarkVisibleSessionSeen()
   const windowRole = useStore((s) => s.windowRole)
   return windowRole === 'secondary' ? <SecondaryWindowApp /> : <MainWindowApp />
 }

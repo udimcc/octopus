@@ -177,7 +177,7 @@ describe('reduceEvent (§5.2)', () => {
     d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s2', 't1') })
     d = reduceEvent(d, { type: 'sessionStateChanged', sessionId: 's1', state: 'working' })
     d = reduceEvent(d, { type: 'sessionStateChanged', sessionId: 's1', state: 'waiting' })
-    expect(d.readyForReview.s1).toBe(true)
+    expect(d.hasUnseenFinishedTurn.s1).toBe(true)
 
     // Switching to it while its host is a DIFFERENT window still clears here: this
     // (main) window renders the task rollup, and the session is now focused elsewhere.
@@ -187,7 +187,7 @@ describe('reduceEvent (§5.2)', () => {
       sessionId: 's1',
       windowId: 'win-9'
     })
-    expect(elsewhere.readyForReview.s1).toBeUndefined()
+    expect(elsewhere.hasUnseenFinishedTurn.s1).toBeUndefined()
     // s1 is `waiting` with the flag cleared → rollup falls back to plain idle, not review.
     expect(taskDisplayState(elsewhere, 't1')).toBe('idle')
 
@@ -198,7 +198,7 @@ describe('reduceEvent (§5.2)', () => {
       sessionId: 's1',
       windowId: 'main'
     })
-    expect(here.readyForReview.s1).toBeUndefined()
+    expect(here.hasUnseenFinishedTurn.s1).toBeUndefined()
   })
 
   it('sessionClosed recomputes the task worst-wins state, dropping the closed rank (§3.4)', () => {
@@ -519,7 +519,9 @@ describe('useStore hydrate + actions', () => {
 
 /**
  * Ready-for-review (§9.5): a pure renderer view-model derived from the state stream.
- * Raised on `working → waiting` for an UNFOCUSED session; cleared only on focus.
+ * Raised UNCONDITIONALLY on `working → waiting`; the dot is suppressed at display time
+ * while on screen, and the flag is cleared when the session is brought on screen (focus
+ * transition) OR watched in place (`markVisibleSessionSeen`) OR leaves idle.
  */
 describe('ready-for-review (§9.5)', () => {
   /** A store with one task `t1` holding sessions `s1`,`s2`, both in the main window. */
@@ -538,36 +540,44 @@ describe('ready-for-review (§9.5)', () => {
     let d = base() // s1 is focused, s2 is not
     d = setState(d, 's2', 'working')
     d = setState(d, 's2', 'waiting')
-    expect(d.readyForReview.s2).toBe(true)
-    // s2 is idle with the flag → the task rollup surfaces `review` (s1 still unknown).
+    expect(d.hasUnseenFinishedTurn.s2).toBe(true)
+    // s2 is idle with the flag AND off screen → the task rollup surfaces `review`
+    // (s1 still unknown).
     expect(taskDisplayState(d, 't1')).toBe('review')
   })
 
-  it('does NOT raise for the focused session (the user is looking at it)', () => {
+  it('raises for the FOCUSED session too, but display suppresses the dot while on screen', () => {
+    // The raise is UNCONDITIONAL (§9.5): the on-screen decision moves to display time so
+    // a transient turn-end focus misread on the VDI host can't leave a stuck dot. So the
+    // flag IS set even for the session the user is looking at — but `sessionDisplayState`
+    // (and the task rollup) suppress `review` for an on-screen session.
     let d = base() // s1 focused
     d = setState(d, 's1', 'working')
     d = setState(d, 's1', 'waiting')
-    expect(d.readyForReview.s1).toBeUndefined()
+    expect(d.hasUnseenFinishedTurn.s1).toBe(true) // raised regardless of focus
+    // On screen → suppressed to idle both per-session and in the rollup.
+    expect(sessionDisplayState(d.sessions.s1, true, isSessionFocused(d, 's1'))).toBe('idle')
+    expect(taskDisplayState(d, 't1')).toBe('idle')
   })
 
   it('does NOT raise on blocked → waiting (an answered prompt is not new finished work)', () => {
     let d = base()
     d = setState(d, 's2', 'blocked')
     d = setState(d, 's2', 'waiting')
-    expect(d.readyForReview.s2).toBeUndefined()
+    expect(d.hasUnseenFinishedTurn.s2).toBeUndefined()
   })
 
   it('does NOT raise on a straight-to-waiting with no prior working (fresh prompt)', () => {
     let d = base()
     d = setState(d, 's2', 'waiting')
-    expect(d.readyForReview.s2).toBeUndefined()
+    expect(d.hasUnseenFinishedTurn.s2).toBeUndefined()
   })
 
   it('raises for the active tab when its OWN window is blurred', () => {
     let d = { ...base(), windowFocused: false }
     d = setState(d, 's1', 'working') // s1 is the active tab, but window is blurred
     d = setState(d, 's1', 'waiting')
-    expect(d.readyForReview.s1).toBe(true)
+    expect(d.hasUnseenFinishedTurn.s1).toBe(true)
   })
 
   it('raises for the active tab of a task the user has switched AWAY from', () => {
@@ -576,7 +586,7 @@ describe('ready-for-review (§9.5)', () => {
     let d: StoreData = { ...base(), activeTaskId: 't-other' }
     d = setState(d, 's1', 'working')
     d = setState(d, 's1', 'waiting')
-    expect(d.readyForReview.s1).toBe(true)
+    expect(d.hasUnseenFinishedTurn.s1).toBe(true)
   })
 
   it('isSessionFocused reflects active-task + active-tab + this-window + window-focus', () => {
@@ -589,21 +599,50 @@ describe('ready-for-review (§9.5)', () => {
   })
 
   it('setActiveSession clears the flag on the newly-focused session', () => {
-    useStore.setState({ ...base(), readyForReview: { s2: true } })
+    useStore.setState({ ...base(), hasUnseenFinishedTurn: { s2: true } })
     useStore.getState().setActiveSession('t1', 's2')
-    expect(useStore.getState().readyForReview.s2).toBeUndefined()
+    expect(useStore.getState().hasUnseenFinishedTurn.s2).toBeUndefined()
   })
 
   it('regaining window focus clears the visible session flag', () => {
-    useStore.setState({ ...base(), windowFocused: false, readyForReview: { s1: true } })
+    useStore.setState({ ...base(), windowFocused: false, hasUnseenFinishedTurn: { s1: true } })
     useStore.getState().setWindowFocused(true)
-    expect(useStore.getState().readyForReview.s1).toBeUndefined()
+    expect(useStore.getState().hasUnseenFinishedTurn.s1).toBeUndefined()
+  })
+
+  it('markVisibleSessionSeen clears the flag for a turn finished IN PLACE while watched (§9.5)', () => {
+    // s1 is the on-screen tab of the focused window; it finished in place, so no focus
+    // transition fired to mark it seen. The App effect calls markVisibleSessionSeen on
+    // the settled render → the flag clears, so the dot won't resurface on switch-away.
+    useStore.setState({ ...base(), hasUnseenFinishedTurn: { s1: true } })
+    useStore.getState().markVisibleSessionSeen()
+    expect(useStore.getState().hasUnseenFinishedTurn.s1).toBeUndefined()
+  })
+
+  it('markVisibleSessionSeen does NOT clear when the window is blurred (not on screen)', () => {
+    useStore.setState({ ...base(), windowFocused: false, hasUnseenFinishedTurn: { s1: true } })
+    useStore.getState().markVisibleSessionSeen()
+    expect(useStore.getState().hasUnseenFinishedTurn.s1).toBe(true)
+  })
+
+  it('markVisibleSessionSeen does NOT clear an off-screen flagged session (not the active tab)', () => {
+    // s2 is flagged but s1 is the active tab, so s2 is off screen → its cue must stand.
+    useStore.setState({ ...base(), hasUnseenFinishedTurn: { s2: true } })
+    useStore.getState().markVisibleSessionSeen()
+    expect(useStore.getState().hasUnseenFinishedTurn.s2).toBe(true)
+  })
+
+  it('markVisibleSessionSeen does NOT clear when a different task is on screen', () => {
+    // s1 is its task's active tab, but the user is viewing another task → s1 off screen.
+    useStore.setState({ ...base(), activeTaskId: 't-other', hasUnseenFinishedTurn: { s1: true } })
+    useStore.getState().markVisibleSessionSeen()
+    expect(useStore.getState().hasUnseenFinishedTurn.s1).toBe(true)
   })
 
   it('closing a session drops any lingering flag', () => {
-    let d: StoreData = { ...base(), readyForReview: { s2: true } }
+    let d: StoreData = { ...base(), hasUnseenFinishedTurn: { s2: true } }
     d = reduceEvent(d, { type: 'sessionClosed', taskId: 't1', sessionId: 's2' })
-    expect(d.readyForReview.s2).toBeUndefined()
+    expect(d.hasUnseenFinishedTurn.s2).toBeUndefined()
   })
 
   it('task rollup clears when a session hosted in ANOTHER window is focused there (§9.5)', () => {
@@ -615,7 +654,7 @@ describe('ready-for-review (§9.5)', () => {
     let d: StoreData = {
       ...base(),
       sessions: { ...base().sessions, s2: { ...base().sessions.s2, state: 'waiting' } },
-      readyForReview: { s2: true }
+      hasUnseenFinishedTurn: { s2: true }
     }
     // Move s2 out to a secondary window, as a detach would.
     d = reduceEvent(d, {
@@ -632,7 +671,7 @@ describe('ready-for-review (§9.5)', () => {
       sessionId: 's2',
       windowId: 'win-2'
     })
-    expect(d.readyForReview.s2).toBeUndefined()
+    expect(d.hasUnseenFinishedTurn.s2).toBeUndefined()
     // Flag cleared, s2 still idle → the rollup falls back to plain idle, not review.
     expect(taskDisplayState(d, 't1')).toBe('idle')
   })
@@ -645,11 +684,11 @@ describe('ready-for-review (§9.5)', () => {
       ...base(),
       sessions: { ...base().sessions, s1: { ...base().sessions.s1, state: 'waiting' } },
       activeTaskId: 't-other',
-      readyForReview: { s1: true }
+      hasUnseenFinishedTurn: { s1: true }
     }
     d = reduceEvent(d, { type: 'activeTaskChanged', taskId: 't1' })
     expect(d.activeTaskId).toBe('t1')
-    expect(d.readyForReview.s1).toBeUndefined()
+    expect(d.hasUnseenFinishedTurn.s1).toBeUndefined()
     expect(taskDisplayState(d, 't1')).toBe('idle')
   })
 
@@ -662,37 +701,37 @@ describe('ready-for-review (§9.5)', () => {
       windowId: 'main',
       windowFocused: false,
       activeTaskId: 't-other',
-      readyForReview: { s1: true }
+      hasUnseenFinishedTurn: { s1: true }
     }
     d = reduceEvent(d, { type: 'activeTaskChanged', taskId: 't1' })
-    expect(d.readyForReview.s1).toBeUndefined()
+    expect(d.hasUnseenFinishedTurn.s1).toBeUndefined()
   })
 
   it('activeTaskChanged with an undefined taskId leaves flags untouched', () => {
-    let d: StoreData = { ...base(), readyForReview: { s1: true } }
+    let d: StoreData = { ...base(), hasUnseenFinishedTurn: { s1: true } }
     d = reduceEvent(d, { type: 'activeTaskChanged', taskId: undefined })
     expect(d.activeTaskId).toBeUndefined()
-    expect(d.readyForReview.s1).toBe(true) // no active session to clear
+    expect(d.hasUnseenFinishedTurn.s1).toBe(true) // no active session to clear
   })
 
   it('activeTaskChanged for a task with no active-session pointer preserves flags', () => {
-    let d: StoreData = { ...base(), activeSessionByTask: {}, readyForReview: { s1: true } }
+    let d: StoreData = { ...base(), activeSessionByTask: {}, hasUnseenFinishedTurn: { s1: true } }
     d = reduceEvent(d, { type: 'activeTaskChanged', taskId: 't1' })
     expect(d.activeTaskId).toBe('t1')
-    expect(d.readyForReview.s1).toBe(true)
+    expect(d.hasUnseenFinishedTurn.s1).toBe(true)
   })
 
   it('setActiveTask clears the flag on the task’s active session', () => {
-    useStore.setState({ ...base(), activeTaskId: 't-other', readyForReview: { s1: true } })
+    useStore.setState({ ...base(), activeTaskId: 't-other', hasUnseenFinishedTurn: { s1: true } })
     useStore.getState().setActiveTask('t1')
     expect(useStore.getState().activeTaskId).toBe('t1')
-    expect(useStore.getState().readyForReview.s1).toBeUndefined()
+    expect(useStore.getState().hasUnseenFinishedTurn.s1).toBeUndefined()
   })
 
   it('setActiveTask preserves flags when the task has no active session', () => {
-    useStore.setState({ ...base(), activeSessionByTask: {}, readyForReview: { s1: true } })
+    useStore.setState({ ...base(), activeSessionByTask: {}, hasUnseenFinishedTurn: { s1: true } })
     useStore.getState().setActiveTask('t1')
-    expect(useStore.getState().readyForReview.s1).toBe(true)
+    expect(useStore.getState().hasUnseenFinishedTurn.s1).toBe(true)
   })
 
   it('a resumed session (waiting→working) drops its stale flag — the bug repro (§9.5)', () => {
@@ -702,11 +741,13 @@ describe('ready-for-review (§9.5)', () => {
     let d = base() // s1 focused, s2 unfocused
     d = setState(d, 's2', 'working')
     d = setState(d, 's2', 'waiting')
-    expect(d.readyForReview.s2).toBe(true)
-    expect(sessionDisplayState(d.sessions.s2, true)).toBe('review')
+    expect(d.hasUnseenFinishedTurn.s2).toBe(true)
+    expect(sessionDisplayState(d.sessions.s2, true, isSessionFocused(d, 's2'))).toBe('review')
     d = setState(d, 's2', 'working') // Claude resumed
-    expect(d.readyForReview.s2).toBeUndefined() // defense-in-depth clear
-    expect(sessionDisplayState(d.sessions.s2, d.readyForReview.s2 === true)).toBe('working')
+    expect(d.hasUnseenFinishedTurn.s2).toBeUndefined() // defense-in-depth clear
+    expect(
+      sessionDisplayState(d.sessions.s2, d.hasUnseenFinishedTurn.s2 === true, isSessionFocused(d, 's2'))
+    ).toBe('working')
     expect(taskDisplayState(d, 't1')).toBe('working')
   })
 
@@ -714,46 +755,54 @@ describe('ready-for-review (§9.5)', () => {
     let d: StoreData = {
       ...base(),
       sessions: { ...base().sessions, s2: { ...base().sessions.s2, state: 'waiting' } },
-      readyForReview: { s2: true }
+      hasUnseenFinishedTurn: { s2: true }
     }
     d = setState(d, 's2', 'blocked')
-    expect(d.readyForReview.s2).toBeUndefined()
-    expect(sessionDisplayState(d.sessions.s2, false)).toBe('needsInput')
+    expect(d.hasUnseenFinishedTurn.s2).toBeUndefined()
+    expect(sessionDisplayState(d.sessions.s2, false, false)).toBe('needsInput')
   })
 })
 
 /**
  * Display-state derivation (§3.4/§9.5): the icon a session/task shows is the highest-
  * priority display level — `needsInput > review > working > idle > none` — where
- * `review` is valid only while the session is idle (folds the ready-for-review flag).
+ * `review` is valid only while the session is idle (folds the finished-unseen flag)
+ * AND the session is NOT on screen (the on-screen check is applied here, at display
+ * time). `sessionDisplayState(session, hasUnseenFinishedTurn, isOnScreen)`.
  */
 describe('display state (§3.4/§9.5)', () => {
   const sess = (over: Partial<SessionDTO>): SessionDTO => session('s', 't', over)
 
   it('a working session ignores a stale review flag → working (not review)', () => {
-    expect(sessionDisplayState(sess({ state: 'working' }), true)).toBe('working')
+    expect(sessionDisplayState(sess({ state: 'working' }), true, false)).toBe('working')
   })
 
   it('a blocked session + review flag → needsInput (attention beats a finished sibling)', () => {
-    expect(sessionDisplayState(sess({ state: 'blocked' }), true)).toBe('needsInput')
+    expect(sessionDisplayState(sess({ state: 'blocked' }), true, false)).toBe('needsInput')
   })
 
-  it('review is valid only while idle: waiting + flag → review, without flag → idle', () => {
-    expect(sessionDisplayState(sess({ state: 'waiting' }), true)).toBe('review')
-    expect(sessionDisplayState(sess({ state: 'waiting' }), false)).toBe('idle')
+  it('review is valid only while idle: waiting + flag (off screen) → review, without flag → idle', () => {
+    expect(sessionDisplayState(sess({ state: 'waiting' }), true, false)).toBe('review')
+    expect(sessionDisplayState(sess({ state: 'waiting' }), false, false)).toBe('idle')
+  })
+
+  it('on-screen gate: an idle + flagged session that is ON screen → idle (dot suppressed)', () => {
+    // The core VDI fix (§9.5/§9.7): review is decided at display time, so a session the
+    // user is currently looking at never shows the dot even with the flag raised.
+    expect(sessionDisplayState(sess({ state: 'waiting' }), true, true)).toBe('idle')
   })
 
   it('unknown → none (no icon), even with a flag', () => {
-    expect(sessionDisplayState(sess({ state: 'unknown' }), true)).toBe('none')
+    expect(sessionDisplayState(sess({ state: 'unknown' }), true, false)).toBe('none')
   })
 
   it('an exited/failed session contributes needsInput (I12), flag or not', () => {
-    expect(sessionDisplayState(sess({ lifecycle: 'exited', state: 'waiting' }), true)).toBe(
+    expect(sessionDisplayState(sess({ lifecycle: 'exited', state: 'waiting' }), true, false)).toBe(
       'needsInput'
     )
-    expect(sessionDisplayState(sess({ lifecycle: 'start_failed', state: 'unknown' }), false)).toBe(
-      'needsInput'
-    )
+    expect(
+      sessionDisplayState(sess({ lifecycle: 'start_failed', state: 'unknown' }), false, false)
+    ).toBe('needsInput')
   })
 
   /** A task `t1` with two sessions in given states + flags. */
@@ -765,7 +814,7 @@ describe('display state (§3.4/§9.5)', () => {
     let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
     d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s1', 't1', s1) })
     d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s2', 't1', s2) })
-    return { ...d, readyForReview: ready }
+    return { ...d, hasUnseenFinishedTurn: ready }
   }
 
   it('rollup: review on one session beats working on another → review', () => {
@@ -776,6 +825,19 @@ describe('display state (§3.4/§9.5)', () => {
   it('rollup: needsInput anywhere beats a review sibling → needsInput', () => {
     const d = taskWith({ state: 'waiting' }, { state: 'blocked' }, { s1: true })
     expect(taskDisplayState(d, 't1')).toBe('needsInput')
+  })
+
+  it('rollup: a flagged idle session ON screen does NOT roll review onto its task', () => {
+    // Same VDI display-time gate at the task level (§9.5): if the flagged session is the
+    // active tab of the (focused) window, the rollup must fall back to idle, not review.
+    const d: StoreData = {
+      ...taskWith({ state: 'waiting' }, { state: 'unknown' }, { s1: true }),
+      activeTaskId: 't1',
+      windowFocused: true,
+      activeSessionByTask: { t1: 's1' }
+    }
+    expect(isSessionFocused(d, 's1')).toBe(true)
+    expect(taskDisplayState(d, 't1')).toBe('idle')
   })
 
   it('rollup: a working session with a stale flag alongside another working → working', () => {
