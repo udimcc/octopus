@@ -271,6 +271,17 @@ export interface RefreshSessionStateInput {
   readonly sessionId: string
 }
 
+/**
+ * Report that a finished-turn session was WATCHED IN PLACE (§9.5, fire-and-forget).
+ * The hosting window sends this when its `markVisibleSessionSeen` clears a session's
+ * "unseen finished turn" flag, so main can broadcast the clear to every window — the
+ * main window's task rollup folds over sessions in ANY window but can't see another
+ * window's focus, so a watch-in-place seen there needs relaying.
+ */
+export interface MarkSessionSeenInput {
+  readonly sessionId: string
+}
+
 export interface ReorderSessionInput {
   readonly taskId: string
   readonly sessionId: string

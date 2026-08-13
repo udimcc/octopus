@@ -614,9 +614,45 @@ describe('ready-for-review (§9.5)', () => {
     // s1 is the on-screen tab of the focused window; it finished in place, so no focus
     // transition fired to mark it seen. The App effect calls markVisibleSessionSeen on
     // the settled render → the flag clears, so the dot won't resurface on switch-away.
+    // It also RETURNS the cleared id so the App effect can relay "seen" cross-window.
     useStore.setState({ ...base(), hasUnseenFinishedTurn: { s1: true } })
-    useStore.getState().markVisibleSessionSeen()
+    const cleared = useStore.getState().markVisibleSessionSeen()
+    expect(cleared).toBe('s1')
     expect(useStore.getState().hasUnseenFinishedTurn.s1).toBeUndefined()
+  })
+
+  it('markVisibleSessionSeen returns undefined when there is nothing on screen to clear', () => {
+    // Nothing flagged → no clear, no id to relay (App effect skips the markSeen IPC).
+    useStore.setState({ ...base() })
+    expect(useStore.getState().markVisibleSessionSeen()).toBeUndefined()
+    // Blurred: the visible session is not on screen → no clear, no relay.
+    useStore.setState({ ...base(), windowFocused: false, hasUnseenFinishedTurn: { s1: true } })
+    expect(useStore.getState().markVisibleSessionSeen()).toBeUndefined()
+  })
+
+  it('sessionSeen event clears the flag (cross-window watch-in-place relay, §9.5)', () => {
+    // The main window folds the task rollup over sessions in ANY window but knows only
+    // its own focus, so a turn watched to idle in a SECONDARY window can't be suppressed
+    // by the display-time gate here. The hosting window relays `sessions.markSeen`, main
+    // broadcasts `sessionSeen`, and THIS window clears the flag so the rollup drops
+    // `review`. Model s2 as a session hosted elsewhere: flagged + idle → rolls up review.
+    let d: StoreData = {
+      ...base(),
+      sessions: {
+        ...base().sessions,
+        s2: { ...base().sessions.s2, state: 'waiting', windowId: 'w-other' }
+      },
+      hasUnseenFinishedTurn: { s2: true }
+    }
+    expect(taskDisplayState(d, 't1')).toBe('review')
+    d = reduceEvent(d, { type: 'sessionSeen', sessionId: 's2' })
+    expect(d.hasUnseenFinishedTurn.s2).toBeUndefined()
+    expect(taskDisplayState(d, 't1')).toBe('idle')
+  })
+
+  it('sessionSeen event is a no-op for a session with no flag (idempotent relay)', () => {
+    const d = base()
+    expect(reduceEvent(d, { type: 'sessionSeen', sessionId: 's1' })).toBe(d)
   })
 
   it('markVisibleSessionSeen does NOT clear when the window is blurred (not on screen)', () => {

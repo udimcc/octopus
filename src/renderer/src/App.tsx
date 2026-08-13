@@ -65,6 +65,12 @@ function useWindowFocus(): void {
  * Working→Idle instant, §9.7), the same robustness the display-time suppression relies
  * on. The action is idempotent (a no-op unless the visible session is flagged), so
  * re-running it on unrelated store changes is harmless.
+ *
+ * When it DOES clear a flag, relay the "seen" to main (`sessions.markSeen`) so every
+ * OTHER window folds it into its ready-for-review too (§9.5). A turn finished in place
+ * fires no focus *transition* to broadcast, so the main window's task rollup — which
+ * spans sessions in any window but knows only its own focus — can't otherwise learn the
+ * session was seen. Only the hosting (focused) window clears here, so only it relays.
  */
 function useMarkVisibleSessionSeen(): void {
   const markVisibleSessionSeen = useStore((s) => s.markVisibleSessionSeen)
@@ -74,7 +80,8 @@ function useMarkVisibleSessionSeen(): void {
   const sessions = useStore((s) => s.sessions)
   const hasUnseenFinishedTurn = useStore((s) => s.hasUnseenFinishedTurn)
   useEffect(() => {
-    markVisibleSessionSeen()
+    const seen = markVisibleSessionSeen()
+    if (seen) window.octopusAPI.sessions.markSeen({ sessionId: seen })
   }, [
     markVisibleSessionSeen,
     windowFocused,

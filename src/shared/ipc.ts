@@ -28,6 +28,7 @@ import type {
   ReorderSessionInput,
   SessionCwdInput,
   RefreshSessionStateInput,
+  MarkSessionSeenInput,
   CreateWindowInput,
   CloseWindowInput,
   MoveSessionInput,
@@ -56,6 +57,14 @@ export const CHANNELS = {
   sessionRename: 'session:rename',
   sessionReorder: 'session:reorder',
   sessionMove: 'session:move',
+
+  /**
+   * Report a finished-turn session watched IN PLACE (renderer → main, fire-and-forget,
+   * §9.5). Like `session:refreshState` it's a `send` (no reply): main broadcasts a
+   * `sessionSeen` event to every window so the "unseen finished turn" view-model clears
+   * across windows — the piece a same-window `markVisibleSessionSeen` can't reach.
+   */
+  sessionMarkSeen: 'session:markSeen',
 
   /**
    * A session's live current working directory (request/reply). A stateless
@@ -181,6 +190,12 @@ export interface OctopusAPI {
      * No reply: the result surfaces as a `sessionStateChanged` event if it changed.
      */
     refreshState(input: RefreshSessionStateInput): void
+    /**
+     * Fire-and-forget report that a finished-turn session was watched IN PLACE (§9.5).
+     * No reply: main broadcasts a `sessionSeen` event so every window's ready-for-review
+     * view-model clears (the cross-window piece `markVisibleSessionSeen` can't reach).
+     */
+    markSeen(input: MarkSessionSeenInput): void
   }
 
   /** Multi-window control (V1.5, §5.6, §6.7). */

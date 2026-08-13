@@ -71,9 +71,10 @@ not by withholding the raise.
   becomes active in a focused window) or by *watching it there* when the turn finishes in place. Being
   on screen clears the "unseen" memory continuously — re-checked every render against the reliable
   present-time focus, never the flaky finish instant — so the cue won't appear when they switch away.
-  The bring-on-screen (focus-transition) clear is **global** across windows so the task rollup stays
-  consistent; the watch-in-place clear is local to the hosting window (its cross-window corollary is a
-  documented known limitation, below).
+  Both clears are **global** across windows so the task rollup stays consistent regardless of which
+  window hosts the session: the bring-on-screen (focus-transition) clear broadcasts inherently, and the
+  watch-in-place clear — which fires no focus transition — is **relayed** by the hosting window to the
+  others (it reports the session "seen" so every window drops the marker).
 - **Defense-in-depth:** the session **leaves Idle** again (starts Working, or goes to Needs input) —
   the "just finished, unseen" premise no longer holds.
 
@@ -176,10 +177,3 @@ Accepted, low-frequency edge cases (detail in `DESIGN.md §9.7`):
   Unknown until the next turn.
 - A main agent that is blocked _while_ a background sub-agent is working may briefly show Working
   instead of Needs input (a single status can't hold both at once).
-- If a session finishes a turn **in place** in a _secondary_ window where it was already the active
-  tab, the **main window's task rollup** can still show Ready for review for it. The watch-in-place
-  clear is **local** to the hosting window (the secondary window itself shows no cue), and a finish
-  fires no on-screen *event* to broadcast, so the main window — which knows only its own focus — never
-  learns the session was seen. It clears as soon as the user brings that session on screen from any
-  window (a focus transition, which does broadcast). Low-frequency (needs the session hosted in a
-  different window than the summary being read).

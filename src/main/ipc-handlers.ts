@@ -33,6 +33,7 @@ import type {
   ReorderSessionInput,
   SessionCwdInput,
   RefreshSessionStateInput,
+  MarkSessionSeenInput,
   CreateWindowInput,
   CloseWindowInput,
   MoveSessionInput,
@@ -83,6 +84,13 @@ export interface IpcHandlerHooks {
   readonly onHydrate?: (windowId: WindowId) => void
   /** OS clipboard adapter backing the terminal copy/paste queries (§5.4). */
   readonly clipboard: Clipboard
+  /**
+   * Relay a watch-in-place "seen" (§9.5): broadcast a `sessionSeen` event to every
+   * window so the ready-for-review view-model clears cross-window. Supplied by the
+   * composition root (it owns the window registry); "seen" never touches the command
+   * loop or domain bus — it is a pure renderer view-model sync, like the §9.5 toast.
+   */
+  readonly broadcastSessionSeen?: (sessionId: string) => void
 }
 
 /** Resolve the WindowId of the calling renderer (`e.sender`), defaulting to main. */
@@ -365,5 +373,13 @@ export function registerIpcHandlers(
       kind: 'refreshSessionState',
       input: { sessionId: asSessionId(input.sessionId) }
     })
+  })
+
+  // Watch-in-place "seen" relay (§9.5): fire-and-forget, does NOT go through the loop
+  // or the domain bus — "seen" is a pure renderer view-model. Main just broadcasts the
+  // clear so every window's ready-for-review folds it in (the cross-window piece a
+  // same-window `markVisibleSessionSeen` can't reach).
+  ipcMain.on(CHANNELS.sessionMarkSeen, (_e, input: MarkSessionSeenInput) => {
+    hooks.broadcastSessionSeen?.(input.sessionId)
   })
 }

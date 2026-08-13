@@ -17,7 +17,8 @@ function stubOctopusAPI(activeTaskId: string | undefined = undefined): OctopusAP
       reorder: ack,
       move: ack,
       cwd: vi.fn().mockResolvedValue(null),
-      refreshState: vi.fn()
+      refreshState: vi.fn(),
+      markSeen: vi.fn()
     },
     windows: {
       create: ack,

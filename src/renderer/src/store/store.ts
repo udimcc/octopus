@@ -146,10 +146,13 @@ export interface StoreActions {
    * finished-unseen flag for THIS window's currently on-screen session (via the same
    * `isSessionFocused` predicate the display uses). Driven by an effect on every settled
    * render (App), so it reads the reliable present-time focus, never the flaky finish
-   * instant (§9.7). No-op unless the visible session is flagged. Local to this window —
-   * the cross-window secondary-window corollary stays a documented known limitation.
+   * instant (§9.7). No-op unless the visible session is flagged. Returns the session
+   * id it just cleared (or `undefined` if nothing cleared) so the caller can relay the
+   * "seen" cross-window via `sessions.markSeen` — a turn finished in place fires no
+   * focus transition, so the OTHER windows (esp. the main window's task rollup, which
+   * folds over sessions in any window) can't learn it was seen any other way (§9.5).
    */
-  markVisibleSessionSeen(): void
+  markVisibleSessionSeen(): string | undefined
   /** Toggle the keyboard-triggered debug overlay for this window (§11). */
   toggleDebugOverlay(): void
 }
@@ -727,6 +730,18 @@ export function reduceEvent(
         'State changed'
       )
 
+    case 'sessionSeen': {
+      // Cross-window ready-for-review clear (§9.5): another window watched this session
+      // finish in place and reported it seen. Clear the "unseen finished turn" flag here
+      // too so THIS window's task rollup (which folds over sessions in ANY window but
+      // knows only its own focus) stops showing `review`. Idempotent: in the window that
+      // already cleared it locally (`markVisibleSessionSeen`) the map is unchanged, so we
+      // return `data` by identity — no spurious re-render.
+      const cleared = clearReady(data.hasUnseenFinishedTurn, event.sessionId)
+      if (cleared === data.hasUnseenFinishedTurn) return data
+      return { ...data, hasUnseenFinishedTurn: cleared }
+    }
+
     case 'sessionMovedToWindow': {
       // A pure view re-assignment (§6.7, I18): only `windowId` changes — never
       // `taskId` or lifecycle. Each window renders sessions where
@@ -783,7 +798,7 @@ function pushToastData(
  */
 const notificationThrottle = createNotificationThrottle()
 
-export const useStore = create<Store>((set) => ({
+export const useStore = create<Store>((set, get) => ({
   ...initialData(),
 
   hydrate: (state) => set(hydrateData(state)),
@@ -831,20 +846,23 @@ export const useStore = create<Store>((set) => ({
       return { ...next, hasUnseenFinishedTurn: clearReady(data.hasUnseenFinishedTurn, visible) }
     }),
 
-  markVisibleSessionSeen: () =>
-    set((data) => {
-      // The session on screen in THIS window right now: its task's active tab, in this
-      // window, with the window focused. `isSessionFocused` is the same on-screen
-      // predicate `sessionDisplayState` uses to suppress the dot — so a session watched
-      // to completion in place has its flag cleared the moment focus is settled, and the
-      // cue never resurfaces when the user switches away (§9.5, "watched it finish").
-      const taskId = data.activeTaskId
-      if (!taskId) return data
-      const sid = data.activeSessionByTask[taskId]
-      if (!sid || !data.hasUnseenFinishedTurn[sid]) return data
-      if (!isSessionFocused(data, sid)) return data
-      return { ...data, hasUnseenFinishedTurn: clearReady(data.hasUnseenFinishedTurn, sid) }
-    }),
+  markVisibleSessionSeen: () => {
+    // The session on screen in THIS window right now: its task's active tab, in this
+    // window, with the window focused. `isSessionFocused` is the same on-screen
+    // predicate `sessionDisplayState` uses to suppress the dot — so a session watched
+    // to completion in place has its flag cleared the moment focus is settled, and the
+    // cue never resurfaces when the user switches away (§9.5, "watched it finish").
+    const data = get()
+    const taskId = data.activeTaskId
+    if (!taskId) return undefined
+    const sid = data.activeSessionByTask[taskId]
+    if (!sid || !data.hasUnseenFinishedTurn[sid]) return undefined
+    if (!isSessionFocused(data, sid)) return undefined
+    set({ hasUnseenFinishedTurn: clearReady(data.hasUnseenFinishedTurn, sid) })
+    // Report the id so the caller relays "seen" cross-window (§9.5): the main window's
+    // task rollup folds over sessions in any window but can't see this window's focus.
+    return sid
+  },
 
   toggleDebugOverlay: () => set((data) => ({ debugOverlayOpen: !data.debugOverlayOpen }))
 }))

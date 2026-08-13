@@ -452,7 +452,12 @@ export function bootstrap(): AppContext {
   registerIpcHandlers(commandLoop, deps, {
     windowIds,
     onHydrate: (windowId) => windowRegistry.markReady(windowId),
-    clipboard: new ElectronClipboard()
+    clipboard: new ElectronClipboard(),
+    // Watch-in-place "seen" relay (§9.5): the hosting window watched a turn finish in
+    // place (no focus transition to broadcast), so fan the clear out to every window's
+    // ready-for-review view-model. Synthesized here (not on the bus) like the §9.5 toast.
+    broadcastSessionSeen: (sessionId) =>
+      windowRegistry.broadcast({ type: 'sessionSeen', sessionId })
   })
 
   // Async daemon warmup (§6.2). Selects the durable backend when the setting asks

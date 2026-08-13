@@ -60,6 +60,13 @@ export interface WindowRegistry {
    * (§9.5) the composition root targets after resolving the focused window.
    */
   sendTo(windowId: WindowId, dto: EventDTO): void
+  /**
+   * Send an event to EVERY window directly (not via the bus), buffering per window as
+   * needed. Used for a main-synthesized broadcast that has no domain event to route —
+   * e.g. the `sessionSeen` ready-for-review clear (§9.5), relayed from the window that
+   * watched a turn finish in place to all the others.
+   */
+  broadcast(dto: EventDTO): void
   /** Stop routing and release the bus subscription (on quit). */
   dispose(): void
 }
@@ -172,6 +179,9 @@ export function createWindowRegistry(
     },
     sendTo(windowId: WindowId, dto: EventDTO): void {
       sendToWindow(windowId, dto)
+    },
+    broadcast(dto: EventDTO): void {
+      broadcast(dto)
     },
     dispose(): void {
       unsubscribe()

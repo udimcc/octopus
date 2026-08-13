@@ -1023,16 +1023,19 @@ stream** and lives only in the Zustand store:
     which also keeps the cross-window task rollup honest: a session on screen in *its own* window is not-focused
     from the main window's perspective, so the display-time gate alone can't suppress its `Review` in the
     main-window rollup — the global clear can.
-  - **Watch in place (continuous, local).** A turn that finishes *in place* — the session was already the active
-    tab of a focused window — fires **no** focus transition, so the bring-on-screen clear never runs and the dot
-    would resurface the moment the user switches away from a session they watched finish. `markVisibleSessionSeen`
+  - **Watch in place (continuous, relayed global).** A turn that finishes *in place* — the session was already the
+    active tab of a focused window — fires **no** focus transition, so the bring-on-screen clear never runs and the
+    dot would resurface the moment the user switches away from a session they watched finish. `markVisibleSessionSeen`
     (driven by an effect in `App` on every settled render) closes that gap: it clears the flag for THIS window's
     currently on-screen session (via the same `isSessionFocused` predicate the display uses). It runs against the
-    *settled* present-time focus, never the flaky finish instant (§9.7) — the same robustness the display-time
-    gate relies on. It is **local** to the hosting window: it does *not* cover a session that finishes in place in
-    a *secondary* window while the **main window's** rollup is read (no event broadcasts the local clear, and each
-    window knows only its own focus, so the main-window rollup shows `Review` for a turn watched to end elsewhere).
-    That cross-window corollary is the accepted low-severity limitation inherent to per-window focus knowledge — see §9.7.
+    *settled* present-time focus, never the flaky finish instant (§9.7) — the same robustness the display-time gate
+    relies on. Because each window knows only its own focus, a local-only clear would leave the **main window's**
+    rollup stuck on `Review` for a session watched to end in a *secondary* window (the rollup folds over sessions in
+    any window). To close that, the hosting window **relays** the clear: when `markVisibleSessionSeen` clears a flag
+    it returns the id, and the `App` effect fires `sessions.markSeen(sessionId)` (fire-and-forget). Main broadcasts a
+    `sessionSeen` event to **every** window's store (`windowRegistry.broadcast`), which clears the flag there too.
+    Like the §9.5 status-change toast, `sessionSeen` is *synthesized in main and never published on the domain bus* —
+    "seen" is a pure renderer view-model (nothing persists, no `TaskState` recompute), so it bypasses the command loop.
 
   As **defense-in-depth**, the flag is *also* cleared when the session leaves `Waiting` (a `Waiting →
   Working`/`Blocked` transition): once the agent is doing something again the "just finished, unseen" premise no
@@ -1208,17 +1211,14 @@ without a richer signal (e.g. an Octopus MCP server, deferred in §9.2). They ar
   shape — degrades the affected session to `Unknown` with no error surfaced. This is the intended
   graceful-degradation posture, and it is why detection is not, and cannot be advertised as, correct 100% of the
   time.
-- **Ready-for-review can linger on the cross-window task rollup for a turn watched to completion in a
-  *secondary* window.** `hasUnseenFinishedTurn` is raised unconditionally in *every* window's store (§9.5), and
-  the finish (`Working → Waiting`) carries no focus transition, so a session that finishes *in place* while it is
-  already the active tab of a focused secondary window never triggers a clear. From the **main** window's store
-  `isSessionFocused` is false for that session (different `windowId`), so `taskDisplayState` rolls `Review` onto
-  the task in the main list even though the user saw the turn end. Self-clears the moment the user brings that
-  session on screen from any window (global clear broadcast). **Pre-existing** — the old focus-gated raise set the
-  same flag in the main store — and **inherent**: each renderer knows only its own OS focus, so no display-time
-  gate in the main window can tell that the session is on screen elsewhere. Low frequency (needs the session
-  hosted in a *different* window than the rollup the user is reading), accepted rather than adding a cross-window
-  on-screen broadcast.
+- **Ready-for-review on the cross-window task rollup (resolved).** A session that finishes a turn *in place* in a
+  focused *secondary* window fires no focus transition, and each renderer knows only its own OS focus — so the
+  **main** window's `taskDisplayState` (which folds over sessions in any window) once rolled `Review` onto the task
+  even though the user watched the turn end there. This is now fixed by the **watch-in-place relay** (§9.5): the
+  hosting window's `markVisibleSessionSeen` reports the clear via `sessions.markSeen`, and main broadcasts a
+  `sessionSeen` event that clears `hasUnseenFinishedTurn` in every window's store, including the main window's
+  rollup. The relay is fire-and-forget and off the domain bus (a pure view-model sync), so it adds no command-loop
+  traffic.
 
 ---
 

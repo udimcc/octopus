@@ -168,6 +168,23 @@ export interface SessionStateNotificationEventDTO {
   readonly sessionName: string
 }
 
+/**
+ * A finished-turn session was WATCHED IN PLACE and is now seen (§9.5). Broadcast to
+ * ALL windows so the "unseen finished turn" view-model (`hasUnseenFinishedTurn`)
+ * clears everywhere. The hosting window observes the watch-in-place locally (its
+ * `markVisibleSessionSeen`), but a turn finished in place fires no focus *transition*
+ * to broadcast — and the main window's task rollup folds over sessions in ANY window
+ * yet knows only its OWN focus, so without this relay its rollup stayed stuck on
+ * `review` for a session watched-to-idle in another window (was a documented known
+ * limitation). Like `sessionStateNotification`, it is SYNTHESIZED in main and routed
+ * directly, never published on the domain bus: "seen" is a pure renderer view-model,
+ * not a domain fact (nothing persists, no `TaskState` recompute).
+ */
+export interface SessionSeenEventDTO {
+  readonly type: 'sessionSeen'
+  readonly sessionId: string
+}
+
 /** Every event that can flow over the `app:event` channel. Discriminated on `type`. */
 export type EventDTO =
   | PtyDataEventDTO
@@ -192,3 +209,4 @@ export type EventDTO =
   | SessionStateChangedEventDTO
   | TaskStateChangedEventDTO
   | SessionStateNotificationEventDTO
+  | SessionSeenEventDTO
