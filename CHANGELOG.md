@@ -4,6 +4,43 @@ All notable changes to Octopus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0]
+
+Adds live per-session status for Claude Code sessions and the surrounding
+status/notification system, plus cross-window session navigation.
+
+### Added
+
+- **Live Claude session status.** Each session shows whether Claude is Idle, Working,
+  or Needs input, rolled up to the owning task. Detection is Claude-only, driven by an
+  out-of-band `python3` bridge (hooks + statusline) that writes a per-session state
+  file the app watches — no polling of the terminal. The whole session stays *Working*
+  while Claude delegates to background sub-agents.
+- **Ready-for-review cue.** A session whose turn finished off-screen raises a
+  ready-for-review dot so finished work is easy to spot; it clears once you've seen the
+  turn finish or focus the session/task.
+- **In-app status-change notification.** A toast announces when a session changes state
+  (§9.5.1), suppressed for the session you're already looking at.
+- **Cross-window session navigation.** `Ctrl+Shift+Arrow` cycles sessions in visual
+  order, honoring Grouped vs Flat view and crossing between windows; a freshly opened
+  terminal is focused on mount.
+
+### Changed
+
+- The working-status dot is now blue instead of teal.
+
+### Fixed
+
+- **State-detection edges.** Hardened Claude transcript-state inference against
+  mid-tool and sub-agent boundaries: `/clear` no longer shows a session as Working, an
+  idle `Notification` no longer reads as Needs input, `SubagentStop` maps back to
+  Working, and a background sub-agent no longer flashes Idle on a session's 2nd+
+  delegating turn.
+- **Ready-for-review correctness.** The dot no longer masks a still-working session,
+  clears on task/session focus, honors "if I saw it finish, no cue" at display time,
+  and clears globally when a secondary-window turn finishes in place.
+- Fixed cross-window session switching and terminal auto-name reuse.
+
 ## [0.1.0]
 
 First released build. Delivered as a `tar.gz` with an `install.sh` (not an apt package);
