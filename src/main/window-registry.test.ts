@@ -51,6 +51,19 @@ describe('createWindowRegistry routing (§6.7)', () => {
     expect(win2.sent).toEqual([{ type: 'ptyData', sessionId: 's1', data: 'x' }])
   })
 
+  it('broadcasts sessionRenamed to ALL windows even though the session is hosted in one (replicated title)', () => {
+    // s1 lives in win-2, but every window replicates its title, so all must be told.
+    const { bus, main, win2 } = twoWindows(() => WIN2)
+    bus.publish({
+      type: 'sessionRenamed',
+      taskId: asTaskId('t1'),
+      sessionId: asSessionId('s1'),
+      title: 'renamed'
+    })
+    expect(main.sent).toEqual([{ type: 'sessionRenamed', taskId: 't1', sessionId: 's1', title: 'renamed' }])
+    expect(win2.sent).toEqual([{ type: 'sessionRenamed', taskId: 't1', sessionId: 's1', title: 'renamed' }])
+  })
+
   it('broadcasts a session-scoped event when the session no longer resolves (e.g. sessionClosed after removal)', () => {
     // Resolver returns undefined → session already gone from the workspace.
     const { bus, main, win2 } = twoWindows(() => undefined)

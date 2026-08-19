@@ -4,13 +4,20 @@
  * `Map<WindowId, WindowEntry>` and, from ONE bus subscription, routes each mapped
  * `EventDTO` to the right window(s) by kind:
  *
- *   - **`ptyData` + session-scoped events** (`sessionCreated/Exited/Closed/Renamed/
+ *   - **`ptyData` + session-scoped events** (`sessionCreated/Exited/Closed/
  *     Reordered`) → ONLY the window hosting that session. The host is resolved via
  *     the injected `resolveSessionWindow(sessionId)` (a workspace lookup of
  *     `session.windowId`). If the session can't be resolved — it was already
  *     removed from its task before the event was published, as `sessionClosed`
  *     is — we BROADCAST instead of dropping, so the one window that still shows the
  *     tab always gets the event (harmless to windows that never had it).
+ *   - **`sessionRenamed`** → ALL windows (broadcast), NOT host-scoped. Every
+ *     renderer's store holds an unfiltered copy of every session (title included) and
+ *     only filters by `windowId` at render time; a host-only rename would leave the
+ *     other windows' cached title stale, so a later `sessionMovedToWindow` (which
+ *     patches only `windowId`) would re-mount the tab showing the pre-rename name.
+ *     Broadcasting keeps the replicated title current everywhere; the reducer no-ops
+ *     for a window that doesn't hold the session.
  *   - **`sessionMovedToWindow`** → BOTH endpoints (`fromWindowId` + `toWindowId`),
  *     so the source unmounts the pane and the target mounts it in one cycle.
  *   - **everything else** (task-level, `activeTaskChanged`, script/error, window
@@ -71,13 +78,17 @@ export interface WindowRegistry {
   dispose(): void
 }
 
-/** Session-scoped events routed only to the hosting window (§6.7). */
+/**
+ * Session-scoped events routed only to the hosting window (§6.7). `sessionRenamed`
+ * is deliberately NOT here: `title` is replicated in every window's store, so a
+ * rename must broadcast (see the header comment) — host-only routing left non-host
+ * windows stale, which surfaced when the session was moved into them.
+ */
 const SESSION_SCOPED: ReadonlySet<EventDTO['type']> = new Set([
   'ptyData',
   'sessionCreated',
   'sessionExited',
   'sessionClosed',
-  'sessionRenamed',
   'sessionReordered'
 ] as const)
 

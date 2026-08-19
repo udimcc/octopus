@@ -667,12 +667,15 @@ Events (backend→UI):  ptyData, sessionCreated, sessionExited, sessionClosed,
 **Event routing — `WindowRegistry`.** The single-target event forwarder (§6.5, one `webContents`) is
 replaced by a **`WindowRegistry`**: a `Map<WindowId, { webContents, ready, pending[] }>` with **one** bus
 subscription whose closure routes each mapped `EventDTO` by kind:
-- **`ptyData` and session-scoped events** (`sessionCreated/Exited/Closed/Renamed/Reordered`) → **only the
+- **`ptyData` and session-scoped events** (`sessionCreated/Exited/Closed/Reordered`) → **only the
   window hosting that session** (look up `session.windowId`; drop silently if the session is mid-close).
 - **`sessionMovedToWindow`** (new) → **both** the source and target windows, so both re-render in one cycle.
-- **Task-level / broadcast events** (`taskCreated/Deleted/Renamed/Reordered/Stale`, `activeTaskChanged`,
-  `scriptProgress/Error`, `error`, settings, and the dormant phase 2 `sessionStateChanged/taskStateChanged`) →
-  **all** windows — every window keeps its active-task view (and the main window its full task list) correct.
+- **Task-level / broadcast events** (`taskCreated/Deleted/Renamed/Reordered/Stale`, `sessionRenamed`,
+  `activeTaskChanged`, `scriptProgress/Error`, `error`, settings, and the dormant phase 2
+  `sessionStateChanged/taskStateChanged`) → **all** windows — every window keeps its active-task view (and the
+  main window its full task list) correct. `sessionRenamed` broadcasts (not host-scoped) because every renderer
+  replicates the full session set including `title`; host-only routing left non-host windows showing the stale
+  pre-rename name once the session was moved into them (the move event patches only `windowId`).
 
 Each window identifies itself at creation via a `?windowId=<id>` URL param (§5.6). Per-window `markReady`
 fires from that window's `getState` call — the handler resolves the caller via
