@@ -107,6 +107,7 @@ d('CommandLoop over the real PTY stack (integration, §6.6/§6.1)', () => {
       aggregator: worstStatusWins,
       configValidator: createAjvConfigValidator(),
       scrollbacks: new RingBufferScrollbackStore(),
+      homeDir: '/home/test',
       currentVersion: 1
     }
     const loop = new CommandLoop(deps)

@@ -4,8 +4,10 @@
  * derives `TaskState` (I11 — never assigned). Cross-aggregate references are by
  * id only (§3.1).
  *
- * A task holds a `WorktreeRef` only once `Ready` (I1); provisioning status lives
- * in `TaskLifecycle` (§3.5).
+ * A `Ready` task holds a `WorktreeRef` UNLESS it is a "No Repo" task (I1'):
+ * `Ready ⇒ (has worktree) XOR repoLess`. A repo-less task (§5.4) is permanently
+ * `Ready` with no worktree — its sessions open at the home dir. Provisioning
+ * status lives in `TaskLifecycle` (§3.5).
  */
 
 import type { TaskId, SessionId } from './ids'
@@ -31,6 +33,7 @@ export class Task {
   private _name: string
   private _lifecycle: TaskLifecycle
   private _worktree?: WorktreeRef
+  private _repoLess = false
   private _sessions: Session[]
   private _activeSessionId?: SessionId
   private _position: number
@@ -58,6 +61,7 @@ export class Task {
     if (snap.worktree) {
       t._worktree = WorktreeRef.create(snap.worktree)
     }
+    t._repoLess = snap.repoLess ?? false
     t._sessions = snap.sessions
       .map((s) => Session.fromSnapshot(s))
       .sort((a, b) => a.order - b.order)
@@ -76,6 +80,10 @@ export class Task {
   }
   get worktree(): WorktreeRef | undefined {
     return this._worktree
+  }
+  /** True for a "No Repo" task (§5.4): `Ready` with no worktree (I1'). */
+  get repoLess(): boolean {
+    return this._repoLess
   }
   get activeSessionId(): SessionId | undefined {
     return this._activeSessionId
@@ -124,6 +132,16 @@ export class Task {
   markReady(worktree: WorktreeRef): void {
     this.transition(TaskLifecycle.Ready)
     this._worktree = worktree
+  }
+
+  /**
+   * `Provisioning → Ready` for a "No Repo" task (§5.4): reach `Ready` with NO
+   * worktree and flag the task repo-less (I1'). Reuses the existing
+   * `Provisioning → Ready` transition, so no new lifecycle edge is introduced.
+   */
+  markReadyNoRepo(): void {
+    this.transition(TaskLifecycle.Ready)
+    this._repoLess = true
   }
 
   /** `Provisioning → ProvisionFailed`: create script/validation failed (§3.5). */
@@ -235,6 +253,7 @@ export class Task {
             provisionedBy: this._worktree.provisionedBy
           }
         : undefined,
+      repoLess: this._repoLess,
       lifecycle: this._lifecycle,
       state: this.deriveState(aggregator),
       sessions: this.sessions().map((s) => s.toSnapshot()),

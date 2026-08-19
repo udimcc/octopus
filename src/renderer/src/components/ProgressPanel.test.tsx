@@ -159,6 +159,21 @@ describe('<ProgressPanel>', () => {
     expect(screen.getByRole('button', { name: 'Gamma' })).toBeInTheDocument()
   })
 
+  it('renders a "No Repository" header grouping repo-less tasks (§5.4)', () => {
+    seed(
+      [
+        task('t1', { name: 'Alpha', position: 0, worktree: worktree('/r/Trading') }),
+        task('n1', { name: 'Scratch', position: 1, repoLess: true })
+      ],
+      undefined,
+      true
+    )
+    render(<ProgressPanel onNewTask={vi.fn()} />)
+    expect(screen.getByText('Trading')).toBeInTheDocument()
+    expect(screen.getByText('No Repository')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Scratch' })).toBeInTheDocument()
+  })
+
   it('does not render repo headers in the flat view', () => {
     seed([task('t1', { name: 'Alpha', worktree: worktree('/r/Trading') })], undefined, false)
     render(<ProgressPanel onNewTask={vi.fn()} />)

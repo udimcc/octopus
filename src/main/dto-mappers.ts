@@ -76,6 +76,7 @@ export function toTaskDTO(t: TaskSnapshot): TaskDTO {
     id: t.id,
     name: t.name,
     worktree: t.worktree ? toWorktreeRefDTO(t.worktree) : undefined,
+    repoLess: t.repoLess ?? false,
     lifecycle: t.lifecycle,
     state: t.state,
     sessions: t.sessions.map(toSessionDTO),

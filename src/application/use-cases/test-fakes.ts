@@ -160,8 +160,8 @@ class FakeTerminalProvider implements SessionTypeProvider {
   }
   readonly capabilities: ReadonlySet<Capability> = new Set()
 
-  defaultConfig(worktreePath: string): SessionConfig {
-    return { kind: 'terminal', cwdOverride: worktreePath }
+  defaultConfig(worktreePath?: string): SessionConfig {
+    return worktreePath ? { kind: 'terminal', cwdOverride: worktreePath } : { kind: 'terminal' }
   }
   createRuntime(manager: SessionManager, ctx: SessionRuntimeContext): SessionRuntime {
     return manager.createRuntime(ctx)
@@ -467,6 +467,8 @@ export function makeDeps(
     configValidator: createAjvConfigValidator(),
     scrollbacks,
     stateLog,
+    // Default session cwd for "No Repo" tasks (§5.4); a fixed, valid path in tests.
+    homeDir: '/home/test',
     currentVersion: 1,
     liveDaemonSessions: opts.liveDaemonSessions
   }

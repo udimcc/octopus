@@ -132,8 +132,8 @@ export class SqliteStore implements WorkspacePersistence {
     const row = taskToRow(task)
     this.db
       .prepare(
-        `INSERT INTO tasks (id, name, worktree, branch, base_ref, repo_root, created_at, position, active_session_id, managed)
-         VALUES (@id, @name, @worktree, @branch, @base_ref, @repo_root, @created_at, @position, @active_session_id, @managed)
+        `INSERT INTO tasks (id, name, worktree, branch, base_ref, repo_root, created_at, position, active_session_id, managed, repo_less)
+         VALUES (@id, @name, @worktree, @branch, @base_ref, @repo_root, @created_at, @position, @active_session_id, @managed, @repo_less)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name,
            worktree = excluded.worktree,
@@ -142,7 +142,8 @@ export class SqliteStore implements WorkspacePersistence {
            repo_root = excluded.repo_root,
            position = excluded.position,
            active_session_id = excluded.active_session_id,
-           managed = excluded.managed`
+           managed = excluded.managed,
+           repo_less = excluded.repo_less`
       )
       .run(row)
   }

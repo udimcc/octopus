@@ -53,13 +53,46 @@ function snapshot(
   }
 }
 
+/** One Ready "No Repo" task (§5.4): no worktree, `repoLess: true`. */
+function noRepoSnapshot(config: SessionConfig = { kind: 'terminal' }): WorkspaceSnapshot {
+  return {
+    tasks: [
+      {
+        id: asTaskId('task-1'),
+        name: 'scratch',
+        worktree: undefined,
+        repoLess: true,
+        lifecycle: TaskLifecycle.Ready,
+        state: TaskState.Unknown,
+        sessions: [
+          {
+            id: asSessionId('session-1'),
+            taskId: asTaskId('task-1'),
+            typeId: asTypeId('terminal'),
+            title: 'Terminal 1',
+            config,
+            lifecycle: SessionLifecycle.Created,
+            state: SessionState.Unknown,
+            order: 0,
+            createdAt: 1
+          }
+        ],
+        activeSessionId: asSessionId('session-1'),
+        position: 0,
+        createdAt: 1
+      }
+    ],
+    activeTaskId: asTaskId('task-1')
+  }
+}
+
 const TASK = asTaskId('task-1')
 const SESSION = asSessionId('session-1')
 
 /** Run startSessionRuntime against the single restored session in `f`. */
 async function run(f: ReturnType<typeof makeDeps>): Promise<void> {
   const task = f.workspace.task(TASK)!
-  await startSessionRuntime(f.deps, task, task.session(SESSION)!, task.worktree!)
+  await startSessionRuntime(f.deps, task, task.session(SESSION)!, task.worktree)
 }
 
 describe('startSessionRuntime spawn-vs-attach seam (§6.2)', () => {
@@ -116,6 +149,23 @@ describe('startSessionRuntime spawn-vs-attach seam (§6.2)', () => {
     })
     await run(f)
     expect(f.sessions.last()!.writes).toHaveLength(0)
+  })
+
+  it('"No Repo" task (no worktree): fresh spawn falls back to the home dir (§5.4)', async () => {
+    const f = makeDeps({ snapshot: noRepoSnapshot() })
+    await run(f)
+    const ctx = f.sessions.last()!.ctx
+    expect(ctx.resume).toBe(false)
+    // No last_cwd, no cwdOverride, no worktree → deps.homeDir.
+    expect(ctx.worktreePath).toBe('/home/test')
+    expect(f.workspace.task(TASK)!.session(SESSION)!.lifecycle).toBe(SessionLifecycle.Running)
+  })
+
+  it('"No Repo" task: a persisted last_cwd still wins over the home dir (§6.2)', async () => {
+    const f = makeDeps({ snapshot: noRepoSnapshot() })
+    f.persistence.saveLastCwd(SESSION, '/var/log')
+    await run(f)
+    expect(f.sessions.last()!.ctx.worktreePath).toBe('/var/log')
   })
 
   it('on start failure: marks StartFailed, disposes, emits error, and rethrows', async () => {

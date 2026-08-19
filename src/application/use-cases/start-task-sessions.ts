@@ -28,8 +28,11 @@ export async function startTaskSessions(deps: AppDependencies, taskId: TaskId): 
   if (!task || task.lifecycle !== TaskLifecycle.Ready) {
     return
   }
+  // A Ready task has a worktree UNLESS it is a "No Repo" task (I1'), whose restored
+  // sessions re-open at the home dir. Bail only if it is worktree-less AND not
+  // repo-less (an inconsistent state that should never occur).
   const worktree = task.worktree
-  if (!worktree) {
+  if (!worktree && !task.repoLess) {
     return
   }
 

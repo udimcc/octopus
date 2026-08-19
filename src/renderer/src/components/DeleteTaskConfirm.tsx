@@ -62,9 +62,13 @@ export function DeleteTaskConfirm({ taskId, onClose }: DeleteTaskConfirmProps): 
   const title = dirtyStep ? 'Uncommitted changes' : `Delete "${task.name}"?`
   const body = dirtyStep
     ? 'This worktree has uncommitted changes. Delete it anyway? This cannot be undone.'
-    : managed
-      ? 'This closes all of its sessions and removes its git worktree. This cannot be undone.'
-      : 'This closes all of its sessions. The repository directory is left on disk. This cannot be undone.'
+    : task.repoLess
+      ? // "No Repo" task (§5.4): no worktree, nothing on disk to remove — only its
+        // sessions close. No dirty-worktree gate can fire (there is no worktree).
+        'This closes all of its sessions. Nothing is removed from disk.'
+      : managed
+        ? 'This closes all of its sessions and removes its git worktree. This cannot be undone.'
+        : 'This closes all of its sessions. The repository directory is left on disk. This cannot be undone.'
 
   return (
     <div role="presentation" onClick={onClose} style={overlayStyle}>

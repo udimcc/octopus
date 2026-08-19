@@ -153,6 +153,7 @@ d('reconcileOnStartup over real dirs + the real PTY stack (integration, §6.3/I1
       aggregator: worstStatusWins,
       configValidator: createAjvConfigValidator(),
       scrollbacks: new RingBufferScrollbackStore(),
+      homeDir: '/home/test',
       currentVersion: 1
     }
     // No `onRuntimeExit` wiring: these tests never let a shell exit on its own.

@@ -29,8 +29,9 @@ export async function openSession(deps: AppDependencies, input: CreateSessionInp
     throw new InvariantViolationError(`task ${input.taskId} not found`)
   }
   const worktree = task.worktree
-  if (!worktree) {
-    // A session's cwd is the worktree; a task without one is not Ready (I1).
+  if (!worktree && !task.repoLess) {
+    // A session's cwd is the worktree; a task without one is not Ready (I1') —
+    // unless it is a "No Repo" task, whose sessions open at the home dir (§5.4).
     throw new InvariantViolationError(`task ${input.taskId} has no worktree (not Ready)`)
   }
 
@@ -40,7 +41,9 @@ export async function openSession(deps: AppDependencies, input: CreateSessionInp
     throw new InvariantViolationError(`unknown session type: ${typeId}`)
   }
 
-  const config: SessionConfig = input.config ?? provider.defaultConfig(worktree.path)
+  // Repo-less task → no worktree path, so `defaultConfig` yields no `cwdOverride`
+  // and the runtime falls back to the home dir (§5.4).
+  const config: SessionConfig = input.config ?? provider.defaultConfig(worktree?.path)
 
   const validation = deps.configValidator.validate(provider.configSchema, config)
   if (!validation.ok) {

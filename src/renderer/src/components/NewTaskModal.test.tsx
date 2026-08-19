@@ -224,6 +224,55 @@ describe('<NewTaskModal>', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled()
   })
 
+  it('the No Repo tab shows only the task name — no repo/branch fields', () => {
+    render(<NewTaskModal onClose={vi.fn()} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'No Repo' }))
+    expect(screen.getByLabelText('task name')).toBeInTheDocument()
+    // Every repo/branch field from the other two tabs is absent.
+    expect(screen.queryByLabelText('repo directory')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('existing repo directory')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('source branch')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('new branch')).not.toBeInTheDocument()
+  })
+
+  it('gates Create on the name alone in the No Repo tab', () => {
+    render(<NewTaskModal onClose={vi.fn()} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'No Repo' }))
+    const create = screen.getByRole('button', { name: 'Create Task' })
+    expect(create).toBeDisabled()
+    fill('task name', 'Scratch')
+    expect(create).toBeEnabled()
+  })
+
+  it('dispatches create with the no-repo payload (mode: none)', () => {
+    render(<NewTaskModal onClose={vi.fn()} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'No Repo' }))
+    fill('task name', ' Scratch ')
+    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
+    expect(window.octopusAPI.tasks.create).toHaveBeenCalledWith({ mode: 'none', name: 'Scratch' })
+  })
+
+  it('the No Repo tab explains no worktree + home-dir sessions in its tooltip', () => {
+    render(<NewTaskModal onClose={vi.fn()} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'No Repo' }))
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'about task sources' }))
+    const tip = screen.getByRole('tooltip')
+    expect(tip).toHaveTextContent(/no repository/i)
+    expect(tip).toHaveTextContent(/home directory/i)
+  })
+
+  it('the No Repo tab closes on success (activeTaskChanged)', async () => {
+    const onClose = vi.fn()
+    render(<NewTaskModal onClose={onClose} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'No Repo' }))
+    fill('task name', 'Scratch')
+    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
+    await waitFor(() => expect(window.octopusAPI.tasks.create).toHaveBeenCalled())
+
+    emit({ type: 'activeTaskChanged', taskId: 'task-1' })
+    expect(onClose).toHaveBeenCalled()
+  })
+
   it('closes on success (activeTaskChanged for the created task)', async () => {
     const onClose = vi.fn()
     render(<NewTaskModal onClose={onClose} />)

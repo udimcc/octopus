@@ -1,11 +1,14 @@
 /**
- * The New-Task modal (DESIGN §5.4). Two tabs, one dispatch (`tasks.create`):
+ * The New-Task modal (DESIGN §5.4). Three tabs, one dispatch (`tasks.create`):
  *   - **From New Worktree** (default): the four inputs to provision a new worktree
  *     — **name**, **repo directory** (native OS picker via `dialog:pickDirectory`),
  *     **source branch**, **new branch**. Octopus removes the worktree on delete.
  *   - **From Existing Repo**: **name** + an existing **repository directory**
  *     Octopus adopts (git detects its owning repo + branch). Deleting the task
  *     leaves the directory on disk (the worktree is `managed: false`, §6.4).
+ *   - **No Repo**: just a **name** — no worktree, nothing touched on disk. Its
+ *     sessions open at the home dir with no `cd`, for ad-hoc work (checking mounts,
+ *     `less` on a log, editing a config) unrelated to any repo (§5.4).
  *
  * An info button (top-right) reveals a per-tab tooltip on hover/focus explaining
  * what each mode does — in particular the differing delete behavior.
@@ -41,7 +44,7 @@ export interface NewTaskModalProps {
   readonly onClose: () => void
 }
 
-type Tab = 'new' | 'existing'
+type Tab = 'new' | 'existing' | 'none'
 
 /**
  * Per-tab explanation shown in the info tooltip. Each entry is a pair of
@@ -56,6 +59,10 @@ const TAB_INFO: Record<Tab, readonly [string, string]> = {
   existing: [
     'Octopus uses an existing repository directory as-is (including a repo’s main checkout) — nothing is created.',
     'Deleting the task closes its sessions but leaves the directory on disk. No delete script or git command runs.'
+  ],
+  none: [
+    'A task with no repository — nothing is created or touched on disk. Its sessions open at your home directory (no cd).',
+    'For ad-hoc work unrelated to any repo: checking mounts, tailing a log, editing a config file. Deleting the task just closes its sessions.'
   ]
 }
 
@@ -122,7 +129,9 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
     name.trim() !== '' &&
     (tab === 'new'
       ? repoDir.trim() !== '' && sourceBranch.trim() !== '' && newBranch.trim() !== ''
-      : worktreeDir.trim() !== '')
+      : tab === 'existing'
+        ? worktreeDir.trim() !== ''
+        : true) // 'none': only a name is required
 
   const submit = (): void => {
     if (!canSubmit) return
@@ -139,7 +148,9 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
             sourceBranch: sourceBranch.trim(),
             newBranch: newBranch.trim()
           }
-        : { mode: 'existing' as const, name: name.trim(), worktreeDir: worktreeDir.trim() }
+        : tab === 'existing'
+          ? { mode: 'existing' as const, name: name.trim(), worktreeDir: worktreeDir.trim() }
+          : { mode: 'none' as const, name: name.trim() }
     void window.octopusAPI.tasks.create(input).then((ack) => {
       // Provisioning failures arrive via `scriptError` (handled above); this only
       // catches a dispatch-level rejection (e.g. a future validation ack).
@@ -244,6 +255,16 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
           >
             From Existing Repo
           </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'none'}
+            className={tab === 'none' ? 'btn-primary' : undefined}
+            disabled={busy}
+            onClick={() => setTab('none')}
+          >
+            No Repo
+          </button>
         </div>
 
         <label
@@ -332,7 +353,7 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
               />
             </label>
           </>
-        ) : (
+        ) : tab === 'existing' ? (
           <label
             style={{
               display: 'flex',
@@ -358,11 +379,12 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
               </button>
             </div>
           </label>
-        )}
+        ) : null}
 
         {busy ? (
           <p aria-live="polite" style={{ margin: 0, color: color.muted }}>
             {tab === 'new' ? 'Provisioning worktree…' : 'Adding task…'}
+            {/* 'none' resolves instantly via activeTaskChanged; the message flashes briefly. */}
             {progress ? (
               <span style={{ display: 'block', fontFamily: font.mono }}>{progress}</span>
             ) : null}

@@ -46,7 +46,7 @@ export async function startSessionRuntime(
   deps: AppDependencies,
   task: Task,
   session: Session,
-  worktree: WorktreeRef
+  worktree: WorktreeRef | undefined
 ): Promise<void> {
   const provider = deps.registry.get(session.typeId)
   if (!provider) {
@@ -64,10 +64,11 @@ export async function startSessionRuntime(
 
   // Placement for a FRESH spawn only: prefer the session's last-known cwd (§6.2 —
   // captured daemon-side on quit) so a daemon-less restart lands where the user
-  // left off, else the config override, else the worktree root. On re-attach the
-  // live process already owns its cwd, so this is skipped.
+  // left off, else the config override, else the worktree root. A "No Repo" task
+  // has no worktree, so its sessions fall back to the home dir (§5.4). On re-attach
+  // the live process already owns its cwd, so this is skipped.
   const lastCwd = resume ? undefined : deps.persistence.loadLastCwd(id)
-  const cwd = lastCwd ?? configCwd(session.config) ?? worktree.path
+  const cwd = lastCwd ?? configCwd(session.config) ?? worktree?.path ?? deps.homeDir
   const ctx: SessionRuntimeContext = {
     taskId: task.id,
     sessionId: id,

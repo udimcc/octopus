@@ -361,19 +361,25 @@ restore complexity). The serialize-and-replay path is kept available for a futur
 
 - **Tabs:** horizontal scroll on overflow with chevrons; overflow "…" menu beyond ~8 tabs; drag-reorder via
   `@dnd-kit/core`; per-tab `×` close (fires `pty:destroy`).
-- **New Task:** modal with two tabs and an info button (top-right) whose hover/focus tooltip explains the
+- **New Task:** modal with three tabs and an info button (top-right) whose hover/focus tooltip explains the
   active tab's delete behavior. **From New Worktree** (default): four fields — **name**, **repo directory**
   (a native OS directory picker via a `dialog:pickDirectory` IPC), **source branch**, **new branch**
   (prefilled with a slug from the name, editable); Octopus provisions a fresh worktree (`managed: true`).
   **From Existing Repo**: **name** + an existing **repository directory** Octopus adopts as-is (git detects
-  its owning repo + branch; the repo's main checkout is allowed), stored `managed: false`. "Create Task" →
-  spinner while the worktree is provisioned/adopted (repo-local script or native git, §6.4) → on success new
-  task becomes active with empty state; on failure show stderr in a red block + Retry + toast.
+  its owning repo + branch; the repo's main checkout is allowed), stored `managed: false`. **No Repo**:
+  **name** only — a repo-less task (`repoLess: true`, no worktree) for ad-hoc/scratch work (checking mounts,
+  `less` on a log, editing a config file); it is created **synchronously** (no script, no git, nothing on
+  disk) and becomes `Ready` at once, and its sessions open at the **home directory** with no `cd` (§6.1,
+  §6.2). "Create Task" → for the two repo tabs, a spinner while the worktree is provisioned/adopted
+  (repo-local script or native git, §6.4) → on success new task becomes active with empty state; on failure
+  show stderr in a red block + Retry + toast. In the progress panel's grouped view, repo-less tasks form
+  their own **"No Repository"** group (ordered after all repo groups).
 - **New Session:** dropdown populated from the session-type registry (filtered by `availableFromVersion ≤
   currentVersion`). Terminal creates immediately; Jenkins (phase 3) opens a small config modal.
 - **Delete Task:** confirm dialog whose body reflects ownership (§6.4) — a managed worktree "closes all
   sessions and removes the worktree", an adopted repo (`managed: false`) "closes all sessions" but leaves
-  the directory on disk; on dirty worktree, an extra "uncommitted changes — delete anyway?" confirmation
+  the directory on disk, and a **No Repo** task "closes all sessions" with nothing removed from disk (no
+  worktree exists); on dirty worktree, an extra "uncommitted changes — delete anyway?" confirmation
   (the dirty gate still fires for adopted repos, even though nothing is removed from disk).
 - **Status icons (phase 2):** shape **and** color (accessibility), rendered per session on its tab
   (`SessionStatusIcon`) and per task in the progress panel (`TaskStatusIcon`). Icons follow the §3.3

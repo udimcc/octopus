@@ -130,7 +130,7 @@ describe('SqliteStore.create (§6.3)', () => {
     const db = new FakeDb()
     SqliteStore.create(db)
     expect(db.execed.some((s) => s.includes('ADD COLUMN base_ref'))).toBe(false)
-    expect(db.pragmas).toContain('user_version = 6')
+    expect(db.pragmas).toContain('user_version = 7')
   })
 
   it('runs the pending migrations on a pre-existing older DB (base_ref + session_scrollback)', () => {
@@ -140,7 +140,7 @@ describe('SqliteStore.create (§6.3)', () => {
     db.stub('sqlite_master', [{ name: 'tasks' }])
     SqliteStore.create(db)
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN base_ref'))).toBe(true)
-    expect(db.pragmas).toContain('user_version = 6')
+    expect(db.pragmas).toContain('user_version = 7')
   })
 
   it('runs ONLY the v3 migration on a v2 DB (skips the already-applied v2 ALTER)', () => {
@@ -157,7 +157,7 @@ describe('SqliteStore.create (§6.3)', () => {
     expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS session_scrollback'))).toBe(
       true
     )
-    expect(db.pragmas).toContain('user_version = 6')
+    expect(db.pragmas).toContain('user_version = 7')
   })
 
   it('runs ONLY the v4 migration on a v3 DB (adds window_id + windows, seeds main)', () => {
@@ -174,14 +174,14 @@ describe('SqliteStore.create (§6.3)', () => {
     )
     expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS windows'))).toBe(true)
     expect(db.execed.some((s) => s.includes('INSERT OR IGNORE INTO windows'))).toBe(true)
-    expect(db.pragmas).toContain('user_version = 6')
+    expect(db.pragmas).toContain('user_version = 7')
   })
 
-  it('runs the v5 + v6 migrations on a v4 DB (managed + back-fill, then last_cwd)', () => {
+  it('runs the v5 + v6 + v7 migrations on a v4 DB (managed + back-fill, last_cwd, repo_less)', () => {
     // A pre-existing DB stamped at user_version 4 (pre-adopted-repo): the v5
-    // migration (tasks.managed ALTER + base_ref-null back-fill) AND the v6 migration
-    // (sessions.last_cwd ALTER) both fire; the earlier v2/v3/v4 statements are
-    // skipped by the fromVersion guard.
+    // migration (tasks.managed ALTER + base_ref-null back-fill), the v6 migration
+    // (sessions.last_cwd ALTER), and the v7 migration (tasks.repo_less ALTER) all
+    // fire; the earlier v2/v3/v4 statements are skipped by the fromVersion guard.
     const db = new FakeDb()
     db.stub('sqlite_master', [{ name: 'tasks' }])
     db.stubPragma('user_version', [{ user_version: 4 }])
@@ -194,19 +194,36 @@ describe('SqliteStore.create (§6.3)', () => {
       db.execed.some((s) => s.includes('UPDATE tasks SET managed = 0 WHERE base_ref IS NULL'))
     ).toBe(true)
     expect(db.execed.some((s) => s.includes('ALTER TABLE sessions ADD COLUMN last_cwd'))).toBe(true)
-    expect(db.pragmas).toContain('user_version = 6')
+    expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN repo_less'))).toBe(true)
+    expect(db.pragmas).toContain('user_version = 7')
   })
 
-  it('runs ONLY the v6 migration on a v5 DB (adds last_cwd)', () => {
-    // A pre-existing DB stamped at user_version 5 (pre-daemon): only the v6
-    // migration fires — the sessions.last_cwd ALTER. Earlier statements are skipped.
+  it('runs the v6 + v7 migrations on a v5 DB (last_cwd, then repo_less)', () => {
+    // A pre-existing DB stamped at user_version 5 (pre-daemon): the v6 migration
+    // (sessions.last_cwd ALTER) AND the v7 migration (tasks.repo_less ALTER) both
+    // fire; the earlier v2–v5 statements are skipped by the fromVersion guard.
     const db = new FakeDb()
     db.stub('sqlite_master', [{ name: 'tasks' }])
     db.stubPragma('user_version', [{ user_version: 5 }])
     SqliteStore.create(db)
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN managed'))).toBe(false)
     expect(db.execed.some((s) => s.includes('ALTER TABLE sessions ADD COLUMN last_cwd'))).toBe(true)
-    expect(db.pragmas).toContain('user_version = 6')
+    expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN repo_less'))).toBe(true)
+    expect(db.pragmas).toContain('user_version = 7')
+  })
+
+  it('runs ONLY the v7 migration on a v6 DB (adds repo_less)', () => {
+    // A pre-existing DB stamped at user_version 6 (pre-"No Repo"): only the v7
+    // migration fires — the tasks.repo_less ALTER. Earlier statements are skipped.
+    const db = new FakeDb()
+    db.stub('sqlite_master', [{ name: 'tasks' }])
+    db.stubPragma('user_version', [{ user_version: 6 }])
+    SqliteStore.create(db)
+    expect(db.execed.some((s) => s.includes('ALTER TABLE sessions ADD COLUMN last_cwd'))).toBe(
+      false
+    )
+    expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN repo_less'))).toBe(true)
+    expect(db.pragmas).toContain('user_version = 7')
   })
 
   it('throws IncompatibleDbError on a DB newer than this binary, without touching it', () => {
@@ -216,7 +233,7 @@ describe('SqliteStore.create (§6.3)', () => {
     // silently downgraded and the next upgrade would re-run an applied migration.
     const db = new FakeDb()
     db.stub('sqlite_master', [{ name: 'tasks' }])
-    db.stubPragma('user_version', [{ user_version: 7 }])
+    db.stubPragma('user_version', [{ user_version: 8 }])
     expect(() => SqliteStore.create(db)).toThrow(IncompatibleDbError)
     // No schema statements ran and the version was NOT lowered.
     expect(db.execed.some((s) => s.includes('CREATE TABLE'))).toBe(false)
@@ -228,7 +245,7 @@ describe('SqliteStore.create (§6.3)', () => {
     // though fromVersion (0) < SCHEMA_VERSION; it bootstraps and stamps to current.
     const db = new FakeDb()
     expect(() => SqliteStore.create(db)).not.toThrow()
-    expect(db.pragmas).toContain('user_version = 6')
+    expect(db.pragmas).toContain('user_version = 7')
   })
 
   it('invokes beforeMigrate with fromVersion on an upgrade, but not on fresh/current DBs', () => {
@@ -250,7 +267,7 @@ describe('SqliteStore.create (§6.3)', () => {
     // Already-current DB: nothing to migrate, so no backup.
     const current = new FakeDb()
     current.stub('sqlite_master', [{ name: 'tasks' }])
-    current.stubPragma('user_version', [{ user_version: 6 }])
+    current.stubPragma('user_version', [{ user_version: 7 }])
     const onCurrent = vi.fn()
     SqliteStore.create(current, onCurrent)
     expect(onCurrent).not.toHaveBeenCalled()
@@ -271,7 +288,8 @@ describe('SqliteStore.load (§6.3)', () => {
       created_at: 10,
       position: 0,
       active_session_id: 's1',
-      managed: 1
+      managed: 1,
+      repo_less: 0
     }
     const sessionRow: SessionRow = {
       id: 's1',

@@ -115,6 +115,7 @@ d('V1 E2E smoke: create → run → switch (keep-alive) → delete (§11)', () =
       aggregator: worstStatusWins,
       configValidator: createAjvConfigValidator(),
       scrollbacks: new RingBufferScrollbackStore(),
+      homeDir: '/home/test',
       currentVersion: 1
     }
     const loop = new CommandLoop(deps)

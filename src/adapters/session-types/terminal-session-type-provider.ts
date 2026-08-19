@@ -50,9 +50,15 @@ export class TerminalSessionTypeProvider implements SessionTypeProvider {
   /** Terminal evaluates its own state (§9): the runtime exposes a state evaluator. */
   readonly capabilities: ReadonlySet<Capability> = new Set([Capability.EvaluatesState])
 
-  /** cwd defaults to the worktree (§3.2, §6.1); shell left to the runtime fallbacks. */
-  defaultConfig(worktreePath: string): SessionConfig {
-    const config: TerminalSessionConfig = { kind: 'terminal', cwdOverride: worktreePath }
+  /**
+   * cwd defaults to the worktree (§3.2, §6.1); shell left to the runtime fallbacks.
+   * With no worktree ("No Repo" task, §5.4) the config carries no `cwdOverride`, so
+   * the runtime opens the session at the home dir.
+   */
+  defaultConfig(worktreePath?: string): SessionConfig {
+    const config: TerminalSessionConfig = worktreePath
+      ? { kind: 'terminal', cwdOverride: worktreePath }
+      : { kind: 'terminal' }
     return config
   }
 

@@ -32,8 +32,12 @@ export interface SessionTypeProvider {
   /** Declarative capability set (§8); empty for Terminal in V1. */
   readonly capabilities: ReadonlySet<Capability>
 
-  /** Default config for a new session in the given worktree (§8, §3.2). */
-  defaultConfig(worktreePath: string): SessionConfig
+  /**
+   * Default config for a new session in the given worktree (§8, §3.2). When
+   * `worktreePath` is omitted (a "No Repo" task, §5.4), the returned config carries
+   * no cwd override, so the runtime opens the session at the home dir.
+   */
+  defaultConfig(worktreePath?: string): SessionConfig
 
   /** Create a (not-yet-started) runtime for a session (§8 factory). */
   createRuntime(manager: SessionManager, ctx: SessionRuntimeContext): SessionRuntime

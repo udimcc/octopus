@@ -46,6 +46,15 @@ describe('Task lifecycle (§3.5)', () => {
     const t = newTask()
     expect(() => t.markReady(undefined as never)).toThrow(IllegalTransitionError)
   })
+
+  it('drives None → Provisioning → Ready with NO worktree for a "No Repo" task (I1\', §5.4)', () => {
+    const t = newTask()
+    t.markProvisioning()
+    t.markReadyNoRepo()
+    expect(t.lifecycle).toBe(TaskLifecycle.Ready)
+    expect(t.worktree).toBeUndefined()
+    expect(t.repoLess).toBe(true)
+  })
 })
 
 describe('Task sessions (§3.2)', () => {
@@ -144,6 +153,38 @@ describe('Task snapshot round-trip (I15)', () => {
     expect(restored.worktree?.path).toBe('/wt')
     expect(restored.sessions().map((s) => s.id)).toEqual([asSessionId('s1'), asSessionId('s2')])
     expect(restored.activeSessionId).toBe(asSessionId('s1'))
+  })
+
+  it('round-trips a "No Repo" task: repoLess Ready with no worktree (§5.4)', () => {
+    const t = newTask()
+    t.markProvisioning()
+    t.markReadyNoRepo()
+    t.addSession(newSession('s1', T1, 0))
+    const snap = t.toSnapshot(worstStatusWins)
+    expect(snap.repoLess).toBe(true)
+    expect(snap.worktree).toBeUndefined()
+    const restored = Task.fromSnapshot(snap)
+    expect(restored.lifecycle).toBe(TaskLifecycle.Ready)
+    expect(restored.repoLess).toBe(true)
+    expect(restored.worktree).toBeUndefined()
+    expect(restored.sessions().map((s) => s.id)).toEqual([asSessionId('s1')])
+  })
+
+  it('defaults repoLess to false when a snapshot omits it (pre-feature rows)', () => {
+    const t = newTask()
+    t.markProvisioning()
+    t.markReady(
+      WorktreeRef.create({
+        path: '/wt',
+        managed: true,
+        provisionedBy: { script: 's', args: [], repoRoot: '/r', provisionedAt: 1 }
+      })
+    )
+    const snap = t.toSnapshot(worstStatusWins)
+    const { repoLess: _omit, ...withoutRepoLess } = snap
+    void _omit
+    const restored = Task.fromSnapshot(withoutRepoLess)
+    expect(restored.repoLess).toBe(false)
   })
 
   it('drops a dangling active-session pointer on rehydrate (I10)', () => {

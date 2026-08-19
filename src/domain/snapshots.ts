@@ -47,8 +47,18 @@ export interface SessionSnapshot {
 export interface TaskSnapshot {
   readonly id: TaskId
   readonly name: string
-  /** Present once the task is `Ready` (I1); absent while Provisioning/Failed. */
+  /**
+   * The worktree, present once the task is `Ready` — UNLESS the task is `repoLess`
+   * (I1'). Absent while Provisioning/Failed, and always absent for a repo-less task.
+   */
   readonly worktree?: WorktreeRefSnapshot
+  /**
+   * A "No Repo" task (§5.4): permanently `Ready` with NO worktree, its sessions
+   * open at the home dir. Distinguishes an intentional repo-less task from the
+   * transient worktree-less Provisioning state. Optional so pre-feature snapshots
+   * hydrate as `false`.
+   */
+  readonly repoLess?: boolean
   readonly lifecycle: TaskLifecycle
   /** Always derived (I11); `Unknown` in V1. */
   readonly state: TaskState

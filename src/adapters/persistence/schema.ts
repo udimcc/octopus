@@ -28,11 +28,13 @@
  * worktree — the latter is left on disk when the task is deleted, §6.4); 5 → 6 to
  * add the nullable `sessions.last_cwd` column (the session's last-known working
  * directory, captured from the daemon's `/proc/<pid>/cwd` on quit/roster-refresh so
- * a fresh spawn after a daemon-less restart lands where the user left off, §6.2).
+ * a fresh spawn after a daemon-less restart lands where the user left off, §6.2);
+ * 6 → 7 to add the `tasks.repo_less` column ("No Repo" tasks, §5.4 — a permanently
+ * worktree-less task; its row stores `worktree = ''` and `repo_less = 1`).
  * `SqliteStore` runs the guarded migrations when an older DB opens (see
  * {@link MIGRATIONS}).
  */
-export const SCHEMA_VERSION = 6
+export const SCHEMA_VERSION = 7
 
 /**
  * Connection pragmas applied on every open. `foreign_keys` is per-connection
@@ -59,7 +61,8 @@ export const SCHEMA_STATEMENTS: readonly string[] = Object.freeze([
      created_at INTEGER NOT NULL,
      position INTEGER NOT NULL,
      active_session_id TEXT,
-     managed INTEGER NOT NULL DEFAULT 1
+     managed INTEGER NOT NULL DEFAULT 1,
+     repo_less INTEGER NOT NULL DEFAULT 0
    )`,
   `CREATE TABLE IF NOT EXISTS sessions (
      id TEXT PRIMARY KEY,
@@ -181,5 +184,13 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   {
     toVersion: 6,
     statements: Object.freeze(['ALTER TABLE sessions ADD COLUMN last_cwd TEXT'])
+  },
+  // v7 (§5.4): "No Repo" tasks. The NOT NULL DEFAULT 0 migrates every existing row
+  // to non-repo-less with no UPDATE pass; a repo-less row stores `worktree = ''`
+  // and `repo_less = 1`, and `rowToTaskSnapshot` branches on `repo_less` before
+  // reading the (empty) worktree column, so the sentinel is never read as a path.
+  {
+    toVersion: 7,
+    statements: Object.freeze(['ALTER TABLE tasks ADD COLUMN repo_less INTEGER NOT NULL DEFAULT 0'])
   }
 ])

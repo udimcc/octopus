@@ -4,6 +4,8 @@ import {
   repoBasename,
   repoKeyOf,
   NO_REPO_LABEL,
+  NO_REPOSITORY_KEY,
+  NO_REPOSITORY_LABEL,
   type GroupableTask
 } from './group-tasks'
 
@@ -11,6 +13,11 @@ import {
 function task(repoRoot?: string): GroupableTask {
   if (repoRoot === undefined) return {}
   return { worktree: { provisionedBy: { repoRoot } } }
+}
+
+/** A "No Repo" task (§5.4): no worktree, `repoLess: true`. */
+function noRepoTask(): GroupableTask {
+  return { repoLess: true }
 }
 
 describe('repoBasename', () => {
@@ -47,6 +54,14 @@ describe('repoKeyOf', () => {
     expect(repoKeyOf(task())).toBe('')
     expect(repoKeyOf(undefined)).toBe('')
   })
+
+  it('is the No-Repository sentinel for a repo-less task (regardless of worktree)', () => {
+    expect(repoKeyOf(noRepoTask())).toBe(NO_REPOSITORY_KEY)
+    // repoLess wins even if a (stale/empty) worktree field is somehow present.
+    expect(repoKeyOf({ repoLess: true, worktree: { provisionedBy: { repoRoot: '/r/X' } } })).toBe(
+      NO_REPOSITORY_KEY
+    )
+  })
 })
 
 describe('groupTasksByRepo', () => {
@@ -81,6 +96,29 @@ describe('groupTasksByRepo', () => {
     const groups = groupTasksByRepo(['p', 't1'], tasks)
     expect(groups.map((g) => g.repoRoot)).toEqual(['/r/Trading', ''])
     expect(groups[1]).toEqual({ repoRoot: '', repoName: NO_REPO_LABEL, taskIds: ['p'] })
+  })
+
+  it('groups repo-less tasks under "No Repository", after repo groups', () => {
+    const tasks: Record<string, GroupableTask> = {
+      t1: task('/r/Trading'),
+      n1: noRepoTask(),
+      n2: noRepoTask()
+    }
+    const groups = groupTasksByRepo(['n1', 't1', 'n2'], tasks)
+    expect(groups).toEqual([
+      { repoRoot: '/r/Trading', repoName: 'Trading', taskIds: ['t1'] },
+      { repoRoot: NO_REPOSITORY_KEY, repoName: NO_REPOSITORY_LABEL, taskIds: ['n1', 'n2'] }
+    ])
+  })
+
+  it('orders the No Repository group before the transient Provisioning bucket', () => {
+    const tasks: Record<string, GroupableTask> = {
+      p: task(), // provisioning
+      n: noRepoTask(),
+      t1: task('/r/Trading')
+    }
+    const groups = groupTasksByRepo(['p', 'n', 't1'], tasks)
+    expect(groups.map((g) => g.repoRoot)).toEqual(['/r/Trading', NO_REPOSITORY_KEY, ''])
   })
 
   it('skips ids absent from the task map', () => {

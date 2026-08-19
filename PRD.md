@@ -21,8 +21,8 @@ A task represents a unit of work the user needs to complete.
 
 ### Lifecycle
 
-- **Creation:** Opening a new task shows a modal collecting four inputs — task name, repository directory (chosen via a native folder picker), source branch, and new branch. On confirm, Octopus creates the worktree: if the chosen repository contains a `create_worktree.sh`, it is run with the source and new branch and returns the worktree path; otherwise Octopus creates the worktree itself with git under a configurable base directory (default `~/octopus_repos/`).
-- **Deletion:** When a task is deleted, the worktree is removed symmetrically: via the repository's `delete_worktree.sh` if present, otherwise by Octopus with git.
+- **Creation:** Opening a new task shows a modal with three tabs. **From New Worktree** collects four inputs — task name, repository directory (chosen via a native folder picker), source branch, and new branch — and on confirm Octopus creates the worktree: if the chosen repository contains a `create_worktree.sh`, it is run with the source and new branch and returns the worktree path; otherwise Octopus creates the worktree itself with git under a configurable base directory (default `~/octopus_repos/`). **From Existing Repo** collects task name + an existing repository directory Octopus adopts as-is (left on disk when deleted). **No Repo** collects a task name only — a task with *no* repository or worktree, for ad-hoc/scratch work (checking mounts, viewing a log, editing a config file); nothing is created on disk and its sessions open at the user's home directory.
+- **Deletion:** When a task is deleted, a managed worktree is removed symmetrically — via the repository's `delete_worktree.sh` if present, otherwise by Octopus with git. An adopted (existing-repo) directory and a No Repo task leave nothing on disk (a No Repo task has no worktree to remove).
 
 ### Behavior
 
@@ -35,7 +35,7 @@ A session is a window containing a developer tool needed for task completion.
 
 ### Session Types
 
-1. **Terminal** - Interactive terminal starting in the task's worktree directory. Used for Claude Code, file viewing, running scripts, etc.
+1. **Terminal** - Interactive terminal starting in the task's worktree directory (or, for a No Repo task, the user's home directory). Used for Claude Code, file viewing, running scripts, etc.
 2. **Jenkins Pipeline Viewer** (Phase 3) - Displays pipeline progression for the task's branch.
 3. Potentially more types in future phases.
 

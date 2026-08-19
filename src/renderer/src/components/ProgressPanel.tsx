@@ -26,7 +26,7 @@ import { TaskListItem } from './TaskListItem'
 import { DeleteTaskConfirm } from './DeleteTaskConfirm'
 import { SettingsModal } from './SettingsModal'
 import { useStore, taskDisplayState } from '../store/store'
-import { groupTasksByRepo, repoKeyOf } from '../store/group-tasks'
+import { groupTasksByRepo, repoKeyOf, NO_REPOSITORY_KEY } from '../store/group-tasks'
 import { color, fontSize } from '../style/tokens'
 
 export interface ProgressPanelProps {
@@ -194,7 +194,7 @@ export function ProgressPanel({ onNewTask }: ProgressPanelProps): React.JSX.Elem
                     textOverflow: 'ellipsis',
                     whiteSpace: 'nowrap'
                   }}
-                  title={g.repoRoot || g.repoName}
+                  title={g.repoRoot && g.repoRoot !== NO_REPOSITORY_KEY ? g.repoRoot : g.repoName}
                 >
                   {g.repoName}
                 </div>

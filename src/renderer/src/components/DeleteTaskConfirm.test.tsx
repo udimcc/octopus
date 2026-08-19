@@ -100,6 +100,16 @@ describe('<DeleteTaskConfirm>', () => {
     expect(screen.getByText(/repository directory is left on disk/)).toBeInTheDocument()
   })
 
+  it('tells the user a "No Repo" task removes nothing from disk (§5.4)', () => {
+    installStubBridge()
+    seed(task('t1', { name: 'Scratch', repoLess: true }))
+    render(<DeleteTaskConfirm taskId="t1" onClose={vi.fn()} />)
+    expect(screen.getByText(/Nothing is removed from disk/)).toBeInTheDocument()
+    // Not the managed/adopted wording.
+    expect(screen.queryByText(/removes its git worktree/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/repository directory is left on disk/)).not.toBeInTheDocument()
+  })
+
   it('does NOT offer Force-forget for a ready task', () => {
     installStubBridge()
     seed(task('t1', { name: 'Alpha', lifecycle: 'ready' }))

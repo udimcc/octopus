@@ -13,6 +13,12 @@ async function seedReadyTask(): Promise<FakeDeps & { taskId: ReturnType<typeof a
   return { ...fd, taskId: asTaskId('task-1') }
 }
 
+async function seedNoRepoTask(): Promise<FakeDeps & { taskId: ReturnType<typeof asTaskId> }> {
+  const fd = makeDeps()
+  await createTask(fd.deps, { mode: 'none', name: 'Scratch' })
+  return { ...fd, taskId: asTaskId('task-1') }
+}
+
 describe('openSession happy path (§3.6, §6.1)', () => {
   it('creates a Running session, registers the runtime, persists, and emits sessionCreated', async () => {
     const fd = await seedReadyTask()
@@ -61,6 +67,20 @@ describe('openSession happy path (§3.6, §6.1)', () => {
 
     runtime.ctx.onExit(0, undefined)
     expect(exitCalls).toEqual([{ id: session.id, code: 0 }])
+  })
+})
+
+describe('openSession on a "No Repo" task (§5.4)', () => {
+  it('opens at the home dir with no cwdOverride — no worktree needed', async () => {
+    const fd = await seedNoRepoTask()
+
+    await openSession(fd.deps, { taskId: fd.taskId })
+
+    const session = fd.workspace.task(fd.taskId)!.sessions()[0]
+    expect(session.lifecycle).toBe(SessionLifecycle.Running)
+    // No worktree → defaultConfig carries no cwdOverride → runtime lands at homeDir.
+    expect(session.config).toEqual({ kind: 'terminal' })
+    expect(fd.sessions.last()!.ctx.worktreePath).toBe('/home/test')
   })
 })
 

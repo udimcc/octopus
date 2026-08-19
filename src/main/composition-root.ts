@@ -304,6 +304,10 @@ export function bootstrap(): AppContext {
     configValidator,
     stateLog,
     scrollbacks,
+    // Default session cwd for "No Repo" tasks (§5.4): resolved once here so the
+    // use case never touches the OS. `homedir()` is the same base the worktree
+    // resolver uses above.
+    homeDir: homedir(),
     currentVersion: CURRENT_VERSION,
     // Live at construction: the SAME Set instance the warmup fills before any
     // session starts (use-cases read it lazily via `has`, §6.2).

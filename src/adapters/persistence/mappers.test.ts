@@ -60,7 +60,8 @@ describe('taskToRow (§6.3)', () => {
       created_at: 100,
       position: 2,
       active_session_id: 's1',
-      managed: 1
+      managed: 1,
+      repo_less: 0
     })
   })
 
@@ -93,8 +94,19 @@ describe('taskToRow (§6.3)', () => {
     expect(row.active_session_id).toBeNull()
   })
 
-  it('refuses to persist a task with no worktree (§6.3: only provisioned tasks persist)', () => {
+  it('refuses to persist a worktree-less, non-repo-less task (§6.3: only provisioned tasks persist)', () => {
     expect(() => taskToRow(taskSnapshot({ worktree: undefined }))).toThrow(/no worktree/)
+  })
+
+  it('persists a "No Repo" task with worktree = \'\' + repo_less = 1 (§5.4)', () => {
+    const row = taskToRow(taskSnapshot({ worktree: undefined, repoLess: true }))
+    expect(row.repo_less).toBe(1)
+    expect(row.worktree).toBe('')
+    // No repo/branch provenance and never Octopus-managed (nothing to delete).
+    expect(row.branch).toBeNull()
+    expect(row.base_ref).toBeNull()
+    expect(row.repo_root).toBeNull()
+    expect(row.managed).toBe(0)
   })
 })
 
@@ -172,7 +184,8 @@ describe('rowToTaskSnapshot (I13/I14, §6.3)', () => {
       created_at: 100,
       position: 2,
       active_session_id: 's1',
-      managed: 1
+      managed: 1,
+      repo_less: 0
     }
     const sessionRows: SessionRow[] = [
       {
@@ -213,7 +226,8 @@ describe('rowToTaskSnapshot (I13/I14, §6.3)', () => {
         created_at: 1,
         position: 0,
         active_session_id: null,
-        managed: 0
+        managed: 0,
+        repo_less: 0
       },
       []
     )
@@ -223,6 +237,29 @@ describe('rowToTaskSnapshot (I13/I14, §6.3)', () => {
     expect(snap.worktree?.provisionedBy.repoRoot).toBe('')
     // An adopted row (managed = 0) reloads as an unmanaged worktree.
     expect(snap.worktree?.managed).toBe(false)
+  })
+
+  it('reloads a repo_less row as a Ready task with NO worktree, before reading the sentinel path (§5.4)', () => {
+    const snap = rowToTaskSnapshot(
+      {
+        id: 't1',
+        name: 'scratch',
+        worktree: '', // sentinel — must NOT be read as a path
+        branch: null,
+        base_ref: null,
+        repo_root: null,
+        created_at: 1,
+        position: 0,
+        active_session_id: null,
+        managed: 0,
+        repo_less: 1
+      },
+      []
+    )
+    expect(snap.repoLess).toBe(true)
+    expect(snap.worktree).toBeUndefined()
+    expect(snap.lifecycle).toBe(TaskLifecycle.Ready)
+    expect(snap.state).toBe(TaskState.Unknown)
   })
 })
 

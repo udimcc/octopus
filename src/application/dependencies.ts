@@ -93,6 +93,13 @@ export interface AppDependencies {
   readonly aggregator: TaskStateAggregator
   readonly configValidator: ConfigValidator
   /**
+   * The user's home directory, resolved once at the composition root (`homedir()`).
+   * The default session cwd for a "No Repo" task (§5.4): a repo-less session has no
+   * worktree, so it opens here. Injected as a plain string so the application layer
+   * never imports `node:os` (boundary rule).
+   */
+  readonly homeDir: string
+  /**
    * Best-effort state-transition log (§11, R1). Each `ingestSessionState` records
    * the transition here for threshold tuning and the debug overlay; a no-op
    * implementation (or absence) disables logging. Never throws into the loop.

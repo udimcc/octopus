@@ -133,6 +133,34 @@ describe('createTask (§3.5, §6.4)', () => {
     expect(scriptErrors[0].stderr).toMatch(/not a git worktree/)
   })
 
+  it('creates a "No Repo" task: Ready + repoLess, no worktree, no script (§5.4)', async () => {
+    const { deps, workspace, worktrees, persistence, bus } = makeDeps()
+
+    await createTask(deps, { mode: 'none', name: 'Scratch' })
+
+    const task = workspace.tasks()[0]
+    expect(task.name).toBe('Scratch')
+    expect(task.lifecycle).toBe(TaskLifecycle.Ready)
+    expect(task.repoLess).toBe(true)
+    expect(task.worktree).toBeUndefined()
+
+    // No worktree provider was touched — nothing is provisioned or adopted.
+    expect(worktrees.createCalls).toEqual([])
+    expect(worktrees.adoptCalls).toEqual([])
+
+    // Persisted the Ready task + set it active, in one transaction.
+    expect(persistence.transactions).toBe(1)
+    expect(persistence.upsertedTasks.map((t) => t.id)).toEqual([task.id])
+    expect(persistence.activeTaskSet).toEqual([task.id])
+    expect(workspace.activeTaskId).toBe(task.id)
+
+    // Only taskCreated (Ready) → activeTaskChanged: no Provisioning announce, no
+    // scriptProgress, no scriptError (the modal closes on activeTaskChanged).
+    expect(bus.events.map((e) => e.type)).toEqual(['taskCreated', 'activeTaskChanged'])
+    expect(bus.ofType('taskCreated')[0].task.lifecycle).toBe(TaskLifecycle.Ready)
+    expect(bus.ofType('taskCreated')[0].task.repoLess).toBe(true)
+  })
+
   it('positions a second task after the first', async () => {
     const { deps, workspace } = makeDeps()
     await createTask(deps, taskInput('first'))

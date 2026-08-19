@@ -36,6 +36,25 @@ export async function createTask(deps: AppDependencies, input: CreateTaskInput):
   const position = deps.workspace.tasks().length
 
   const task = Task.create({ id, name: input.name, position, createdAt: now })
+
+  // "No Repo" task (§5.4): nothing to provision. Drive it straight to Ready
+  // (repo-less), persist, and make it active — synchronously, so there is no
+  // script, no `scriptProgress`, and no failure path. The modal closes on the
+  // `activeTaskChanged` event just like the provisioning modes.
+  if (input.mode === 'none') {
+    task.markProvisioning()
+    task.markReadyNoRepo()
+    deps.workspace.addTask(task)
+    deps.persistence.transaction(() => {
+      deps.persistence.upsertTask(task.toSnapshot(deps.aggregator))
+      deps.workspace.setActiveTask(id)
+      deps.persistence.setActiveTask(id)
+    })
+    deps.bus.publish({ type: 'taskCreated', task: task.toSnapshot(deps.aggregator) })
+    deps.bus.publish({ type: 'activeTaskChanged', taskId: id })
+    return
+  }
+
   task.markProvisioning()
   deps.workspace.addTask(task)
   // Announce the provisioning task so the UI shows a spinner while the script runs.

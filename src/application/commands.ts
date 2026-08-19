@@ -34,8 +34,18 @@ export interface CreateTaskFromExistingInput {
   readonly worktreeDir: string
 }
 
-/** Discriminated on `mode`: provision a new worktree or adopt an existing one. */
-export type CreateTaskInput = CreateTaskFromNewInput | CreateTaskFromExistingInput
+/**
+ * Create a "No Repo" task (New-Task modal "No Repo" tab, §5.4): no worktree, no
+ * provisioning — sessions open at the home dir. Carries only the display name.
+ */
+export interface CreateTaskFromNoneInput {
+  readonly mode: 'none'
+  readonly name: string
+}
+
+/** Discriminated on `mode`: new worktree, adopted repo, or no repo at all. */
+export type CreateTaskInput =
+  CreateTaskFromNewInput | CreateTaskFromExistingInput | CreateTaskFromNoneInput
 
 export interface DeleteTaskInput {
   readonly taskId: TaskId

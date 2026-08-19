@@ -64,8 +64,15 @@ export interface SessionDTO {
 export interface TaskDTO {
   readonly id: string
   readonly name: string
-  /** Present once `Ready` (I1); absent while Provisioning/Failed. */
+  /** Present once `Ready` (I1); absent while Provisioning/Failed, or a "No Repo" task. */
   readonly worktree?: WorktreeRefDTO
+  /**
+   * A "No Repo" task (§5.4): permanently `Ready` with NO worktree; its sessions
+   * open at the home dir. Distinguishes an intentional repo-less task from the
+   * transient worktree-less Provisioning state, and drives the "No Repository"
+   * group in the Progress panel. Absent/`false` for ordinary tasks.
+   */
+  readonly repoLess?: boolean
   readonly lifecycle: string
   /** Always derived (I11); `'unknown'` in V1. */
   readonly state: string
@@ -212,8 +219,23 @@ export interface CreateTaskFromExistingInput {
   readonly worktreeDir: string
 }
 
-/** Discriminated on `mode`: provision a new worktree or adopt an existing one. */
-export type CreateTaskInput = CreateTaskFromNewInput | CreateTaskFromExistingInput
+/**
+ * Create a "No Repo" task (New-Task modal, "No Repo" tab, §5.4): no worktree,
+ * nothing provisioned or touched on disk. Its sessions open at the home dir with
+ * no `cd`. Only a name is needed — for ad-hoc work (checking mounts, `less` on a
+ * log, editing a config file) unrelated to any repo.
+ */
+export interface CreateTaskFromNoneInput {
+  readonly mode: 'none'
+  readonly name: string
+}
+
+/**
+ * Discriminated on `mode`: provision a new worktree, adopt an existing one, or
+ * create a repo-less "No Repo" task.
+ */
+export type CreateTaskInput =
+  CreateTaskFromNewInput | CreateTaskFromExistingInput | CreateTaskFromNoneInput
 
 export interface DeleteTaskInput {
   readonly taskId: string

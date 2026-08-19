@@ -33,6 +33,8 @@ export interface TaskEntry {
   readonly id: string
   readonly name: string
   readonly worktree?: WorktreeRefDTO
+  /** A "No Repo" task (§5.4): no worktree, groups under "No Repository". */
+  readonly repoLess?: boolean
   readonly lifecycle: string
   readonly state: string
   readonly sessionIds: readonly string[]
@@ -209,6 +211,7 @@ function normalizeTask(dto: TaskDTO): { entry: TaskEntry; sessions: SessionDTO[]
     id: dto.id,
     name: dto.name,
     worktree: dto.worktree,
+    repoLess: dto.repoLess,
     lifecycle: dto.lifecycle,
     state: dto.state,
     sessionIds: sessions.map((s) => s.id),

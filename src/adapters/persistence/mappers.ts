@@ -38,6 +38,8 @@ export interface TaskRow {
   active_session_id: string | null
   /** 1 = Octopus provisioned it (delete on removal); 0 = adopted, left on disk (§6.4). */
   managed: number
+  /** 1 = a "No Repo" task (§5.4): no worktree (`worktree = ''`), sessions open at home. */
+  repo_less: number
 }
 
 /** A `sessions` row (§6.3, plus the `config` JSON column). */
@@ -76,28 +78,51 @@ export interface WindowRow {
 }
 
 /**
- * Serialize a task for persistence. Requires a worktree: the `worktree` column
- * is `NOT NULL`, and per §6.3 only a provisioned task (Ready/Stale) is
- * persistable — Provisioning/ProvisionFailed tasks are transient and never
- * written. Throwing here enforces that at the storage boundary.
+ * Serialize a task for persistence. Requires a worktree UNLESS the task is
+ * `repoLess` (a "No Repo" task, §5.4): the `worktree` column is `NOT NULL`, and
+ * per §6.3 only a Ready/Stale task is persistable — Provisioning/ProvisionFailed
+ * tasks are transient and never written. A repo-less task has no worktree, so it
+ * stores `worktree = ''` + `repo_less = 1` (the empty string is never read as a
+ * path — `rowToTaskSnapshot` branches on `repo_less` first). Throwing here
+ * enforces at the storage boundary that a worktree-less, non-repo-less (i.e.
+ * transient) task is never written.
  */
 export function taskToRow(snap: TaskSnapshot): TaskRow {
-  if (!snap.worktree) {
+  // A repo-less task has no worktree by design: store the sentinel empty path +
+  // repo_less = 1 (rowToTaskSnapshot branches on repo_less before reading it).
+  if (snap.repoLess) {
+    return {
+      id: snap.id,
+      name: snap.name,
+      worktree: '',
+      branch: null,
+      base_ref: null,
+      repo_root: null,
+      created_at: snap.createdAt,
+      position: snap.position,
+      active_session_id: snap.activeSessionId ?? null,
+      managed: 0,
+      repo_less: 1
+    }
+  }
+  const worktree = snap.worktree
+  if (!worktree) {
     throw new Error(
-      `cannot persist task ${snap.id}: no worktree (only provisioned tasks persist, §6.3)`
+      `cannot persist task ${snap.id}: no worktree (only provisioned or repo-less tasks persist, §6.3)`
     )
   }
   return {
     id: snap.id,
     name: snap.name,
-    worktree: snap.worktree.path,
-    branch: snap.worktree.branch ?? null,
-    base_ref: snap.worktree.baseRef ?? null,
-    repo_root: snap.worktree.provisionedBy.repoRoot || null,
+    worktree: worktree.path,
+    branch: worktree.branch ?? null,
+    base_ref: worktree.baseRef ?? null,
+    repo_root: worktree.provisionedBy.repoRoot || null,
     created_at: snap.createdAt,
     position: snap.position,
     active_session_id: snap.activeSessionId ?? null,
-    managed: snap.worktree.managed ? 1 : 0
+    managed: worktree.managed ? 1 : 0,
+    repo_less: 0
   }
 }
 
@@ -136,17 +161,36 @@ export function windowToRow(record: WindowRecord): WindowRow {
 
 /**
  * Reconstruct a task snapshot from its row and its (ordered) session rows. The
- * task is `Ready` on reload (worktree present). The load-bearing provenance —
- * `baseRef` (source branch) and `repoRoot` (the task's repo dir) — round-trips
- * via the `base_ref`/`repo_root` columns, so a restarted app can still delete the
- * worktree via the SAME repo (§6.4). Provenance NOT persisted by §6.3 (the exact
- * create command + args + provision time) is reconstructed as inert placeholders —
- * historical only, unused after restore.
+ * task is `Ready` on reload (worktree present, or repo-less). The load-bearing
+ * provenance — `baseRef` (source branch) and `repoRoot` (the task's repo dir) —
+ * round-trips via the `base_ref`/`repo_root` columns, so a restarted app can still
+ * delete the worktree via the SAME repo (§6.4). Provenance NOT persisted by §6.3
+ * (the exact create command + args + provision time) is reconstructed as inert
+ * placeholders — historical only, unused after restore.
+ *
+ * A repo-less task (§5.4) is detected by `repo_less` BEFORE reading `worktree`:
+ * its `worktree` column is the sentinel `''` (never a path), so it reloads as a
+ * `Ready` task with NO worktree and `repoLess: true` (its sessions re-open at home).
  */
 export function rowToTaskSnapshot(row: TaskRow, sessionRows: readonly SessionRow[]): TaskSnapshot {
+  if (row.repo_less !== 0) {
+    return {
+      id: asTaskId(row.id),
+      name: row.name,
+      worktree: undefined,
+      repoLess: true,
+      lifecycle: TaskLifecycle.Ready,
+      state: TaskState.Unknown,
+      sessions: sessionRows.map(rowToSessionSnapshot),
+      activeSessionId: row.active_session_id ? asSessionId(row.active_session_id) : undefined,
+      position: row.position,
+      createdAt: row.created_at
+    }
+  }
   return {
     id: asTaskId(row.id),
     name: row.name,
+    repoLess: false,
     worktree: {
       path: row.worktree,
       branch: row.branch ?? undefined,
