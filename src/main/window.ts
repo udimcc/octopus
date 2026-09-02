@@ -14,6 +14,9 @@
  *   - **Close semantics (§6.7):** closing a SECONDARY window with live sessions
  *     shows a modal (move-to-main / kill-sessions / cancel) unless the app is
  *     quitting; closing the MAIN window quits the app (graceful shutdown, §6.6).
+ *   - **Crash recovery (§6.7):** a renderer process Chromium aborts is otherwise
+ *     silent — `isDestroyed()` stays false and the user just sees a white window —
+ *     so `render-process-gone` is logged and bounded-reloaded (`crash-recovery.ts`).
  *
  * Security posture (§5.5): `contextIsolation` on, `nodeIntegration` off, `sandbox`
  * on — the renderer's only backend contact is the typed `window.octopusAPI` bridge.
@@ -25,7 +28,12 @@ import type { WindowId } from '../domain/ids'
 import { asWindowId, MAIN_WINDOW_ID } from '../domain/ids'
 import type { WindowRecord } from '../ports/workspace-persistence'
 import type { AppContext } from './composition-root'
-import { busySessions, isBusy, type BusySessionsSummary } from '../application/queries/busy-sessions'
+import {
+  busySessions,
+  isBusy,
+  type BusySessionsSummary
+} from '../application/queries/busy-sessions'
+import { CRASH_BURST_WINDOW_MS, decideCrashRecovery } from './crash-recovery'
 
 /** How long to wait after the last move/resize before persisting bounds (§6.3). */
 const BOUNDS_SAVE_DEBOUNCE_MS = 500
@@ -71,6 +79,7 @@ export function createWindow(ctx: AppContext, opts: CreateWindowOptions): Browse
 
   wireBoundsPersistence(ctx, window, opts.windowId, opts.role)
   wireCloseSemantics(ctx, window, opts.windowId, opts.role)
+  wireCrashRecovery(ctx, window, opts.windowId, opts.role)
 
   loadRenderer(window, opts.windowId)
 
@@ -204,6 +213,122 @@ function wireCloseSemantics(
         })
     })
   })
+}
+
+/**
+ * Renderer-crash visibility + recovery (§6.7). Without this, a renderer that Chromium
+ * aborts is completely silent: `webContents.isDestroyed()` stays FALSE, so the registry
+ * keeps sending events into a dead process, Electron never respawns it, and the user sees
+ * a white window with nothing in the log. (That is exactly how a Blink-heap OOM in the
+ * terminal panes presented — `reason: 'crashed'`, `exitCode: 133`, no JS error. The fix
+ * for the cause lives in the renderer's `cursor-blink-guard.ts`; this is the safety net.)
+ *
+ * On a crash we:
+ *  1. log `reason`/`exitCode` with the window identity — the line whose absence made this
+ *     bug take a full instrumented-repro cycle to diagnose;
+ *  2. re-`register` the SAME (still valid) `webContents`, which resets the registry entry
+ *     to `{ ready: false, pending: [] }`. Main stops sending into the void, stale events
+ *     are dropped rather than queued, and the post-reload `getState` re-fires `markReady`
+ *     and flushes normally;
+ *  3. `reload()` under `decideCrashRecovery`'s bounded policy, or ask the user.
+ *
+ * Recovery is `webContents.reload()`, NEVER `window.destroy()` — on this GPU-less VDI a
+ * forced `destroy()` tears the display surface out from under Chromium and exits the whole
+ * browser process (see `wireCloseSemantics`). `reload()` replaces only the renderer process.
+ *
+ * KNOWN GAP: a reload re-hydrates from `getState` and re-mounts the panes, but the
+ * renderer-side pre-mount buffers died with the process and the daemon already replayed
+ * its ring buffer on the original attach, so terminals come back with empty scrollback and
+ * fill from the next live byte. Strictly better than a white window; a scrollback-preserving
+ * reload needs re-attach-on-reload (§6.2, V2).
+ */
+function wireCrashRecovery(
+  ctx: AppContext,
+  window: BrowserWindow,
+  windowId: WindowId,
+  role: 'main' | 'secondary'
+): void {
+  let attemptsInBurst = 0
+  let lastCrashAt: number | null = null
+
+  window.webContents.on('render-process-gone', (_event, details) => {
+    const now = ctx.deps.clock.now()
+    const msSinceLast = lastCrashAt === null ? Number.POSITIVE_INFINITY : now - lastCrashAt
+    lastCrashAt = now
+    if (msSinceLast > CRASH_BURST_WINDOW_MS) {
+      attemptsInBurst = 0
+    }
+    console.error(
+      `[octopus] renderer gone (${role} window ${windowId}): reason=${details.reason} exitCode=${details.exitCode}`
+    )
+
+    // A crash during quit/close is not something to heal — the window is going away.
+    if (ctx.isQuitting || window.isDestroyed()) {
+      return
+    }
+
+    // Point the registry at a not-ready entry so nothing is sent to (or queued for) the
+    // dead renderer; the reloaded page's `getState` re-arms it.
+    ctx.registry.register(windowId, window.webContents)
+
+    if (decideCrashRecovery(details.reason, attemptsInBurst, msSinceLast) === 'reload') {
+      attemptsInBurst++
+      console.error(`[octopus] reloading ${role} window ${windowId} (attempt ${attemptsInBurst})`)
+      window.webContents.reload()
+      return
+    }
+
+    void promptCrashRecovery(window, role).then((choice) => {
+      if (choice === 'reload') {
+        attemptsInBurst = 0
+        lastCrashAt = null
+        if (!window.isDestroyed()) {
+          window.webContents.reload()
+        }
+        return
+      }
+      app.quit()
+    })
+  })
+
+  // Log-only diagnostics: a wedged main thread (the precursor to the OOM abort above) and
+  // a renderer that never loaded both used to be invisible.
+  window.webContents.on('unresponsive', () =>
+    console.warn(`[octopus] renderer unresponsive (${role} window ${windowId})`)
+  )
+  window.webContents.on('responsive', () =>
+    console.warn(`[octopus] renderer responsive again (${role} window ${windowId})`)
+  )
+  window.webContents.on('did-fail-load', (_e, errorCode, errorDescription, url, isMainFrame) => {
+    if (isMainFrame) {
+      console.error(
+        `[octopus] renderer failed to load (${role} window ${windowId}): ${errorCode} ${errorDescription} ${url}`
+      )
+    }
+  })
+}
+
+/**
+ * "The window crashed" dialog, shown once the bounded auto-reloads are used up. Parented to
+ * the window — safe even though its renderer is dead, since the dialog is native/main-process.
+ * Closing the MAIN window quits the app anyway (§6.7), so Quit is a coherent second option.
+ */
+async function promptCrashRecovery(
+  window: BrowserWindow,
+  role: 'main' | 'secondary'
+): Promise<'reload' | 'quit'> {
+  const which = role === 'main' ? 'main window' : 'session window'
+  const result = await dialog.showMessageBox(window, {
+    type: 'error',
+    buttons: ['Reload', 'Quit'],
+    defaultId: 0,
+    cancelId: 1,
+    title: 'Window crashed',
+    message: `Octopus's ${which} stopped responding and was restarted by the system.`,
+    detail:
+      'Reloading restores the window from the saved workspace; terminals reconnect but start with empty scrollback. Repeated crashes are worth reporting.'
+  })
+  return result.response === 0 ? 'reload' : 'quit'
 }
 
 /** Count the live sessions a window currently hosts (two-level scan, §6.7). */

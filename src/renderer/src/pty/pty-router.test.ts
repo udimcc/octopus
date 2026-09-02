@@ -169,6 +169,37 @@ describe('pty-router pre-mount ring buffer (§6.6 replay)', () => {
     expect(replayed.length).toBeLessThanOrEqual(REPLAY_BUFFER_MAX_BYTES)
   })
 
+  it('truncates a SINGLE oversized chunk to its tail (the daemon re-attach replay)', () => {
+    const bridge = fakeBridge()
+    initEventRouting(vi.fn())
+
+    // On attach the daemon replays a session's whole ring as ONE frame — up to 5 MB, 10×
+    // this cap, × every un-mounted session. Chunk eviction can't bound that (there is only
+    // one chunk), so the tail is kept.
+    const head = 'HEAD'
+    const oversized = head + 'x'.repeat(REPLAY_BUFFER_MAX_BYTES * 2) + 'NEWEST'
+    bridge.emit({ type: 'ptyData', sessionId: 's1', data: oversized })
+
+    const chunks: string[] = []
+    registerTerminalSink('s1', (d) => chunks.push(d))
+
+    const replayed = chunks.join('')
+    expect(replayed.length).toBe(REPLAY_BUFFER_MAX_BYTES)
+    expect(replayed.endsWith('NEWEST')).toBe(true)
+    expect(replayed.includes(head)).toBe(false)
+  })
+
+  it('keeps a single chunk that fits intact — no truncation at the boundary', () => {
+    const bridge = fakeBridge()
+    initEventRouting(vi.fn())
+    const exact = 'y'.repeat(REPLAY_BUFFER_MAX_BYTES)
+    bridge.emit({ type: 'ptyData', sessionId: 's1', data: exact })
+
+    const chunks: string[] = []
+    registerTerminalSink('s1', (d) => chunks.push(d))
+    expect(chunks.join('')).toBe(exact)
+  })
+
   it('_resetSinks clears pending buffers too', () => {
     const bridge = fakeBridge()
     initEventRouting(vi.fn())

@@ -32,6 +32,13 @@
  * "succeed" but stall on a per-frame `ReadPixels` pixel readback, so the DOM
  * renderer (no canvas, no readback) is actually the fastest path. `probeGpuTier`
  * detects this once and `applyRendererTier` then leaves xterm on its DOM renderer.
+ *
+ * On that DOM-renderer path an xterm *option* write is expensive — it rebuilds and
+ * reparses the terminal's entire theme stylesheet — and keep-alive means every session
+ * pays it. A TUI that flips an option per frame therefore scales with the session count,
+ * and one that does (Emacs, whose `cnorm`/`cvvis` repaint toggles cursor blink twice per
+ * frame) killed the renderer process outright. `installCursorBlinkGuard` closes that route
+ * (`cursor-blink-guard.ts`, §5.3).
  */
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
@@ -48,6 +55,7 @@ import { useStore } from '../store/store'
 import { matchesChord } from '../keybindings/chords'
 import { registerTerminalSink, unregisterTerminalSink } from '../pty/pty-router'
 import { registerSearchOpener, unregisterSearchOpener } from './terminal-search'
+import { installCursorBlinkGuard } from './cursor-blink-guard'
 import { webglBudget } from './webgl-budget'
 import { probeGpuTier } from './gpu-capability'
 import { color, radius, shadow, terminalTheme } from '../style/tokens'
@@ -192,6 +200,12 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
       allowProposedApi: true, // required by the Unicode11 addon
       theme: terminalTheme
     })
+    // BEFORE anything can write to this terminal: stop DECSET/DECRST 12 (cursor blink)
+    // from becoming an xterm *option* write. Every option change rebuilds and reparses
+    // this terminal's whole theme stylesheet, and Emacs toggles blink twice per repaint —
+    // across all the keep-alive panes that killed the renderer process outright
+    // (see `cursor-blink-guard.ts` for the measurement, §5.3).
+    installCursorBlinkGuard(term)
     const fit = new FitAddon()
     const search = new SearchAddon()
     term.loadAddon(fit)

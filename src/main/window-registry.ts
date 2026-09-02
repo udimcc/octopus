@@ -24,8 +24,9 @@
  *     lifecycle, dormant V2 state) → ALL windows.
  *
  * Per-window readiness mirrors the old forwarder: events published before a
- * window's renderer has hydrated (its `getState`) are buffered per entry and
- * flushed on `markReady(windowId)`. A destroyed `webContents` silently drops.
+ * window's renderer has hydrated (its `getState`) are buffered per entry (bounded —
+ * see `PENDING_MAX_EVENTS`) and flushed on `markReady(windowId)`. A destroyed
+ * `webContents` silently drops.
  *
  * The registry is transport-agnostic in spirit (§6.5): the routing decisions are
  * pure functions of the event + the window map, so the V2 socket daemon can reuse
@@ -43,7 +44,18 @@ interface WindowEntry {
   readonly webContents: WebContents
   ready: boolean
   readonly pending: EventDTO[]
+  /** Set once we start dropping, so the warning is logged once per window, not per event. */
+  overflowed: boolean
 }
+
+/**
+ * Hard cap on a window's pre-hydration buffer. The window is only un-ready for the
+ * milliseconds between `register` and its `getState`, but `ptyData` in that gap is
+ * unbounded in principle (a daemon re-attach replays whole ring buffers), and this queue
+ * lives in the MAIN process, where a leak takes the whole app down. Oldest events are
+ * dropped first: on overflow the newest output is the output worth showing.
+ */
+export const PENDING_MAX_EVENTS = 2000
 
 /**
  * Resolve which window currently hosts a session (its `session.windowId`), or
@@ -99,8 +111,25 @@ export function createWindowRegistry(
   const windows = new Map<WindowId, WindowEntry>()
 
   const sendTo = (entry: WindowEntry, dto: EventDTO): void => {
-    if (!entry.ready || entry.webContents.isDestroyed()) {
+    // A destroyed `webContents` never comes back, so buffering for it would grow forever
+    // (`markReady` discards the queue anyway). Drop instead. NOTE this is `isDestroyed`,
+    // not "alive": a renderer whose PROCESS Chromium killed leaves `isDestroyed() === false`,
+    // which is why `wireCrashRecovery` (§6.7) re-registers the window on `render-process-gone`
+    // — that resets `ready`, so the branch below takes over until the reload hydrates.
+    if (entry.webContents.isDestroyed()) {
+      return
+    }
+    if (!entry.ready) {
       entry.pending.push(dto)
+      if (entry.pending.length > PENDING_MAX_EVENTS) {
+        entry.pending.shift()
+        if (!entry.overflowed) {
+          entry.overflowed = true
+          console.warn(
+            `[octopus] window event buffer full (${PENDING_MAX_EVENTS}) before hydration; dropping oldest`
+          )
+        }
+      }
       return
     }
     entry.webContents.send(CHANNELS.event, dto)
@@ -168,7 +197,7 @@ export function createWindowRegistry(
 
   return {
     register(windowId: WindowId, webContents: WebContents): void {
-      windows.set(windowId, { webContents, ready: false, pending: [] })
+      windows.set(windowId, { webContents, ready: false, pending: [], overflowed: false })
     },
     unregister(windowId: WindowId): void {
       windows.delete(windowId)

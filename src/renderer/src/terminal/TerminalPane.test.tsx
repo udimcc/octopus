@@ -32,6 +32,7 @@ const h = vi.hoisted(() => {
     buffer: { active: { viewportY: number; baseY: number } }
     focus: ReturnType<typeof vi.fn>
     dispose: ReturnType<typeof vi.fn>
+    parser: { registerCsiHandler: ReturnType<typeof vi.fn> }
     onData(cb: (d: string) => void): { dispose: () => void }
   }
   const instances: FakeTerm[] = []
@@ -58,6 +59,10 @@ vi.mock('@xterm/xterm', () => ({
     buffer = { active: { viewportY: 0, baseY: 0 } }
     focus = vi.fn()
     dispose = vi.fn()
+    // `installCursorBlinkGuard` runs at mount and registers parser handlers. Its real
+    // behavior is covered by `cursor-blink-guard.test.ts` against the REAL xterm; here we
+    // only need the surface to exist, plus the assertion below that the pane installs it.
+    parser = { registerCsiHandler: vi.fn(() => ({ dispose: vi.fn() })) }
     attachCustomKeyEventHandler(cb: (e: KeyboardEvent) => boolean): void {
       this.keyHandler = cb
     }
@@ -170,6 +175,25 @@ describe('<TerminalPane> wiring (§5.3/§6.1)', () => {
       cols: 80,
       rows: 24
     })
+  })
+
+  it('installs the cursor-blink guard before anything can write to the terminal', () => {
+    render(<TerminalPane sessionId="s1" active={true} />)
+    const term = h.instances[0]
+    // Both DECSET (`?h`) and DECRST (`?l`) are guarded — an alternating blink toggle is
+    // what killed the renderer process (see `cursor-blink-guard.ts`).
+    const finals = term.parser.registerCsiHandler.mock.calls.map((c) => c[0])
+    expect(finals).toEqual([
+      { prefix: '?', final: 'h' },
+      { prefix: '?', final: 'l' }
+    ])
+    // Installed before `open()` and before the sink could replay a re-attach backlog.
+    expect(term.parser.registerCsiHandler.mock.invocationCallOrder[0]).toBeLessThan(
+      term.open.mock.invocationCallOrder[0]
+    )
+    expect(vi.mocked(registerTerminalSink).mock.invocationCallOrder[0]).toBeGreaterThan(
+      term.parser.registerCsiHandler.mock.invocationCallOrder[0]
+    )
   })
 
   it('the registered sink writes incoming data to the terminal', () => {

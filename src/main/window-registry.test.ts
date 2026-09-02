@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import type { WebContents } from 'electron'
-import { createWindowRegistry, type ResolveSessionWindow } from './window-registry'
+import {
+  createWindowRegistry,
+  PENDING_MAX_EVENTS,
+  type ResolveSessionWindow
+} from './window-registry'
 import { InMemoryEventBus } from '../adapters/event-bus/in-memory-event-bus'
 import { CHANNELS } from '../shared/ipc'
 import type { EventDTO } from '../shared/events'
@@ -60,8 +64,12 @@ describe('createWindowRegistry routing (§6.7)', () => {
       sessionId: asSessionId('s1'),
       title: 'renamed'
     })
-    expect(main.sent).toEqual([{ type: 'sessionRenamed', taskId: 't1', sessionId: 's1', title: 'renamed' }])
-    expect(win2.sent).toEqual([{ type: 'sessionRenamed', taskId: 't1', sessionId: 's1', title: 'renamed' }])
+    expect(main.sent).toEqual([
+      { type: 'sessionRenamed', taskId: 't1', sessionId: 's1', title: 'renamed' }
+    ])
+    expect(win2.sent).toEqual([
+      { type: 'sessionRenamed', taskId: 't1', sessionId: 's1', title: 'renamed' }
+    ])
   })
 
   it('broadcasts a session-scoped event when the session no longer resolves (e.g. sessionClosed after removal)', () => {
@@ -208,6 +216,46 @@ describe('createWindowRegistry routing (§6.7)', () => {
       registry.markReady(MAIN)
 
       expect(() => registry.sendTo(WIN2, note('c'))).not.toThrow()
+      expect(main.sent).toEqual([])
+    })
+  })
+
+  describe('bounded pre-hydration buffer (main-process memory, §6.7)', () => {
+    it('caps the queue at PENDING_MAX_EVENTS, keeping the NEWEST events', () => {
+      const bus = new InMemoryEventBus()
+      const registry = createWindowRegistry(bus, () => MAIN)
+      const main = new FakeWebContents()
+      registry.register(MAIN, main.as())
+
+      // Never marked ready: everything queues. Publish one over the cap.
+      for (let i = 0; i <= PENDING_MAX_EVENTS; i++) {
+        bus.publish({ type: 'ptyData', sessionId: asSessionId('s1'), data: `#${i}` })
+      }
+      registry.markReady(MAIN)
+
+      expect(main.sent).toHaveLength(PENDING_MAX_EVENTS)
+      // The oldest was dropped, the newest survived — on overflow, recent output wins.
+      expect((main.sent[0] as { data: string }).data).toBe('#1')
+      expect((main.sent[PENDING_MAX_EVENTS - 1] as { data: string }).data).toBe(
+        `#${PENDING_MAX_EVENTS}`
+      )
+    })
+
+    it('drops for a destroyed webContents instead of queueing forever', () => {
+      const bus = new InMemoryEventBus()
+      const registry = createWindowRegistry(bus, () => MAIN)
+      const main = new FakeWebContents()
+      registry.register(MAIN, main.as())
+      main.destroyed = true
+
+      // A destroyed renderer never comes back, so a queue for it could only grow.
+      for (let i = 0; i < 10; i++) {
+        bus.publish({ type: 'ptyData', sessionId: asSessionId('s1'), data: `#${i}` })
+      }
+      // Nothing queued: `markReady` (were it to arrive) has nothing to flush, and the
+      // send is never attempted on the dead contents.
+      main.destroyed = false
+      registry.markReady(MAIN)
       expect(main.sent).toEqual([])
     })
   })

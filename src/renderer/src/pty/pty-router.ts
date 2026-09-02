@@ -17,8 +17,10 @@
  * realization of the replay guarantee for the pre-mount / session-restore window;
  * xterm's own scrollback covers everything after mount. The backend
  * "don't-send-to-inactive" optimization stays a deferred V2 perf item (not
- * user-visible). The byte cap mirrors the backend `RingBuffer` default (§6.2) so
- * the bounded-memory behavior is the same on both sides.
+ * user-visible). The cap here is INDEPENDENT of (and 10× smaller than) the backend
+ * `RingBuffer` default of 5 MB per session (`daemon-pty.ts`): the daemon buys deep
+ * scrollback for re-attach, while this buffer only has to cover the milliseconds
+ * before a pane mounts, and it is paid 47× in one renderer process.
  *
  * MULTI-WINDOW (V1.5, §6.7): this module and its `sinks`/buffer maps are module-level
  * state, so each secondary window's renderer process gets its OWN independent router
@@ -45,7 +47,12 @@ interface PendingBuffer {
 
 const pending = new Map<string, PendingBuffer>()
 
-/** Bound per session, mirroring the backend `RingBuffer` default (~500 KB, §6.2). */
+/**
+ * Bound per session (~500 KB). Counted in UTF-16 code units (`string.length`), not UTF-8
+ * bytes as the backend `RingBuffer` counts — a deliberate approximation: it never
+ * *under*-estimates for ASCII-dominant terminal output, and the point is a bound, not
+ * an exact figure.
+ */
 export const REPLAY_BUFFER_MAX_BYTES = 500 * 1024
 
 /** Append a chunk to a session's pending buffer, evicting oldest to stay under cap. */
@@ -60,6 +67,16 @@ function bufferPending(sessionId: string, data: string): void {
   while (buf.bytes > REPLAY_BUFFER_MAX_BYTES && buf.chunks.length > 1) {
     const dropped = buf.chunks.shift()
     if (dropped !== undefined) buf.bytes -= dropped.length
+  }
+  // A SINGLE chunk can exceed the cap on its own, and routinely does: on daemon re-attach
+  // the backend replays a session's whole 5 MB ring as ONE `ptyData` frame (§6.2). Dropping
+  // whole chunks can't help there (there is only one), so keep its TAIL — the newest output,
+  // and what xterm would have shown anyway. Truncation can behead an escape sequence or a
+  // surrogate pair; xterm's parser resynchronizes on the next one, which is the right
+  // trade against holding 5 MB × every un-mounted session in this process.
+  if (buf.bytes > REPLAY_BUFFER_MAX_BYTES && buf.chunks.length === 1) {
+    buf.chunks[0] = buf.chunks[0].slice(-REPLAY_BUFFER_MAX_BYTES)
+    buf.bytes = buf.chunks[0].length
   }
 }
 

@@ -317,6 +317,13 @@ hydrate; thereafter lifecycle/status events patch the store. The store already h
 dormant `sessionStateChanged`/`taskStateChanged` events (patching `sessions[id].state` / `tasks[id].state`) —
 phase 2 only makes them fire and adds the `hasUnseenFinishedTurn` bookkeeping off the same `sessionStateChanged`.
 
+`ptyData` that arrives for a session whose pane hasn't mounted yet is held in `pty-router.ts`'s per-session
+pre-mount buffer and replayed on `registerTerminalSink`. That buffer is **bounded independently of** the
+backend ring (500 KB here vs the daemon's 5 MB/session, §6.2): it only has to cover the milliseconds before a
+pane mounts, and it is paid once per un-mounted session inside one renderer process. Both eviction paths
+matter — oldest-chunk-first, **and** tail-truncation of a *single* oversized chunk, because a daemon re-attach
+replays a whole 5 MB ring as one `ptyData` frame, which chunk eviction cannot bound.
+
 ```
 Keystroke:  xterm onData → octopusAPI.pty.input → ipcMain → pty.write
 Output:     pty onData → (batched, §6.5) → webContents.send('pty:data') → terminal.write   [not via store]
@@ -352,6 +359,20 @@ context). `terminal.write(data)` keeps running for hidden sessions so their buff
   **both** accelerated tiers and leave xterm on its built-in **DOM renderer** (spans + CSS, no canvas, no
   readback), which the X server / remoting layer blits cheaply — the fastest path when there is no real GPU.
   This auto-reverts to WebGL on a real-GPU host.
+- **Keep-alive × cheap-looking writes = a renderer-process kill.** Keep-alive multiplies every per-terminal
+  cost by the session count, so anything a TUI does *per frame* must be O(cheap) in **all** panes. xterm
+  option writes are not: `DomRenderer` (and the WebGL/Canvas renderers) subscribe to `onOptionChange`
+  **unfiltered**, and the handler rebuilds + reparses that terminal's entire theme stylesheet (~55 KB) and
+  forces two layouts. DECSET/DECRST **12** (cursor blink) *is* an option write in xterm, and Emacs' repaint
+  (`cnorm` then `cvvis`) emits two per frame — measured at 199 option events per 100 repaints. With 47
+  sessions restored (each replaying its daemon ring buffer at once) the main window's renderer RSS went
+  96 MB → 1.9 GB in ~12 s and Chromium aborted the process (`render-process-gone`, `reason: 'crashed'`,
+  `exitCode: 133` = SIGTRAP) — **no** JS error, V8 heap at 240/4096 MB, i.e. all of it Blink-side CSSOM /
+  layout churn, leaving a permanently white window. Mitigation: `cursor-blink-guard.ts` registers a parser
+  handler that swallows DECSET/DECRST 12 when mode 12 is the **sole** parameter (combined forms still fall
+  through so their other modes apply), which breaks the alternation and lets `OptionsService` dedupe the rest:
+  199 events → 1. General rule for this layer: **route around xterm option writes on hot paths; never add one
+  per frame.** The safety net for the class is §6.7's `render-process-gone` handler.
 
 Rejected: unmount + backend-buffered replay (perceptible 50–300 ms "pop" on switch, cursor/selection
 restore complexity). The serialize-and-replay path is kept available for a future durable-backend re-attach
@@ -707,6 +728,24 @@ sessions shows a modal dialog (move-to-main vs kill-sessions vs cancel) → `clo
 window* quits the app: it triggers the §6.6 graceful shutdown (persist everything, SIGHUP PTYs, checkpoint).
 A quit-in-progress (`before-quit`) sets an `isQuitting` flag that suppresses the secondary close dialog so a
 `Ctrl+Q` isn't blocked. `window-all-closed` no longer force-quits (secondary closes must not kill the app).
+
+**Renderer-crash visibility + recovery.** A renderer process that Chromium aborts is otherwise **completely
+silent**: Electron does not respawn it, `webContents.isDestroyed()` stays **false** afterwards, so the registry
+keeps `send`ing into a dead process and the user just sees a white window (that is exactly how the §5.3 option-
+write OOM presented). So every window wires `render-process-gone` (`wireCrashRecovery` + the pure
+`decideCrashRecovery`): log `reason`/`exitCode` with the window identity, **re-`register`** the window (which
+resets its entry to `{ready:false, pending:[]}` so nothing is sent to or queued for the dead renderer until the
+reload's `getState` re-arms it), then `webContents.reload()` — bounded at 2 auto-reloads per 60 s burst, after
+which a `['Reload','Quit']` dialog hands the decision to the user. Never `window.destroy()`: on a GPU-less VDI
+that tears the display surface out from under Chromium and exits the whole browser process. `unresponsive` /
+`responsive` / main-frame `did-fail-load` are logged too. A reload restores from `getState`; terminals reconnect
+but start with empty scrollback (the daemon already replayed its ring on the original attach) — strictly better
+than a white window, and re-attach-on-reload is the eventual fix (§6.2).
+
+Two related bounds, because this queue lives in the **main** process where a leak takes the whole app down: a
+destroyed `webContents` **drops** rather than buffers (it can never come back, and `markReady` discards the
+queue anyway), and the pre-hydration `pending[]` is capped (`PENDING_MAX_EVENTS`, oldest dropped first, warned
+once) — `ptyData` in the register→`getState` gap is unbounded in principle.
 
 ---
 
