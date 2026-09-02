@@ -248,12 +248,81 @@ def turn_open(data):
     return start > end
 
 
+def lock_path(sid):
+    return os.path.join(STATE_DIR, sid + ".lock")
+
+
+def acquire_lock(sid):
+    """Best-effort exclusive lock serializing the read-modify-write in write_state
+    across the CONCURRENT per-event subprocesses of one session (each Claude hook and
+    the statusline runs as its own \`python3 <script> ...\` process). Returns an open fd
+    to hold -- closing it releases the lock -- or None if locking is unavailable, in
+    which case the caller proceeds UNLOCKED exactly as before. A lock failure must
+    never break a Claude hook/statusline, so every failure degrades, never raises.
+
+    We lock a DEDICATED <id>.lock file, NOT the state json. write_state swaps the json's
+    inode on every write (os.replace), and flock binds to an inode: a lock held on the
+    json's fd would guard the orphaned OLD inode while the next process opens+locks the
+    NEW one, giving zero mutual exclusion. The lock file is created once and never
+    replaced or unlinked, so its inode is stable and every racer contends on the same
+    object. flock (not lockf / POSIX record locks, which are per-PID and drop on ANY fd
+    close) is deliberate: it is bound to the open file description and released by the
+    kernel on close AND on process exit/crash, so a killed hook leaves no stale lock and
+    a blocking LOCK_EX cannot wedge. The critical section is a few local-fs ops (sub-ms),
+    so blocking is fine. See DESIGN 9.1."""
+    try:
+        import fcntl
+    except ImportError:
+        return None  # non-Linux / no fcntl -> unlocked fallback (Linux is the target)
+    try:
+        fd = os.open(lock_path(sid), os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return fd
+    except OSError:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        return None
+
+
+def release_lock(fd):
+    """Release + close a lock fd from acquire_lock (no-op on None). Never raises."""
+    if fd is None:
+        return
+    try:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except (ImportError, OSError):
+        pass
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
 def write_state(sid, mutate):
     """Read-modify-write the session file atomically. Best-effort: never raises.
     A mutate that returns False aborts the write, leaving the file byte-for-byte
-    untouched (used to gate stray, out-of-turn hook observations)."""
+    untouched (used to gate stray, out-of-turn hook observations).
+
+    The WHOLE read -> mutate -> os.replace runs under a per-session flock (acquire_lock).
+    Each hook and the statusline fire as SEPARATE python3 subprocesses; when a session
+    drives multiple background subagents their events race on this read-modify-write.
+    os.replace makes each write atomic, but the read+mutate+replace as a whole is not:
+    unlocked, the second replace clobbers the first (a lost update). A lost subagent
+    increment under-counts the tally, so the deferred Stop finalizes while a child still
+    runs -> premature Idle/"done"; a lost decrement leaves the session stuck Working.
+    The lock is dropped in \`finally\`. delegate_statusline runs OUTSIDE it (in
+    run_statusline, after this returns), so a slow user statusline never stalls hooks."""
+    lock_fd = None
     try:
         os.makedirs(STATE_DIR, exist_ok=True)
+        lock_fd = acquire_lock(sid)
         data = read_state(sid)
         if mutate(data) is False:
             return
@@ -267,6 +336,8 @@ def write_state(sid, mutate):
         os.replace(tmp, state_path(sid))
     except OSError:
         pass
+    finally:
+        release_lock(lock_fd)
 
 
 def derive_transcript_state(path):

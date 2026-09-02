@@ -5,7 +5,7 @@
  * target host at /usr/bin/python3).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync, spawn } from 'node:child_process'
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -927,6 +927,91 @@ describe.skipIf(!hasPython)('octopus-claude-state.py', () => {
         prompt() // new turn
         expect(readState().subagent_ids).toEqual([])
       })
+    })
+  })
+
+  // Every Claude hook and the statusline runs as a SEPARATE python3 subprocess, and a
+  // session driving multiple background subagents fires them concurrently. write_state's
+  // read-modify-write is therefore guarded by a per-session flock (<id>.lock) so those
+  // subprocesses can't clobber each other's subagent-tally update (a lost increment made
+  // the deferred Stop finalize while a child still ran => premature Idle, the reported
+  // bug; a lost decrement left the session stuck Working). These tests spawn PARALLEL
+  // real python3 processes and assert no update is lost. Without the lock they are flaky
+  // (measured ~20% loss under load); with it they are deterministic. See DESIGN §9.1.
+  describe('concurrency: per-session file lock (no lost read-modify-write)', () => {
+    // Async sibling of `run`: spawn the script without blocking so calls overlap. Same
+    // clean env as `run` (PATH only + provided vars). Resolves when the process exits.
+    function runAsync(args: string[], input: string, env: Record<string, string> = {}): Promise<void> {
+      return new Promise((resolve, reject) => {
+        const child = spawn(PYTHON, [scriptPath, ...args], {
+          env: { PATH: process.env.PATH ?? '/usr/bin:/bin', ...env }
+        })
+        child.on('error', reject)
+        child.on('close', () => resolve())
+        child.stdin.end(input)
+      })
+    }
+    const env = { OCTOPUS_SESSION_ID: SID }
+
+    it('N parallel PreToolUse(Agent) launches do not lose an increment (anon path)', async () => {
+      run(['hook', 'UserPromptSubmit'], '{}', env)
+      const N = 30
+      await Promise.all(
+        Array.from({ length: N }, () =>
+          runAsync(['hook', 'PreToolUse'], JSON.stringify({ tool_name: 'Agent' }), env)
+        )
+      )
+      const data = readState()
+      expect(data.subagents).toBe(N) // every launch counted; none clobbered
+      expect(data.state).toBe('working')
+    })
+
+    it('N parallel SubagentStart with distinct ids all land in the id set', async () => {
+      run(['hook', 'UserPromptSubmit'], '{}', env)
+      const ids = Array.from({ length: 30 }, (_, i) => `a${i}`)
+      await Promise.all(
+        ids.map((id) => runAsync(['hook', 'SubagentStart'], JSON.stringify({ agent_id: id }), env))
+      )
+      // The promote path appends to a list under read-modify-write; a lost append would
+      // drop an id and under-count. All must be present.
+      expect((readState().subagent_ids as string[]).slice().sort()).toEqual([...ids].sort())
+      await Promise.all(
+        ids.map((id) => runAsync(['hook', 'SubagentStop'], JSON.stringify({ agent_id: id }), env))
+      )
+      expect(readState().subagent_ids).toEqual([])
+    })
+
+    it('parallel launches then parallel SubagentStops settle to count 0 / waiting', async () => {
+      run(['hook', 'UserPromptSubmit'], '{}', env)
+      const N = 30
+      await Promise.all(
+        Array.from({ length: N }, () =>
+          runAsync(['hook', 'PreToolUse'], JSON.stringify({ tool_name: 'Agent' }), env)
+        )
+      )
+      expect(readState().subagents).toBe(N)
+      await Promise.all(
+        Array.from({ length: N }, () => runAsync(['hook', 'SubagentStop'], '{}', env))
+      )
+      expect(readState().subagents).toBe(0) // no decrement lost (would stick Working)
+      run(['hook', 'Stop'], '{}', env)
+      expect(readState().state).toBe('waiting')
+    })
+
+    it('two background children racing their stops against the main Stop finalize to waiting (the reported bug)', async () => {
+      run(['hook', 'UserPromptSubmit'], '{}', env)
+      // Each child's own lifecycle is ordered (pre -> start -> stop); the two children
+      // and the main Stop race across processes. Every interleaving must converge to a
+      // finished session: count 0, waiting -- never a premature Idle with a child live.
+      const child = async (id: string): Promise<void> => {
+        await runAsync(['hook', 'PreToolUse'], JSON.stringify({ tool_name: 'Agent', agent_id: id }), env)
+        await runAsync(['hook', 'SubagentStart'], JSON.stringify({ agent_id: id }), env)
+        await runAsync(['hook', 'SubagentStop'], JSON.stringify({ agent_id: id }), env)
+      }
+      await Promise.all([child('a1'), child('a2'), runAsync(['hook', 'Stop'], '{}', env)])
+      const data = readState()
+      expect(data.state).toBe('waiting')
+      expect((data.subagent_ids as string[]).length + (data.subagents as number)).toBe(0)
     })
   })
 

@@ -806,7 +806,9 @@ It owns **all** state logic and runs in three modes, all driven from `~/.claude/
 **Per-session state file.** Keyed by `OCTOPUS_SESSION_ID` (the env var Octopus injects into every managed PTY,
 inherited by the hook/statusline subprocesses — so one global settings entry serves every session and every
 worktree, and the script is a silent no-op outside an Octopus PTY). Written atomically (temp + `os.replace`)
-to `<dataDir>/claude-state/<OCTOPUS_SESSION_ID>.json`:
+to `<dataDir>/claude-state/<OCTOPUS_SESSION_ID>.json`, and the whole read-modify-write is serialized per session
+by an advisory `flock` on a stable `<OCTOPUS_SESSION_ID>.lock` file (see the lost-update note below — without it
+the concurrent hook/statusline subprocesses of one session race and drop subagent-counter updates):
 
 ```
 { state, reason, updated_at,
@@ -1209,11 +1211,23 @@ without a richer signal (e.g. an Octopus MCP server, deferred in §9.2). They ar
   `subagents/agent-*.jsonl` files and the `statusline` `transcript_path` names only the main transcript, so a
   subagent's own dangling `tool_use` never appears there; `derive_transcript_state` additionally skips
   `isSidechain` records, so even a future version that inlines sidechains into the main transcript stays correct.
-- **Lost-update race between the hook and statusline processes.** The hook and statusline run as independent OS
-  processes doing read-modify-write on the same `<id>.json`; `os.replace` makes each *swap* atomic but not the
-  read-modify-write *pair*, so a sufficiently tight interleave can drop one observation (e.g. a hook write
-  clobbered by a statusline that read the pre-hook file). Low-probability and self-healing (the next write of
-  either kind re-converges), accepted as a documented risk rather than serialized with a lock.
+- **Lost-update race between the hook and statusline processes (resolved).** Every hook and the statusline run
+  as independent OS processes doing read-modify-write on the same `<id>.json`; `os.replace` makes each *swap*
+  atomic but not the read-modify-write *pair*. Left unserialized this was **not** the low-probability,
+  self-healing risk once assumed: when a session drives **multiple background subagents**, their `PreToolUse` /
+  `SubagentStart` / `SubagentStop` / `Stop` events fire as concurrent subprocesses and clobber each other's
+  subagent-tally update (~20% loss under load, reproduced). A lost *increment* under-counts the tally so the
+  deferred-Stop finalizer (`subagent_count == 0 && stop_deferred`) fires while a child still runs — the session
+  wrongly flashes Idle/"done"; a lost *decrement* leaves it stuck Working. `write_state` now serializes the entire
+  read → mutate → `os.replace` under an exclusive advisory `flock` (§9.1). It locks a **dedicated `<id>.lock`
+  file**, never the json: `os.replace` swaps the json's inode and `flock` binds to an inode, so a lock on the
+  json's fd would guard the orphaned old inode while the next process locks the new one (no mutual exclusion); the
+  lock file is created once and never replaced or unlinked, so its inode is stable and all racers contend on it.
+  `flock` (not POSIX record locks) releases on close **and** on process exit/crash, so a killed hook leaves no
+  stale lock. The statusline's delegation to the user's original command stays **outside** the lock (it runs after
+  `write_state` returns), so a slow user statusline never stalls another session's hooks. If `fcntl` is
+  unavailable (non-Linux) or the lock can't be taken, it degrades to the prior unlocked behavior — never failing
+  the hook. Covered by concurrency tests that spawn parallel real `python3` processes.
 - **Silent degradation to `Unknown`.** Every hook is `… 2>/dev/null || true` and the bridge swallows all write
   errors (§9.2), so any of: `python3` absent from PATH, `OCTOPUS_SESSION_ID` not surviving into the hook
   subprocess env, or a Claude version renaming an event / changing the `transcript_path`/`stop_reason` payload
