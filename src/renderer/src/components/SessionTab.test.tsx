@@ -101,7 +101,9 @@ describe('<SessionTab> context menu', () => {
     renderTab({ resolveCwd })
     openMenu()
     await waitFor(() => expect(resolveCwd).toHaveBeenCalled())
-    expect(screen.getByRole('menuitem', { name: 'New terminal from this directory' })).toBeDisabled()
+    expect(
+      screen.getByRole('menuitem', { name: 'New terminal from this directory' })
+    ).toBeDisabled()
   })
 
   it('"Rename tab" enters inline edit mode', () => {

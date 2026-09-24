@@ -245,7 +245,9 @@ describe('<ProgressPanel>', () => {
     expect(rowIconLabel('Alpha')).toBe('Working')
     // A pure session state flip (no hasUnseenFinishedTurn/tasks change) must re-render the row.
     act(() => {
-      useStore.getState().applyEvent({ type: 'sessionStateChanged', sessionId: 's1', state: 'blocked' })
+      useStore
+        .getState()
+        .applyEvent({ type: 'sessionStateChanged', sessionId: 's1', state: 'blocked' })
     })
     expect(rowIconLabel('Alpha')).toBe('Needs input')
   })

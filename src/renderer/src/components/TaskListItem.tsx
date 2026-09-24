@@ -69,7 +69,9 @@ export function TaskListItem({
         onClick={onActivate}
         style={rowStyle}
       >
-        <span style={{ display: 'inline-flex', width: 16, justifyContent: 'center', marginRight: 6 }}>
+        <span
+          style={{ display: 'inline-flex', width: 16, justifyContent: 'center', marginRight: 6 }}
+        >
           <StatusIcon display={display} />
         </span>
         <EditableLabel

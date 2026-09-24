@@ -756,7 +756,9 @@ describe.skipIf(!hasPython)('octopus-claude-state.py', () => {
         run(['hook', 'Stop'], '{}', { OCTOPUS_SESSION_ID: SID })
       }
       const pre = (tool: string): void => {
-        run(['hook', 'PreToolUse'], JSON.stringify({ tool_name: tool }), { OCTOPUS_SESSION_ID: SID })
+        run(['hook', 'PreToolUse'], JSON.stringify({ tool_name: tool }), {
+          OCTOPUS_SESSION_ID: SID
+        })
       }
 
       it('SubagentStart tracks by agent_id and forces working; SubagentStop clears it', () => {
@@ -941,7 +943,11 @@ describe.skipIf(!hasPython)('octopus-claude-state.py', () => {
   describe('concurrency: per-session file lock (no lost read-modify-write)', () => {
     // Async sibling of `run`: spawn the script without blocking so calls overlap. Same
     // clean env as `run` (PATH only + provided vars). Resolves when the process exits.
-    function runAsync(args: string[], input: string, env: Record<string, string> = {}): Promise<void> {
+    function runAsync(
+      args: string[],
+      input: string,
+      env: Record<string, string> = {}
+    ): Promise<void> {
       return new Promise((resolve, reject) => {
         const child = spawn(PYTHON, [scriptPath, ...args], {
           env: { PATH: process.env.PATH ?? '/usr/bin:/bin', ...env }
@@ -1004,7 +1010,11 @@ describe.skipIf(!hasPython)('octopus-claude-state.py', () => {
       // and the main Stop race across processes. Every interleaving must converge to a
       // finished session: count 0, waiting -- never a premature Idle with a child live.
       const child = async (id: string): Promise<void> => {
-        await runAsync(['hook', 'PreToolUse'], JSON.stringify({ tool_name: 'Agent', agent_id: id }), env)
+        await runAsync(
+          ['hook', 'PreToolUse'],
+          JSON.stringify({ tool_name: 'Agent', agent_id: id }),
+          env
+        )
         await runAsync(['hook', 'SubagentStart'], JSON.stringify({ agent_id: id }), env)
         await runAsync(['hook', 'SubagentStop'], JSON.stringify({ agent_id: id }), env)
       }

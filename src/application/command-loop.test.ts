@@ -130,7 +130,11 @@ describe('CommandLoop error translation (§7)', () => {
 
 /** Two restored Ready tasks, each with one fresh `Created` session (boot state). */
 function twoTaskSnapshot(): WorkspaceSnapshot {
-  const mkTask = (taskId: string, sessionId: string, position: number): WorkspaceSnapshot['tasks'][number] => ({
+  const mkTask = (
+    taskId: string,
+    sessionId: string,
+    position: number
+  ): WorkspaceSnapshot['tasks'][number] => ({
     id: asTaskId(taskId),
     name: taskId,
     worktree: {

@@ -38,59 +38,60 @@ export const EditableLabel = forwardRef<EditableLabelHandle, EditableLabelProps>
     const [draft, setDraft] = useState(value)
     const inputRef = useRef<HTMLInputElement>(null)
 
-  // Select the whole draft when the input appears so a rename overwrites cleanly.
-  useEffect(() => {
-    if (editing) inputRef.current?.select()
-  }, [editing])
+    // Select the whole draft when the input appears so a rename overwrites cleanly.
+    useEffect(() => {
+      if (editing) inputRef.current?.select()
+    }, [editing])
 
-  const begin = (): void => {
-    setDraft(value)
-    setEditing(true)
-  }
+    const begin = (): void => {
+      setDraft(value)
+      setEditing(true)
+    }
 
-  // Let a parent (e.g. the tab's "Rename" menu item) start editing imperatively.
-  useImperativeHandle(ref, () => ({ beginEdit: begin }), [value])
+    // Let a parent (e.g. the tab's "Rename" menu item) start editing imperatively.
+    useImperativeHandle(ref, () => ({ beginEdit: begin }), [value])
 
-  const commit = (): void => {
-    setEditing(false)
-    const next = draft.trim()
-    if (next !== '' && next !== value) onCommit(next)
-  }
+    const commit = (): void => {
+      setEditing(false)
+      const next = draft.trim()
+      if (next !== '' && next !== value) onCommit(next)
+    }
 
-  const cancel = (): void => setEditing(false)
+    const cancel = (): void => setEditing(false)
 
-  if (editing) {
+    if (editing) {
+      return (
+        <input
+          ref={inputRef}
+          aria-label={editAriaLabel}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={cancel}
+          onKeyDown={(e) => {
+            // Keep the chord off the terminal / global shortcuts while editing.
+            e.stopPropagation()
+            if (e.key === 'Enter') commit()
+            else if (e.key === 'Escape') cancel()
+          }}
+          onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+          style={{
+            font: 'inherit',
+            color: 'inherit',
+            padding: '0 2px',
+            background: 'var(--bg-input)',
+            border: '1px solid var(--accent)',
+            borderRadius: 'var(--radius-sm)',
+            ...style
+          }}
+        />
+      )
+    }
+
     return (
-      <input
-        ref={inputRef}
-        aria-label={editAriaLabel}
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={cancel}
-        onKeyDown={(e) => {
-          // Keep the chord off the terminal / global shortcuts while editing.
-          e.stopPropagation()
-          if (e.key === 'Enter') commit()
-          else if (e.key === 'Escape') cancel()
-        }}
-        onClick={(e) => e.stopPropagation()}
-        onDoubleClick={(e) => e.stopPropagation()}
-        style={{
-          font: 'inherit',
-          color: 'inherit',
-          padding: '0 2px',
-          background: 'var(--bg-input)',
-          border: '1px solid var(--accent)',
-          borderRadius: 'var(--radius-sm)',
-          ...style
-        }}
-      />
+      <span onDoubleClick={begin} style={style}>
+        {value}
+      </span>
     )
   }
-
-  return (
-    <span onDoubleClick={begin} style={style}>
-      {value}
-    </span>
-  )
-})
+)

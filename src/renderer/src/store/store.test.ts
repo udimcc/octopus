@@ -782,7 +782,11 @@ describe('ready-for-review (§9.5)', () => {
     d = setState(d, 's2', 'working') // Claude resumed
     expect(d.hasUnseenFinishedTurn.s2).toBeUndefined() // defense-in-depth clear
     expect(
-      sessionDisplayState(d.sessions.s2, d.hasUnseenFinishedTurn.s2 === true, isSessionFocused(d, 's2'))
+      sessionDisplayState(
+        d.sessions.s2,
+        d.hasUnseenFinishedTurn.s2 === true,
+        isSessionFocused(d, 's2')
+      )
     ).toBe('working')
     expect(taskDisplayState(d, 't1')).toBe('working')
   })

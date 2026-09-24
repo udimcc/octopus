@@ -20,7 +20,10 @@ async function seedWindowWithTwoSessions(): Promise<
   const taskId = asTaskId('task-1')
   await openSession(fd.deps, { taskId })
   await openSession(fd.deps, { taskId })
-  const sessionIds = fd.workspace.task(taskId)!.sessions().map((s) => s.id)
+  const sessionIds = fd.workspace
+    .task(taskId)!
+    .sessions()
+    .map((s) => s.id)
 
   const windowId = createWindow(fd.deps, { role: 'secondary' })
   for (const id of sessionIds) {
@@ -65,9 +68,12 @@ describe('closeWindow (§3.7, §6.7)', () => {
     }
     expect(runtimes.every((r) => r.stopped && r.disposed)).toBe(true)
     expect(fd.persistence.deletedSessions.sort()).toEqual([...fd.sessionIds].sort())
-    expect(fd.bus.ofType('sessionClosed').map((e) => e.sessionId).sort()).toEqual(
-      [...fd.sessionIds].sort()
-    )
+    expect(
+      fd.bus
+        .ofType('sessionClosed')
+        .map((e) => e.sessionId)
+        .sort()
+    ).toEqual([...fd.sessionIds].sort())
 
     expect(fd.persistence.windows.has(fd.windowId)).toBe(false)
     expect(fd.bus.ofType('windowClosed').map((e) => e.windowId)).toEqual([fd.windowId])

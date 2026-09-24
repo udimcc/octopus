@@ -28,7 +28,9 @@ describe('moveSessionToWindow (§3.7, §6.7, I18)', () => {
     const session = fd.workspace.task(fd.taskId)!.session(fd.sessionId)!
     expect(session.windowId).toBe(win)
     // The assignment is persisted so it survives a restart (§6.3).
-    expect(fd.persistence.upsertedSessions.some((s) => s.id === fd.sessionId && s.windowId === win)).toBe(true)
+    expect(
+      fd.persistence.upsertedSessions.some((s) => s.id === fd.sessionId && s.windowId === win)
+    ).toBe(true)
 
     const moved = fd.bus.ofType('sessionMovedToWindow')
     expect(moved).toHaveLength(1)
@@ -72,7 +74,10 @@ describe('moveSessionToWindow (§3.7, §6.7, I18)', () => {
   it('throws for an unknown session', () => {
     const { deps } = makeDeps()
     expect(() =>
-      moveSessionToWindow(deps, { sessionId: asSessionId('ghost'), targetWindowId: asWindowId('win-2') })
+      moveSessionToWindow(deps, {
+        sessionId: asSessionId('ghost'),
+        targetWindowId: asWindowId('win-2')
+      })
     ).toThrow(InvariantViolationError)
   })
 })

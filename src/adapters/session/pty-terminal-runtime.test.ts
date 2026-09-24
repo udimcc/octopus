@@ -261,7 +261,6 @@ describe('PtyTerminalRuntime spontaneous exit vs user stop (§3.6/§6.1)', () =>
     expect(h.fakePty.exitDisposed).toBe(true)
     expect(h.fakePty.kills).toEqual(['SIGKILL'])
   })
-
 })
 
 describe('PtyTerminalRuntime.currentCwd (§6.1, "new terminal here")', () => {

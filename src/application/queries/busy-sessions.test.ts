@@ -13,13 +13,24 @@ function makeWorkspace(): Workspace {
 }
 
 function addTask(ws: Workspace, id: string): Task {
-  const task = Task.create({ id: asTaskId(id), name: id, position: ws.tasks().length, createdAt: 1 })
+  const task = Task.create({
+    id: asTaskId(id),
+    name: id,
+    position: ws.tasks().length,
+    createdAt: 1
+  })
   ws.addTask(task)
   return task
 }
 
 /** Add a Running session in the given evaluated state to `task`. */
-function addRunning(task: Task, taskId: string, id: string, state: SessionState, order = 0): Session {
+function addRunning(
+  task: Task,
+  taskId: string,
+  id: string,
+  state: SessionState,
+  order = 0
+): Session {
   const s = Session.create({
     id: asSessionId(id),
     taskId: asTaskId(taskId) as TaskId,

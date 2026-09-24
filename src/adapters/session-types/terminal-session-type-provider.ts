@@ -18,10 +18,7 @@ import type {
   SessionRuntime,
   SessionRuntimeContext
 } from '../../ports/session-runtime'
-import {
-  Capability,
-  type SessionTypeProvider
-} from '../../ports/session-type-provider'
+import { Capability, type SessionTypeProvider } from '../../ports/session-type-provider'
 
 export const TERMINAL_TYPE_ID: TypeId = asTypeId('terminal')
 

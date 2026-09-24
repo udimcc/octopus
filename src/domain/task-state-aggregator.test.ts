@@ -46,7 +46,11 @@ describe('worstStatusWins (DESIGN §3.4)', () => {
   it('ignores Unknown sessions when a known state is present (transparency)', () => {
     // A blocked build is not masked by an un-evaluated (Unknown) terminal.
     expect(
-      worstStatusWins.aggregate([SessionState.Unknown, SessionState.NeedsInput, SessionState.Unknown])
+      worstStatusWins.aggregate([
+        SessionState.Unknown,
+        SessionState.NeedsInput,
+        SessionState.Unknown
+      ])
     ).toBe(TaskState.NeedsInput)
   })
 })

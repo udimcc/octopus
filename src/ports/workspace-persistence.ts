@@ -20,7 +20,12 @@ import type { WorkspaceSnapshot, TaskSnapshot, SessionSnapshot } from '../domain
 export interface WindowRecord {
   readonly id: WindowId
   readonly role: 'main' | 'secondary'
-  readonly bounds: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
+  readonly bounds: {
+    readonly x: number
+    readonly y: number
+    readonly width: number
+    readonly height: number
+  }
   readonly createdAt: number
 }
 

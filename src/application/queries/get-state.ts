@@ -46,15 +46,13 @@ export interface AppStateView {
 export function getState(deps: AppDependencies): AppStateView {
   const workspace = deps.workspace.toSnapshot(deps.aggregator)
 
-  const sessionTypes: SessionTypeView[] = deps.registry
-    .available(deps.currentVersion)
-    .map((p) => ({
-      typeId: p.typeId,
-      displayName: p.displayName,
-      icon: p.icon,
-      availableFromVersion: p.availableFromVersion,
-      configSchema: p.configSchema
-    }))
+  const sessionTypes: SessionTypeView[] = deps.registry.available(deps.currentVersion).map((p) => ({
+    typeId: p.typeId,
+    displayName: p.displayName,
+    icon: p.icon,
+    availableFromVersion: p.availableFromVersion,
+    configSchema: p.configSchema
+  }))
 
   return {
     workspace,

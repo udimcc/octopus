@@ -133,14 +133,16 @@ function hasOctopusEntry(groups: HookGroup[]): boolean {
 
 /** Drop any Octopus-tagged command entries (and now-empty groups) from an event array. */
 function stripOctopusEntries(groups: HookGroup[]): HookGroup[] {
-  return groups
-    .map((g) => ({
-      ...g,
-      hooks: (g.hooks ?? []).filter((h) => !isOctopusCommand(h.command))
-    }))
-    // Keep a group only if it still has hooks OR carried no hooks array to begin with
-    // (a user group we shouldn't have touched — preserve verbatim shape).
-    .filter((g) => (g.hooks && g.hooks.length > 0) || g.hooks === undefined)
+  return (
+    groups
+      .map((g) => ({
+        ...g,
+        hooks: (g.hooks ?? []).filter((h) => !isOctopusCommand(h.command))
+      }))
+      // Keep a group only if it still has hooks OR carried no hooks array to begin with
+      // (a user group we shouldn't have touched — preserve verbatim shape).
+      .filter((g) => (g.hooks && g.hooks.length > 0) || g.hooks === undefined)
+  )
 }
 
 /**

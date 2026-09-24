@@ -222,7 +222,7 @@ describe('useKeyboardShortcuts (§5.4 — Shift-gated)', () => {
     expect(vi.mocked(window.octopusAPI.sessions.switch).mock.calls.length).toBe(callsBefore)
   })
 
-  it('cycles across windows GROUPED by window: main\'s tabs, then win-2\'s, then wraps (§5.4)', () => {
+  it("cycles across windows GROUPED by window: main's tabs, then win-2's, then wraps (§5.4)", () => {
     // The user's scenario: window `main` hosts T1, T3; window `win-2` hosts T2. Global
     // tab order interleaves them ([s1, s2, s3]) but cycling groups by window rank, so the
     // walk is s1 → s3 (main's tabs) → s2 (win-2) → wrap → s1.
@@ -248,7 +248,7 @@ describe('useKeyboardShortcuts (§5.4 — Shift-gated)', () => {
     expect(window.octopusAPI.sessions.switch).toHaveBeenLastCalledWith({ sessionId: 's1' }) // wrapped
   })
 
-  it('wraps only after the last window\'s tabs, not within a single window', () => {
+  it("wraps only after the last window's tabs, not within a single window", () => {
     const t = task('t1', {
       sessions: [
         session('s1', { windowId: 'main' }),

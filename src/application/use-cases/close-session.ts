@@ -62,7 +62,11 @@ export async function closeSession(deps: AppDependencies, input: CloseSessionInp
 }
 
 /** Remove the session from its task, delete its row, and announce the close. */
-function finishClose(deps: AppDependencies, task: Task, sessionId: CloseSessionInput['sessionId']): void {
+function finishClose(
+  deps: AppDependencies,
+  task: Task,
+  sessionId: CloseSessionInput['sessionId']
+): void {
   const taskId = task.id
   task.removeSession(sessionId)
 

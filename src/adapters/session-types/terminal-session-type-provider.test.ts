@@ -2,7 +2,11 @@ import { describe, it, expect } from 'vitest'
 import { TerminalSessionTypeProvider, TERMINAL_TYPE_ID } from './terminal-session-type-provider'
 import { InMemorySessionTypeRegistry } from './session-type-registry'
 import { Capability } from '../../ports/session-type-provider'
-import type { SessionManager, SessionRuntime, SessionRuntimeContext } from '../../ports/session-runtime'
+import type {
+  SessionManager,
+  SessionRuntime,
+  SessionRuntimeContext
+} from '../../ports/session-runtime'
 import { asTypeId } from '../../domain/ids'
 
 describe('TerminalSessionTypeProvider (§8, §9)', () => {
@@ -61,8 +65,11 @@ describe('InMemorySessionTypeRegistry (§8, §5.4)', () => {
       createRuntime: () => ({}) as SessionRuntime
     })
     expect(reg.available(1).map((p) => p.typeId)).toEqual([TERMINAL_TYPE_ID])
-    expect(reg.available(3).map((p) => p.typeId).sort()).toEqual(
-      [TERMINAL_TYPE_ID, asTypeId('jenkins')].sort()
-    )
+    expect(
+      reg
+        .available(3)
+        .map((p) => p.typeId)
+        .sort()
+    ).toEqual([TERMINAL_TYPE_ID, asTypeId('jenkins')].sort())
   })
 })

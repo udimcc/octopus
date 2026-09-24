@@ -225,7 +225,11 @@ describe('DaemonClient', () => {
 
   it('waits for the retired daemon to die before relaunching', async () => {
     // Alive on the first two probes, then gone — the relaunch must not race ahead.
-    const isAliveFn = vi.fn().mockReturnValueOnce(true).mockReturnValueOnce(true).mockReturnValue(false)
+    const isAliveFn = vi
+      .fn()
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(true)
+      .mockReturnValue(false)
     const h = makeClient({ isAliveFn })
     const p = h.client.ensureReady()
     h.sockets[0].emit('connect')

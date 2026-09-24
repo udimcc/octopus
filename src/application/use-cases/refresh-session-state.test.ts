@@ -18,8 +18,6 @@ describe('refreshSessionState (§5.4 R1, §9.6)', () => {
 
   it('is a no-op when no watcher sink is wired (detection opted out)', () => {
     const { deps } = makeDeps() // refreshClaudeState left undefined
-    expect(() =>
-      refreshSessionState(deps, { sessionId: asSessionId('s1') })
-    ).not.toThrow()
+    expect(() => refreshSessionState(deps, { sessionId: asSessionId('s1') })).not.toThrow()
   })
 })

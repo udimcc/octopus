@@ -71,7 +71,12 @@ describe('taskToRow (§6.3)', () => {
         worktree: {
           path: '/home/u/project',
           managed: false,
-          provisionedBy: { script: 'adopt', args: [], repoRoot: '/home/u/project', provisionedAt: 5 }
+          provisionedBy: {
+            script: 'adopt',
+            args: [],
+            repoRoot: '/home/u/project',
+            provisionedAt: 5
+          }
         }
       })
     )
@@ -286,7 +291,9 @@ describe('round-trip (write then read, minus live state — I13)', () => {
     expect(restored.worktree?.path).toBe(original.worktree!.path)
     expect(restored.worktree?.branch).toBe(original.worktree!.branch)
     expect(restored.worktree?.baseRef).toBe(original.worktree!.baseRef)
-    expect(restored.worktree?.provisionedBy.repoRoot).toBe(original.worktree!.provisionedBy.repoRoot)
+    expect(restored.worktree?.provisionedBy.repoRoot).toBe(
+      original.worktree!.provisionedBy.repoRoot
+    )
     expect(restored.worktree?.managed).toBe(original.worktree!.managed)
     expect(restored.sessions[0].config).toEqual(original.sessions[0].config)
     expect(restored.sessions[0].title).toBe(original.sessions[0].title)

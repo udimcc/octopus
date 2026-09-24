@@ -94,7 +94,11 @@ describe('handleRuntimeExit — spontaneous death (§6.1, §6.6, I13)', () => {
     expect(taskEvents[0]).toMatchObject({ taskId: fd.taskId, state: 'blocked' })
 
     // I13: no row write on exit — the persisted definition columns are unchanged.
-    expect(fd.persistence.upsertedSessions.some((s) => s.id === fd.sessionId && s.lifecycle === SessionLifecycle.Exited)).toBe(false)
+    expect(
+      fd.persistence.upsertedSessions.some(
+        (s) => s.id === fd.sessionId && s.lifecycle === SessionLifecycle.Exited
+      )
+    ).toBe(false)
   })
 
   it('persists the captured scrollback before dispose and KEEPS the in-memory buffer (§6.6)', async () => {

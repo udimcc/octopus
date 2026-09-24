@@ -693,7 +693,10 @@ export function reduceEvent(
       // `sessionDisplayState` already ignores the flag off-idle, but clearing it here
       // keeps the store honest so no consumer (or the debug read-out) is misled.
       if (event.state !== 'waiting' && next.hasUnseenFinishedTurn[event.sessionId]) {
-        return { ...next, hasUnseenFinishedTurn: clearReady(next.hasUnseenFinishedTurn, event.sessionId) }
+        return {
+          ...next,
+          hasUnseenFinishedTurn: clearReady(next.hasUnseenFinishedTurn, event.sessionId)
+        }
       }
       return next
     }
@@ -806,8 +809,7 @@ export const useStore = create<Store>((set, get) => ({
 
   hydrate: (state) => set(hydrateData(state)),
 
-  applyEvent: (event) =>
-    set((data) => reduceEvent(data, event, notificationThrottle.admit)),
+  applyEvent: (event) => set((data) => reduceEvent(data, event, notificationThrottle.admit)),
 
   setActiveTask: (taskId) =>
     set((data) => {
@@ -817,7 +819,10 @@ export const useStore = create<Store>((set, get) => ({
       // focusing a task clears its globally-active session's ready-for-review flag (§9.5).
       const active = data.activeSessionByTask[taskId]
       if (!active) return { activeTaskId: taskId }
-      return { activeTaskId: taskId, hasUnseenFinishedTurn: clearReady(data.hasUnseenFinishedTurn, active) }
+      return {
+        activeTaskId: taskId,
+        hasUnseenFinishedTurn: clearReady(data.hasUnseenFinishedTurn, active)
+      }
     }),
 
   setActiveSession: (taskId, sessionId) =>

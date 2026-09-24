@@ -49,11 +49,7 @@ import {
   type SessionTypeProvider,
   type SessionTypeRegistry
 } from '../../ports/session-type-provider'
-import {
-  MapRuntimeRegistry,
-  type AppDependencies,
-  type ScrollbackBuffers
-} from '../dependencies'
+import { MapRuntimeRegistry, type AppDependencies, type ScrollbackBuffers } from '../dependencies'
 import type { StateLog, StateTransition } from '../../ports/state-log'
 import type { CreateTaskInput, CreateTaskFromNewInput } from '../commands'
 import { createAjvConfigValidator } from '../config-validator'

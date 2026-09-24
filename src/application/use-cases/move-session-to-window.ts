@@ -20,10 +20,7 @@ import type { MoveSessionToWindowInput } from '../commands'
 import { locateSession } from './locate-session'
 import { InvariantViolationError } from '../../domain/errors'
 
-export function moveSessionToWindow(
-  deps: AppDependencies,
-  input: MoveSessionToWindowInput
-): void {
+export function moveSessionToWindow(deps: AppDependencies, input: MoveSessionToWindowInput): void {
   const located = locateSession(deps.workspace, input.sessionId)
   if (!located) {
     throw new InvariantViolationError(`session ${input.sessionId} not found`)

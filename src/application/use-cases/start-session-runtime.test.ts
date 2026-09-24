@@ -15,10 +15,7 @@ import type { WorkspaceSnapshot } from '../../domain/snapshots'
 import type { SessionConfig } from '../../domain/session-config'
 
 /** One Ready task with one `Created` terminal session carrying `config`. */
-function snapshot(
-  path: string,
-  config: SessionConfig = { kind: 'terminal' }
-): WorkspaceSnapshot {
+function snapshot(path: string, config: SessionConfig = { kind: 'terminal' }): WorkspaceSnapshot {
   return {
     tasks: [
       {
