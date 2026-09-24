@@ -7,6 +7,7 @@ import {
 } from './window-registry'
 import { InMemoryEventBus } from '../adapters/event-bus/in-memory-event-bus'
 import { CHANNELS } from '../shared/ipc'
+import { OUTPUT_TAIL_MAX_BYTES } from '../shared/output-tail'
 import type { EventDTO } from '../shared/events'
 import { asTaskId, asSessionId, asWindowId } from '../domain/ids'
 
@@ -24,6 +25,14 @@ class FakeWebContents {
   as(): WebContents {
     return this as unknown as WebContents
   }
+}
+
+/** Concatenate the `ptyData` payloads a window received, in order. */
+function ptyOutput(sent: readonly EventDTO[]): string {
+  return sent
+    .filter((d) => d.type === 'ptyData')
+    .map((d) => (d as Extract<EventDTO, { type: 'ptyData' }>).data)
+    .join('')
 }
 
 const MAIN = asWindowId('main')
@@ -229,16 +238,80 @@ describe('createWindowRegistry routing (§6.7)', () => {
 
       // Never marked ready: everything queues. Publish one over the cap.
       for (let i = 0; i <= PENDING_MAX_EVENTS; i++) {
-        bus.publish({ type: 'ptyData', sessionId: asSessionId('s1'), data: `#${i}` })
+        bus.publish({ type: 'taskRenamed', taskId: asTaskId('t1'), name: `#${i}` })
       }
       registry.markReady(MAIN)
 
       expect(main.sent).toHaveLength(PENDING_MAX_EVENTS)
-      // The oldest was dropped, the newest survived — on overflow, recent output wins.
-      expect((main.sent[0] as { data: string }).data).toBe('#1')
-      expect((main.sent[PENDING_MAX_EVENTS - 1] as { data: string }).data).toBe(
+      // The oldest was dropped, the newest survived — on overflow, recent events win.
+      expect((main.sent[0] as { name: string }).name).toBe('#1')
+      expect((main.sent[PENDING_MAX_EVENTS - 1] as { name: string }).name).toBe(
         `#${PENDING_MAX_EVENTS}`
       )
+    })
+
+    /**
+     * REGRESSION (session restore after a VDI re-login): a restored session's FIRST event
+     * is the daemon's whole-ring replay, and everything after it is output xterm would
+     * have scrolled away. Counting events and dropping the oldest therefore threw away
+     * exactly the history the queue exists to deliver. `ptyData` is now held per session
+     * as a byte-bounded tail, so no volume of live output can evict the replay's head.
+     */
+    it('never lets live output push a session’s replayed history out of the queue', () => {
+      const bus = new InMemoryEventBus()
+      const registry = createWindowRegistry(bus, () => MAIN)
+      const main = new FakeWebContents()
+      registry.register(MAIN, main.as())
+
+      bus.publish({ type: 'ptyData', sessionId: asSessionId('s1'), data: 'REPLAYED-HISTORY\n' })
+      for (let i = 0; i <= PENDING_MAX_EVENTS * 2; i++) {
+        bus.publish({ type: 'ptyData', sessionId: asSessionId('s1'), data: `#${i}` })
+      }
+      registry.markReady(MAIN)
+
+      const output = ptyOutput(main.sent)
+      expect(output).toContain('REPLAYED-HISTORY')
+      expect(output).toContain(`#${PENDING_MAX_EVENTS * 2}`)
+    })
+
+    it('bounds per-session output by bytes, keeping the newest', () => {
+      const bus = new InMemoryEventBus()
+      const registry = createWindowRegistry(bus, () => MAIN)
+      const main = new FakeWebContents()
+      registry.register(MAIN, main.as())
+
+      bus.publish({
+        type: 'ptyData',
+        sessionId: asSessionId('s1'),
+        data: 'ANCIENT' + 'x'.repeat(OUTPUT_TAIL_MAX_BYTES) + 'NEWEST'
+      })
+      registry.markReady(MAIN)
+
+      const output = ptyOutput(main.sent)
+      expect(output).toHaveLength(OUTPUT_TAIL_MAX_BYTES)
+      expect(output.endsWith('NEWEST')).toBe(true)
+      expect(output.includes('ANCIENT')).toBe(false)
+    })
+
+    it('keeps each session’s output separate and in order', () => {
+      const bus = new InMemoryEventBus()
+      const registry = createWindowRegistry(bus, () => MAIN)
+      const main = new FakeWebContents()
+      registry.register(MAIN, main.as())
+
+      bus.publish({ type: 'ptyData', sessionId: asSessionId('s1'), data: 'a1' })
+      bus.publish({ type: 'ptyData', sessionId: asSessionId('s2'), data: 'b1' })
+      bus.publish({ type: 'ptyData', sessionId: asSessionId('s1'), data: 'a2' })
+      registry.markReady(MAIN)
+
+      const perSession = new Map<string, string>()
+      for (const dto of main.sent) {
+        if (dto.type !== 'ptyData') continue
+        const d = dto as { sessionId: string; data: string }
+        perSession.set(d.sessionId, (perSession.get(d.sessionId) ?? '') + d.data)
+      }
+      expect(perSession.get('s1')).toBe('a1a2')
+      expect(perSession.get('s2')).toBe('b1')
     })
 
     it('drops for a destroyed webContents instead of queueing forever', () => {

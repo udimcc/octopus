@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildPtyEnv, resolveShell } from './pty-env'
+import { buildPtyEnv, resolveShell, sessionScopedEnv } from './pty-env'
 
 const ctx = {
   taskId: 't1',
@@ -61,5 +61,41 @@ describe('resolveShell (§6.1)', () => {
   it('treats empty strings as unset (a blank setting never yields "")', () => {
     expect(resolveShell('', '', '')).toBe('/bin/bash')
     expect(resolveShell('', '/bin/fish', '')).toBe('/bin/fish')
+  })
+})
+
+/**
+ * REGRESSION: `octopusd` outlives a logout, so the env it forks children from can name a
+ * dead login session — `emacsclient -c`, `xdg-open` and agent-based pushes then fail in a
+ * shell that otherwise looks fine. The app is launched from the LIVE session, so its
+ * values are forwarded as a spawn env patch.
+ */
+describe("sessionScopedEnv (§6.1/§6.2 — a long-lived daemon's stale login session)", () => {
+  it('picks out the display/auth/bus/agent vars and nothing else', () => {
+    expect(
+      sessionScopedEnv({
+        PATH: '/usr/bin',
+        HOME: '/home/u',
+        LANG: 'en_US.UTF-8',
+        DISPLAY: ':104',
+        XAUTHORITY: '/run/user/1000/gdm/Xauthority',
+        XDG_SESSION_ID: '1185',
+        DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+        SSH_AUTH_SOCK: '/run/user/1000/keyring/ssh'
+      })
+    ).toEqual({
+      DISPLAY: ':104',
+      XAUTHORITY: '/run/user/1000/gdm/Xauthority',
+      XDG_SESSION_ID: '1185',
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+      SSH_AUTH_SOCK: '/run/user/1000/keyring/ssh'
+    })
+  })
+
+  it('omits absent and empty vars — a missing one means "no opinion", not "unset it"', () => {
+    expect(sessionScopedEnv({ DISPLAY: '', WAYLAND_DISPLAY: 'wayland-0' })).toEqual({
+      WAYLAND_DISPLAY: 'wayland-0'
+    })
+    expect(sessionScopedEnv({})).toEqual({})
   })
 })

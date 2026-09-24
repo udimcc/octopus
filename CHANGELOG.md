@@ -4,6 +4,36 @@ All notable changes to Octopus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Scrollback lost when reopening the app.** A restored session's first event is the
+  daemon's whole-buffer replay; both pre-hydration queues (main's per-window queue and
+  the renderer's pre-mount buffer) counted *events* and dropped the oldest on overflow,
+  so live output arriving before the terminal mounted evicted exactly the replayed
+  history they existed to deliver. Both now hold output per session as a byte-bounded
+  tail, so no volume of live output can push the history out.
+- **A re-attached session showing nothing until you press a key.** Programs that redraw
+  on demand (Claude Code, TUIs) had nothing to redraw *for* after a re-attach: the pane's
+  mount-time resize matched the size the PTY already had, and the kernel suppresses
+  `SIGWINCH` when the window size is unchanged. The first resize after a re-attach is now
+  bracketed (off-by-one row, then the real size ~50 ms later) so the foreground program
+  gets a real `SIGWINCH` and repaints itself.
+- **A re-attached full-screen program left in the wrong terminal modes.** A program's
+  one-time terminal setup (bracketed paste, alternate screen, keypad, mouse reporting)
+  scrolls out of the replay buffer long before a days-old session is re-attached, so
+  `emacsclient -nw` and friends came back with the emulator in the wrong modes — Enter
+  printed gibberish and `reset` was the only way out. The daemon now tracks the sticky
+  DEC private modes for each PTY's whole life and re-asserts them after the replay (the
+  screen switch last, so the history still lands in the normal buffer).
+- **Stale login-session environment in shells spawned after a logout.** `octopusd`
+  deliberately outlives login sessions and built each child's env from its own, so a
+  daemon started before a logout kept handing out the dead session's `DISPLAY`,
+  `XAUTHORITY`, `DBUS_SESSION_BUS_ADDRESS` and `SSH_AUTH_SOCK`. Those vars are now
+  overridden per spawn from the app's (current) environment. Already-running shells keep
+  the env they were forked with — a process's environment cannot be rewritten.
+
 ## [0.2.0]
 
 Adds live per-session status for Claude Code sessions and the surrounding

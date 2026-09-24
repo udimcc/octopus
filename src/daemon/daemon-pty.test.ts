@@ -197,6 +197,48 @@ describe('DaemonPty (§6.2)', () => {
     expect(second.data).toEqual(['onetwo'])
   })
 
+  /**
+   * REGRESSION (long-lived TUI across an app restart): the ring buffer is bounded, so a
+   * program's one-time terminal setup is gone long before the re-attach that needs it.
+   * A re-attach therefore re-asserts the sticky modes AFTER the replay — see
+   * `terminal-modes.ts`.
+   */
+  it('re-asserts the sticky terminal modes after the replay when asked', () => {
+    const h = makeDaemon({ bufferBytes: 16 })
+    const first = makeSink()
+    h.pty.attach(first.sink)
+    // A TUI's startup: alternate screen + application keys + bracketed paste...
+    emit(h.fake, '\x1b[?1049h\x1b[?1h\x1b=\x1b[?2004h')
+    // ...then enough output that the setup is evicted from the ring buffer.
+    emit(h.fake, 'z'.repeat(64))
+    h.pty.detach()
+
+    const second = makeSink()
+    h.pty.attach(second.sink, { restoreModes: true })
+
+    expect(second.data).toHaveLength(2)
+    expect(second.data[0]).not.toContain('\x1b[?1049h') // evicted, as in production
+    expect(second.data[1]).toBe('\x1b=\x1b[?1h\x1b[?2004h\x1b[?1049h')
+  })
+
+  it('does not re-assert modes on the attach that follows a spawn', () => {
+    const h = makeDaemon()
+    const client = makeSink()
+    emit(h.fake, '\x1b[?1049h')
+    // The spawn path passes no options: the program is writing its setup into a
+    // terminal that is already listening, so re-asserting would be a duplicate.
+    h.pty.attach(client.sink)
+    expect(client.data).toEqual(['\x1b[?1049h'])
+  })
+
+  it('emits no restore for a session that never changed a mode', () => {
+    const h = makeDaemon()
+    emit(h.fake, '$ ls\r\nfile-a\r\n')
+    const client = makeSink()
+    h.pty.attach(client.sink, { restoreModes: true })
+    expect(client.data).toEqual(['$ ls\r\nfile-a\r\n'])
+  })
+
   it('a spontaneous exit fires the sink onExit, flips alive, and records exitInfo', () => {
     const h = makeDaemon()
     const client = makeSink()

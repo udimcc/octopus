@@ -15,10 +15,18 @@
  * one is attached. On (re-)attach the buffer snapshot is replayed first, then live
  * output resumes — this is what carries a `vim`/Claude session across an app
  * restart intact (§6.2).
+ *
+ * RE-ATTACH is more than replay, though: the ring buffer is bounded, so a session
+ * running for days has long since evicted the one-time setup its program wrote at
+ * startup (alternate screen, application cursor keys, bracketed paste, mouse). A
+ * {@link TerminalModeTracker} follows those modes for the PTY's whole life — unbounded,
+ * being a few booleans — and `attach({ restoreModes: true })` re-asserts them after the
+ * replay, so the new terminal is the terminal the program thinks it has.
  */
 
 import { OutputBatcher } from '../shared/node/output-batcher'
 import { RingBuffer } from '../shared/node/ring-buffer'
+import { TerminalModeTracker } from './terminal-modes'
 
 /** A disposable listener registration (node-pty's IDisposable shape). */
 export interface DaemonPtyDisposable {
@@ -85,6 +93,7 @@ export class DaemonPty {
   private readonly pty: DaemonPtyProcess
   private readonly buffer: RingBuffer
   private readonly batcher: OutputBatcher
+  private readonly modes = new TerminalModeTracker()
   private readonly graceMs: number
   private readonly setTimer: (fn: () => void, ms: number) => unknown
   private readonly clearTimer: (h: unknown) => void
@@ -107,8 +116,10 @@ export class DaemonPty {
     this.clearTimer = opts.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>))
     this.buffer = new RingBuffer(opts.bufferBytes ?? DEFAULT_BUFFER_BYTES)
     this.batcher = new OutputBatcher((data) => {
-      // Retain for replay-on-attach, then push to a live client if attached.
+      // Retain for replay-on-attach, then push to a live client if attached. The mode
+      // tracker sees everything the ring buffer sees but never forgets it (§6.2).
       this.buffer.append(data)
+      this.modes.observe(data)
       this.sink?.onData(data)
     })
 
@@ -144,12 +155,24 @@ export class DaemonPty {
    * Attach a client: replay the retained buffer synchronously via the sink's
    * onData, then stream live output. Replaces any prior sink (one client at a time).
    * Returns whether the session is still alive.
+   *
+   * `restoreModes` is set by a RE-attach (a client adopting a session that outlived the
+   * previous client) and not by the attach that follows `spawn`, where the program is
+   * writing its setup into a terminal that is already listening. The restore lands
+   * AFTER the replay so the scrollback stays in the normal buffer even when the program
+   * is on the alternate screen — see `terminal-modes.ts`.
    */
-  attach(sink: DaemonPtySink): boolean {
+  attach(sink: DaemonPtySink, opts?: { readonly restoreModes?: boolean }): boolean {
     this.sink = sink
     const snapshot = this.buffer.snapshot()
     if (snapshot.length > 0) {
       sink.onData(snapshot)
+    }
+    if (opts?.restoreModes === true) {
+      const restore = this.modes.restoreSequence()
+      if (restore.length > 0) {
+        sink.onData(restore)
+      }
     }
     return !this.exited
   }

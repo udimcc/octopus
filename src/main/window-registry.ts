@@ -38,22 +38,35 @@ import type { EventBus, DomainEvent, Unsubscribe } from '../ports/event-bus'
 import type { EventDTO } from '../shared/events'
 import type { WindowId } from '../domain/ids'
 import { CHANNELS } from '../shared/ipc'
+import { OutputTail } from '../shared/output-tail'
 import { toEventDTO } from './dto-mappers'
 
 interface WindowEntry {
   readonly webContents: WebContents
   ready: boolean
   readonly pending: EventDTO[]
+  /**
+   * Pre-hydration `ptyData`, held per session as a byte-bounded tail rather than as
+   * events in `pending` — see {@link PENDING_MAX_EVENTS}.
+   */
+  readonly pendingOutput: Map<string, OutputTail>
   /** Set once we start dropping, so the warning is logged once per window, not per event. */
   overflowed: boolean
 }
 
 /**
- * Hard cap on a window's pre-hydration buffer. The window is only un-ready for the
- * milliseconds between `register` and its `getState`, but `ptyData` in that gap is
- * unbounded in principle (a daemon re-attach replays whole ring buffers), and this queue
- * lives in the MAIN process, where a leak takes the whole app down. Oldest events are
- * dropped first: on overflow the newest output is the output worth showing.
+ * Hard cap on a window's pre-hydration buffer of NON-output events. The window is only
+ * un-ready for the moments between `register` and its `getState`, and control events in
+ * that gap are few; oldest are dropped first if something pathological happens.
+ *
+ * `ptyData` is deliberately NOT counted here. Its volume is unbounded in principle (on
+ * daemon re-attach the backend replays a whole ring buffer per session) and this queue
+ * lives in the MAIN process, where a leak takes the whole app down — but bounding it by
+ * EVENT COUNT is worse than useless: it drops the oldest events, and the oldest event
+ * for a restored session is its irreplaceable replay, while everything after it is
+ * output xterm would have scrolled away anyway. So output goes into a per-session
+ * {@link OutputTail}, which bounds by bytes and keeps the newest, and the count cap
+ * can no longer be reached by a busy terminal at all.
  */
 export const PENDING_MAX_EVENTS = 2000
 
@@ -120,6 +133,16 @@ export function createWindowRegistry(
       return
     }
     if (!entry.ready) {
+      // Output accumulates per session, bounded by bytes; see PENDING_MAX_EVENTS.
+      if (dto.type === 'ptyData') {
+        let tail = entry.pendingOutput.get(dto.sessionId)
+        if (!tail) {
+          tail = new OutputTail()
+          entry.pendingOutput.set(dto.sessionId, tail)
+        }
+        tail.append(dto.data)
+        return
+      }
       entry.pending.push(dto)
       if (entry.pending.length > PENDING_MAX_EVENTS) {
         entry.pending.shift()
@@ -197,7 +220,13 @@ export function createWindowRegistry(
 
   return {
     register(windowId: WindowId, webContents: WebContents): void {
-      windows.set(windowId, { webContents, ready: false, pending: [], overflowed: false })
+      windows.set(windowId, {
+        webContents,
+        ready: false,
+        pending: [],
+        pendingOutput: new Map(),
+        overflowed: false
+      })
     },
     unregister(windowId: WindowId): void {
       windows.delete(windowId)
@@ -210,12 +239,23 @@ export function createWindowRegistry(
       entry.ready = true
       if (entry.webContents.isDestroyed()) {
         entry.pending.length = 0
+        entry.pendingOutput.clear()
         return
       }
       for (const dto of entry.pending) {
         entry.webContents.send(CHANNELS.event, dto)
       }
       entry.pending.length = 0
+      // Output after the control events: the renderer routes `ptyData` through the
+      // pty-router (§5.2), a path independent of the store reducers the others feed, so
+      // the relative order of the two streams doesn't matter — only per-session output
+      // order does, and that is preserved.
+      for (const [sessionId, tail] of entry.pendingOutput) {
+        for (const data of tail.drain()) {
+          entry.webContents.send(CHANNELS.event, { type: 'ptyData', sessionId, data })
+        }
+      }
+      entry.pendingOutput.clear()
     },
     sendTo(windowId: WindowId, dto: EventDTO): void {
       sendToWindow(windowId, dto)

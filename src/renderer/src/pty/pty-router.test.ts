@@ -150,7 +150,7 @@ describe('pty-router pre-mount ring buffer (§6.6 replay)', () => {
     expect(sink).toHaveBeenCalledWith('live')
   })
 
-  it('bounds the buffer at the byte cap, evicting oldest chunks first', () => {
+  it('bounds the buffer at the byte cap, discarding the OLDEST bytes first', () => {
     const bridge = fakeBridge()
     initEventRouting(vi.fn())
 
@@ -187,6 +187,31 @@ describe('pty-router pre-mount ring buffer (§6.6 replay)', () => {
     expect(replayed.length).toBe(REPLAY_BUFFER_MAX_BYTES)
     expect(replayed.endsWith('NEWEST')).toBe(true)
     expect(replayed.includes(head)).toBe(false)
+  })
+
+  /**
+   * REGRESSION (session restore after a VDI re-login): the daemon re-attach replay is a
+   * single multi-megabyte chunk that alone fills the cap, and `warmupSessions()` re-attaches
+   * every session BEFORE any window exists — so every replay sits in this buffer waiting for
+   * its pane. Under the old chunk-granular eviction, ONE further byte of live output (a
+   * Claude repaint, a prompt redraw) evicted the whole replay and the terminal came back
+   * blank. The bound must be on bytes: the head chunk is trimmed, not dropped.
+   */
+  it('keeps the replayed history when live output arrives before the pane mounts', () => {
+    const bridge = fakeBridge()
+    initEventRouting(vi.fn())
+
+    const replay = 'HISTORY\n' + 'x'.repeat(REPLAY_BUFFER_MAX_BYTES * 10) + 'TAIL-MARKER'
+    bridge.emit({ type: 'ptyData', sessionId: 's1', data: replay })
+    bridge.emit({ type: 'ptyData', sessionId: 's1', data: 'L' })
+
+    const chunks: string[] = []
+    registerTerminalSink('s1', (d) => chunks.push(d))
+
+    const replayed = chunks.join('')
+    expect(replayed.length).toBe(REPLAY_BUFFER_MAX_BYTES)
+    expect(replayed).toContain('TAIL-MARKER')
+    expect(replayed.endsWith('TAIL-MARKERL')).toBe(true)
   })
 
   it('keeps a single chunk that fits intact — no truncation at the boundary', () => {

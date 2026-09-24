@@ -44,6 +44,21 @@
  *   session's state file (keyed by OCTOPUS_SESSION_ID) and a single app-side watcher
  *   feeds the Application. A v2 daemon would still emit now-unknown `state` frames;
  *   bumping forces the handshake to retire it and relaunch a fresh (v3) daemon.
+ *
+ * ## Deliberately NOT bumped: re-attach mode restore
+ * `TerminalModeTracker` (`daemon/terminal-modes.ts`) makes a daemon re-assert a
+ * program's sticky terminal modes on `attach`. That is a behavior addition, which the
+ * rule above would have bumped — but it changes NO message, frame or field: a v3
+ * daemon serving a v3 client simply doesn't restore modes, exactly as before. Bumping
+ * would retire the running daemon and KILL every live PTY with it, which for a fix
+ * whose whole purpose is "come back to your sessions as they were" is a worse outcome
+ * than the improvement arriving whenever the daemon next restarts. The tracker only
+ * knows about PTYs it spawned itself anyway, so an in-place upgrade could not have
+ * helped the already-running sessions regardless.
+ *
+ * The rule stands for anything that touches the wire: a new/changed/removed message,
+ * frame kind or field MUST bump, because there the stale daemon is not merely quiet
+ * but wrong.
  */
 export const PROTOCOL_VERSION = 3
 
@@ -100,7 +115,12 @@ export type ClientMessage =
   | { readonly type: 'spawn'; readonly requestId: number; readonly params: SpawnParams }
   | { readonly type: 'attach'; readonly requestId: number; readonly sessionId: string }
   | { readonly type: 'detach'; readonly sessionId: string }
-  | { readonly type: 'resize'; readonly sessionId: string; readonly cols: number; readonly rows: number }
+  | {
+      readonly type: 'resize'
+      readonly sessionId: string
+      readonly cols: number
+      readonly rows: number
+    }
   | { readonly type: 'close'; readonly requestId: number; readonly sessionId: string }
   | { readonly type: 'shutdown'; readonly requestId: number }
 
@@ -120,14 +140,38 @@ export type DaemonMessage =
        */
       readonly pid?: number
     }
-  | { readonly type: 'sessions'; readonly requestId: number; readonly sessions: readonly DaemonSessionInfo[] }
-  | { readonly type: 'spawned'; readonly requestId: number; readonly sessionId: string; readonly pid: number }
-  | { readonly type: 'spawnError'; readonly requestId: number; readonly sessionId: string; readonly message: string }
-  | { readonly type: 'attached'; readonly requestId: number; readonly sessionId: string; readonly alive: boolean }
+  | {
+      readonly type: 'sessions'
+      readonly requestId: number
+      readonly sessions: readonly DaemonSessionInfo[]
+    }
+  | {
+      readonly type: 'spawned'
+      readonly requestId: number
+      readonly sessionId: string
+      readonly pid: number
+    }
+  | {
+      readonly type: 'spawnError'
+      readonly requestId: number
+      readonly sessionId: string
+      readonly message: string
+    }
+  | {
+      readonly type: 'attached'
+      readonly requestId: number
+      readonly sessionId: string
+      readonly alive: boolean
+    }
   | { readonly type: 'closed'; readonly requestId: number; readonly sessionId: string }
   | { readonly type: 'shutdownAck'; readonly requestId: number; readonly accepted: boolean }
   /** Spontaneous process death (NOT caused by a `close`); routes to `ctx.onExit`. */
-  | { readonly type: 'exit'; readonly sessionId: string; readonly exitCode: number; readonly signal?: number }
+  | {
+      readonly type: 'exit'
+      readonly sessionId: string
+      readonly exitCode: number
+      readonly signal?: number
+    }
 
 /** Any JSON control-frame message, either direction. */
 export type ControlMessage = ClientMessage | DaemonMessage

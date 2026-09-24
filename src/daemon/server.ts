@@ -152,7 +152,11 @@ export class DaemonServer {
         return
 
       case 'listSessions':
-        this.send(conn, { type: 'sessions', requestId: msg.requestId, sessions: this.registry.list() })
+        this.send(conn, {
+          type: 'sessions',
+          requestId: msg.requestId,
+          sessions: this.registry.list()
+        })
         return
 
       case 'spawn': {
@@ -173,7 +177,9 @@ export class DaemonServer {
       }
 
       case 'attach': {
-        const alive = this.bindSink(conn, msg.sessionId)
+        // A re-attach adopts a program that configured a terminal which no longer
+        // exists, so its sticky modes are re-asserted after the replay (§6.2).
+        const alive = this.bindSink(conn, msg.sessionId, { restoreModes: true })
         this.send(conn, {
           type: 'attached',
           requestId: msg.requestId,
@@ -216,21 +222,28 @@ export class DaemonServer {
    * Point a session's output/exit at this connection and record the attachment.
    * Returns whether the session exists + is alive (undefined = no such session).
    */
-  private bindSink(conn: Conn, sessionId: string): boolean | undefined {
+  private bindSink(
+    conn: Conn,
+    sessionId: string,
+    opts?: { readonly restoreModes?: boolean }
+  ): boolean | undefined {
     const dpty = this.registry.get(sessionId)
     if (!dpty) {
       return undefined
     }
     conn.attached.add(sessionId)
-    return dpty.attach({
-      onData: (data) => conn.socket.write(encodeData(sessionId, data)),
-      onExit: (exitCode, signal) => {
-        conn.attached.delete(sessionId)
-        this.send(conn, { type: 'exit', sessionId, exitCode, signal })
-        this.registry.forget(sessionId)
-        this.onSessionGone?.(sessionId)
-        this.onActivity?.()
-      }
-    })
+    return dpty.attach(
+      {
+        onData: (data) => conn.socket.write(encodeData(sessionId, data)),
+        onExit: (exitCode, signal) => {
+          conn.attached.delete(sessionId)
+          this.send(conn, { type: 'exit', sessionId, exitCode, signal })
+          this.registry.forget(sessionId)
+          this.onSessionGone?.(sessionId)
+          this.onActivity?.()
+        }
+      },
+      opts
+    )
   }
 }

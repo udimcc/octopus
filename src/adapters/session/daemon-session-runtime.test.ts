@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { DaemonSessionRuntime } from './daemon-session-runtime'
+import { DaemonSessionRuntime, REDRAW_NUDGE_MS } from './daemon-session-runtime'
 import type { DaemonClient, DaemonSessionSink } from './daemon-client'
 import type { SpawnParams, DaemonSessionInfo } from '../../shared/node/daemon-protocol'
 import type { SessionRuntimeContext } from '../../ports/session-runtime'
@@ -110,12 +110,39 @@ function harness(overrides: Partial<SessionRuntimeContext> = {}): Harness {
   return { ctx, onData, exits, client }
 }
 
-function makeRuntime(h: Harness, args?: readonly string[]): DaemonSessionRuntime {
+function makeRuntime(
+  h: Harness,
+  args?: readonly string[],
+  setTimer?: (fn: () => void, ms: number) => unknown
+): DaemonSessionRuntime {
   return new DaemonSessionRuntime(h.ctx, {
     client: h.client as unknown as DaemonClient,
     shell: '/bin/zsh',
-    args
+    args,
+    setTimer
   })
+}
+
+/** Controllable timer: records the delay, `flush()` fires the pending callbacks. */
+function fakeTimers(): {
+  setTimer: (fn: () => void, ms: number) => unknown
+  delays: number[]
+  flush: () => void
+} {
+  const queued: Array<() => void> = []
+  const delays: number[] = []
+  return {
+    setTimer: (fn, ms) => {
+      delays.push(ms)
+      queued.push(fn)
+      return 0
+    },
+    delays,
+    flush: () => {
+      const due = queued.splice(0)
+      for (const fn of due) fn()
+    }
+  }
 }
 
 describe('DaemonSessionRuntime.start (§6.2)', () => {
@@ -240,6 +267,108 @@ describe('DaemonSessionRuntime.write / resize', () => {
     rt.resize(10, 10)
     expect(h.client.writes).toEqual([{ id: 's1', data: 'ls\n' }])
     expect(h.client.resizes).toEqual([{ id: 's1', cols: 120, rows: 30 }])
+  })
+})
+
+/**
+ * REGRESSION (session restore after a VDI re-login): after `attach` the program is still
+ * running but has no reason to paint into the new terminal, and an identical-size
+ * TIOCSWINSZ delivers NO SIGWINCH (`tty_do_resize` short-circuits on an unchanged
+ * winsize) — which is the usual case, since the daemon's PTY already has the size the
+ * restored pane fits to. Result: a blank/stale pane until the user hits a key. So the
+ * first resize after a resume is bracketed to force a real SIGWINCH.
+ */
+describe('DaemonSessionRuntime re-attach redraw nudge', () => {
+  it('brackets the first resize after a resume, one row short then the true size', async () => {
+    const timers = fakeTimers()
+    const h = harness({ resume: true })
+    const rt = makeRuntime(h, undefined, timers.setTimer)
+    await rt.start()
+
+    rt.resize(255, 75)
+    // The nudged size goes out immediately; the true size only after a delay, because
+    // signals do not queue — back-to-back ioctls can collapse into one SIGWINCH whose
+    // handler then reads an unchanged size and repaints nothing.
+    expect(h.client.resizes).toEqual([{ id: 's1', cols: 255, rows: 74 }])
+    expect(timers.delays).toEqual([REDRAW_NUDGE_MS])
+
+    timers.flush()
+    expect(h.client.resizes).toEqual([
+      { id: 's1', cols: 255, rows: 74 },
+      { id: 's1', cols: 255, rows: 75 }
+    ])
+  })
+
+  it('nudges only ONCE — later resizes pass straight through', async () => {
+    const timers = fakeTimers()
+    const h = harness({ resume: true })
+    const rt = makeRuntime(h, undefined, timers.setTimer)
+    await rt.start()
+
+    rt.resize(255, 75)
+    timers.flush()
+    rt.resize(200, 60)
+    timers.flush()
+
+    expect(h.client.resizes).toEqual([
+      { id: 's1', cols: 255, rows: 74 },
+      { id: 's1', cols: 255, rows: 75 },
+      { id: 's1', cols: 200, rows: 60 }
+    ])
+  })
+
+  it('does not nudge a freshly spawned session (it paints on its own)', async () => {
+    const timers = fakeTimers()
+    const h = harness()
+    const rt = makeRuntime(h, undefined, timers.setTimer)
+    await rt.start()
+
+    rt.resize(255, 75)
+    expect(h.client.resizes).toEqual([{ id: 's1', cols: 255, rows: 75 }])
+    expect(timers.delays).toEqual([])
+  })
+
+  it('grows instead of shrinking a 1-row pane (rows-1 would be 0)', async () => {
+    const timers = fakeTimers()
+    const h = harness({ resume: true })
+    const rt = makeRuntime(h, undefined, timers.setTimer)
+    await rt.start()
+
+    rt.resize(80, 1)
+    timers.flush()
+    expect(h.client.resizes).toEqual([
+      { id: 's1', cols: 80, rows: 2 },
+      { id: 's1', cols: 80, rows: 1 }
+    ])
+  })
+
+  it('drops the deferred half when a real resize supersedes it', async () => {
+    const timers = fakeTimers()
+    const h = harness({ resume: true })
+    const rt = makeRuntime(h, undefined, timers.setTimer)
+    await rt.start()
+
+    rt.resize(255, 75)
+    rt.resize(255, 40) // user drags the window mid-nudge: this is the true size now
+    timers.flush()
+
+    // No stale 75 undoing the 40 the user actually has.
+    expect(h.client.resizes).toEqual([
+      { id: 's1', cols: 255, rows: 74 },
+      { id: 's1', cols: 255, rows: 40 }
+    ])
+  })
+
+  it('does not resize a session that exited during the nudge window', async () => {
+    const timers = fakeTimers()
+    const h = harness({ resume: true })
+    const rt = makeRuntime(h, undefined, timers.setTimer)
+    await rt.start()
+
+    rt.resize(255, 75)
+    h.client.sink?.onExit(0)
+    timers.flush()
+    expect(h.client.resizes).toEqual([{ id: 's1', cols: 255, rows: 74 }])
   })
 })
 

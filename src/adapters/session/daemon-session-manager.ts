@@ -22,7 +22,7 @@ import type {
   SessionRuntimeContext
 } from '../../ports/session-runtime'
 import type { Settings } from '../../ports/settings-store'
-import { resolveShell } from '../../shared/pty-env'
+import { resolveShell, sessionScopedEnv } from '../../shared/pty-env'
 import { shellSpawnPlan, type ShellIntegrationFiles } from '../../shared/node/shell-integration'
 import { DaemonClient } from './daemon-client'
 import { DaemonSessionRuntime } from './daemon-session-runtime'
@@ -64,11 +64,15 @@ export class DaemonSessionManager implements SessionManager {
       detection && this.shellIntegration && ctx.shell === undefined
         ? shellSpawnPlan(shell, this.shellIntegration, process.env)
         : undefined
+    // The daemon outlives login sessions, so its own DISPLAY/XAUTHORITY/DBUS/SSH_AUTH_SOCK
+    // can name a session that no longer exists. This app process was launched from the
+    // live one, so forward its values (`sessionScopedEnv`) and let the shell-integration
+    // patch still win on top.
     return new DaemonSessionRuntime(ctx, {
       client: this.client,
       shell,
       args: plan?.args,
-      envPatch: plan?.envPatch
+      envPatch: { ...sessionScopedEnv(process.env), ...plan?.envPatch }
     })
   }
 }

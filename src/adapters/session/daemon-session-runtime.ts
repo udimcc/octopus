@@ -27,6 +27,12 @@
  * Batch replay note: the daemon writes the replayed buffer as a `data` frame the
  * instant `attach` runs, BEFORE the `attached` reply. The manager registers this
  * runtime's sink before calling `start()`, so that first chunk is never dropped.
+ *
+ * ## Re-attach repaint (see {@link REDRAW_NUDGE_MS})
+ * Replaying the ring buffer restores what the OLD terminal showed; it does not make
+ * the still-running program paint into the NEW one. A full-screen program (emacs,
+ * vim, Claude) only emits when it has a reason to, so a re-attached pane stays blank
+ * or stale until the user types. `resize()` after a resume forces that reason.
  */
 
 import type { SessionRuntime, SessionRuntimeContext } from '../../ports/session-runtime'
@@ -44,9 +50,30 @@ export interface DaemonSessionRuntimeOptions {
    * integration — forwarded to the daemon in `spawn` and layered onto its child env.
    */
   readonly envPatch?: Readonly<Record<string, string>>
+  /** Test seam for the re-attach redraw nudge (default `setTimeout`). */
+  readonly setTimer?: (fn: () => void, ms: number) => unknown
 }
 
 const DEFAULT_ARGS = ['-l'] as const
+
+/**
+ * Gap between the two halves of the re-attach redraw nudge.
+ *
+ * A program that has been running since before the app restarted has already painted
+ * its screen into a terminal that no longer exists, and nothing in the protocol asks it
+ * to paint again. The one repaint trigger available without injecting keystrokes is
+ * SIGWINCH — but the kernel short-circuits `TIOCSWINSZ` when the new winsize EQUALS the
+ * old one (`tty_do_resize`: no change, NO signal), and after a restore the daemon's PTY
+ * usually already has the size the new pane fits to. So the first resize after a resume
+ * is sent as a pair: one row shorter, then the true size.
+ *
+ * The two must be separated in TIME, not just in sequence: standard signals do not
+ * queue, so back-to-back ioctls can collapse into a single SIGWINCH whose handler reads
+ * the final (unchanged) size and concludes there is nothing to do — the exact no-op we
+ * are trying to avoid. One frame of delay is enough for the child to be scheduled, run
+ * its handler and repaint at the intermediate size before the second ioctl corrects it.
+ */
+export const REDRAW_NUDGE_MS = 50
 
 export class DaemonSessionRuntime implements SessionRuntime {
   private readonly ctx: SessionRuntimeContext
@@ -55,10 +82,15 @@ export class DaemonSessionRuntime implements SessionRuntime {
   private readonly args: readonly string[]
   private readonly envPatch?: Readonly<Record<string, string>>
   private readonly sessionId: string
+  private readonly setTimer: (fn: () => void, ms: number) => unknown
 
   private started = false
   private exited = false
   private stopping = false
+  /** Set on a resumed `start()`; consumed by the first `resize()` (see REDRAW_NUDGE_MS). */
+  private redrawPending = false
+  /** Monotonic resize counter, so a deferred nudge can tell it has been superseded. */
+  private resizeSeq = 0
 
   constructor(ctx: SessionRuntimeContext, opts: DaemonSessionRuntimeOptions) {
     this.ctx = ctx
@@ -66,6 +98,7 @@ export class DaemonSessionRuntime implements SessionRuntime {
     this.shell = opts.shell
     this.args = opts.args ?? DEFAULT_ARGS
     this.envPatch = opts.envPatch
+    this.setTimer = opts.setTimer ?? ((fn, ms) => setTimeout(fn, ms))
     this.sessionId = ctx.sessionId
   }
 
@@ -81,6 +114,7 @@ export class DaemonSessionRuntime implements SessionRuntime {
       await this.client.ensureReady()
       if (this.ctx.resume) {
         await this.client.attach(this.sessionId)
+        this.redrawPending = true
       } else {
         await this.client.spawn(this.spawnParams())
       }
@@ -98,9 +132,30 @@ export class DaemonSessionRuntime implements SessionRuntime {
   }
 
   resize(cols: number, rows: number): void {
-    if (!this.exited) {
-      this.client.resize(this.sessionId, cols, rows)
+    if (this.exited) {
+      return
     }
+    if (this.redrawPending) {
+      // First resize after a re-attach: bracket it so the still-running program is
+      // guaranteed a real SIGWINCH and repaints into the new terminal (REDRAW_NUDGE_MS).
+      // This fires exactly when a pane gets a layout box — i.e. when the user actually
+      // looks at the session, since a hidden task's panes don't resize at all.
+      this.redrawPending = false
+      const seq = ++this.resizeSeq
+      const nudged = rows > 1 ? rows - 1 : rows + 1
+      this.client.resize(this.sessionId, cols, nudged)
+      this.setTimer(() => {
+        // A resize that landed in the meantime (the user dragging the window) already
+        // set the true size — and differs from `nudged`, so it signalled too. Don't
+        // undo it with a stale one.
+        if (!this.exited && this.resizeSeq === seq) {
+          this.client.resize(this.sessionId, cols, rows)
+        }
+      }, REDRAW_NUDGE_MS)
+      return
+    }
+    this.resizeSeq++
+    this.client.resize(this.sessionId, cols, rows)
   }
 
   /**

@@ -57,7 +57,11 @@ function recordingSink(): DaemonSessionSink & { text: () => string; exits: numbe
   }
 }
 
-async function waitFor(get: () => string, pred: (s: string) => boolean, ms = 4000): Promise<string> {
+async function waitFor(
+  get: () => string,
+  pred: (s: string) => boolean,
+  ms = 4000
+): Promise<string> {
   const start = Date.now()
   while (Date.now() - start < ms) {
     if (pred(get())) return get()
@@ -171,6 +175,60 @@ d('octopusd re-attach (integration, §6.2)', () => {
     rmSync(workRoot, { recursive: true, force: true })
   })
 
+  /**
+   * The `emacsclient -nw` half of the restore: a program's one-time terminal setup is
+   * not in the replay (the ring buffer evicts it long before a days-old session is
+   * re-attached), so the daemon tracks the sticky modes for the PTY's whole life and
+   * re-asserts them AFTER the replay. Here the setup is still in the buffer — what is
+   * being proven end-to-end (real socket, real PTY) is that the re-assertion happens,
+   * in the right order, and only on a RE-attach.
+   */
+  it('re-asserts the sticky terminal modes on re-attach, after the replay', async () => {
+    const { socketPath } = await startServer()
+    const sessionId = 'sess-modes'
+    const workRoot = realpathSync(mkdtempSync(join(tmpdir(), 'octopus-wt-')))
+
+    const client1 = makeClient(socketPath)
+    await client1.ensureReady()
+    const sink1 = recordingSink()
+    client1.registerSink(sessionId, sink1)
+    await client1.spawn({
+      sessionId,
+      taskId: 'task-1',
+      shell: '/bin/bash',
+      args: ['--norc', '--noprofile', '-i'],
+      cwd: workRoot,
+      cols: 80,
+      rows: 24
+    })
+
+    // Stand in for a TUI's startup: bracketed paste on, then the alternate screen.
+    client1.write(sessionId, "printf '\\033[?2004h\\033[?1049h'; echo OCTOPUS_MODES_SET\n")
+    await waitFor(sink1.text, (s) => s.includes('\x1b[?1049h'))
+    // The spawn-path attach must NOT have re-asserted anything: the only occurrence so
+    // far is the one the program itself wrote.
+    expect(sink1.text().split('\x1b[?1049h')).toHaveLength(2)
+
+    client1.dispose()
+    await new Promise((r) => setTimeout(r, 50))
+
+    const client2 = makeClient(socketPath)
+    await client2.ensureReady()
+    const sink2 = recordingSink()
+    client2.registerSink(sessionId, sink2)
+    expect(await client2.attach(sessionId)).toBe(true)
+
+    // The restore trails the replayed scrollback, so the history lands in the NORMAL
+    // buffer and only then does the terminal switch to a clean alternate screen.
+    const seen = await waitFor(sink2.text, (s) => s.endsWith('\x1b[?1049h'))
+    expect(seen).toContain('OCTOPUS_MODES_SET')
+    const restore = seen.slice(seen.lastIndexOf('\x1b[?2004h'))
+    expect(restore).toBe('\x1b[?2004h\x1b[?1049h')
+
+    await client2.close(sessionId)
+    rmSync(workRoot, { recursive: true, force: true })
+  })
+
   it('close() terminates the shell and removes it from the roster', async () => {
     const { socketPath } = await startServer()
     const sessionId = 'sess-close'
@@ -213,7 +271,10 @@ d('octopusd re-attach (integration, §6.2)', () => {
     })
 
     client.write(sessionId, 'exit 7\n')
-    await waitFor(() => String(sink.exits.length), (s) => s !== '0')
+    await waitFor(
+      () => String(sink.exits.length),
+      (s) => s !== '0'
+    )
     expect(sink.exits).toContain(7)
     rmSync(workRoot, { recursive: true, force: true })
   })

@@ -29,55 +29,37 @@
  */
 
 import type { EventDTO } from '../../../shared/events'
+import { OutputTail, OUTPUT_TAIL_MAX_BYTES } from '../../../shared/output-tail'
 
 type WriteSink = (data: string) => void
 
 const sinks = new Map<string, WriteSink>()
 
 /**
- * Per-session pre-mount buffer: the chunks of `ptyData` seen while no sink was
- * registered, plus a running byte total so we can bound it. Oldest chunks are
- * dropped first once the cap is exceeded (a terminal's leading output is the least
- * interesting when the buffer overflows).
+ * Per-session pre-mount buffer: the `ptyData` seen while no sink was registered,
+ * bounded to the newest {@link REPLAY_BUFFER_MAX_BYTES} units of the stream.
+ *
+ * The bound is on BYTES, not chunks — see `shared/output-tail.ts`. This buffer is on
+ * the critical path of session restore: `warmupSessions()` re-attaches every live
+ * daemon session BEFORE any window exists, so EVERY session's replay lands here and
+ * waits for its pane to mount. A chunk-granular eviction policy therefore threw away
+ * all restored history the moment one more byte of output arrived (the replay is a
+ * single multi-megabyte chunk that alone fills the cap), which is precisely the "no
+ * history in any terminal after re-login" bug.
  */
-interface PendingBuffer {
-  chunks: string[]
-  bytes: number
-}
+const pending = new Map<string, OutputTail>()
 
-const pending = new Map<string, PendingBuffer>()
+/** Bound per session (~500 KB), shared with the main-process pre-hydration queue. */
+export const REPLAY_BUFFER_MAX_BYTES = OUTPUT_TAIL_MAX_BYTES
 
-/**
- * Bound per session (~500 KB). Counted in UTF-16 code units (`string.length`), not UTF-8
- * bytes as the backend `RingBuffer` counts — a deliberate approximation: it never
- * *under*-estimates for ASCII-dominant terminal output, and the point is a bound, not
- * an exact figure.
- */
-export const REPLAY_BUFFER_MAX_BYTES = 500 * 1024
-
-/** Append a chunk to a session's pending buffer, evicting oldest to stay under cap. */
+/** Append a chunk to a session's pending buffer, keeping the newest bytes under the cap. */
 function bufferPending(sessionId: string, data: string): void {
   let buf = pending.get(sessionId)
   if (!buf) {
-    buf = { chunks: [], bytes: 0 }
+    buf = new OutputTail(REPLAY_BUFFER_MAX_BYTES)
     pending.set(sessionId, buf)
   }
-  buf.chunks.push(data)
-  buf.bytes += data.length
-  while (buf.bytes > REPLAY_BUFFER_MAX_BYTES && buf.chunks.length > 1) {
-    const dropped = buf.chunks.shift()
-    if (dropped !== undefined) buf.bytes -= dropped.length
-  }
-  // A SINGLE chunk can exceed the cap on its own, and routinely does: on daemon re-attach
-  // the backend replays a session's whole 5 MB ring as ONE `ptyData` frame (§6.2). Dropping
-  // whole chunks can't help there (there is only one), so keep its TAIL — the newest output,
-  // and what xterm would have shown anyway. Truncation can behead an escape sequence or a
-  // surrogate pair; xterm's parser resynchronizes on the next one, which is the right
-  // trade against holding 5 MB × every un-mounted session in this process.
-  if (buf.bytes > REPLAY_BUFFER_MAX_BYTES && buf.chunks.length === 1) {
-    buf.chunks[0] = buf.chunks[0].slice(-REPLAY_BUFFER_MAX_BYTES)
-    buf.bytes = buf.chunks[0].length
-  }
+  buf.append(data)
 }
 
 /**
@@ -90,7 +72,7 @@ export function registerTerminalSink(sessionId: string, write: WriteSink): void 
   const buf = pending.get(sessionId)
   if (buf) {
     pending.delete(sessionId)
-    for (const chunk of buf.chunks) write(chunk)
+    for (const chunk of buf.drain()) write(chunk)
   }
 }
 
