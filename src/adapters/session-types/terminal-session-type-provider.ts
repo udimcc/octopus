@@ -2,7 +2,7 @@
  * The Terminal `SessionTypeProvider` (DESIGN §8, §9). The only session type today.
  * `capabilities` includes `EvaluatesState` (§9): a terminal running Claude surfaces
  * its state (Idle/Working/Needs-input), though the signal now flows out-of-band —
- * the Claude python bridge writes each session's state file and a single app-side
+ * the Claude hook recorder appends to each session's events log and a single app-side
  * watcher feeds the Application (§9.6), not a per-runtime evaluator method.
  * `availableFromVersion = 1` so it shows in the dropdown from the first version.
  *

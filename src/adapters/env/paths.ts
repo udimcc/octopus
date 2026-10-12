@@ -34,9 +34,9 @@ export interface AppPaths {
   /** Dir holding the generated OSC 133 shell-integration rc files (§12.1). */
   shellIntegrationDir: string
   /**
-   * Dir holding the generated Claude state bridge script + per-session state files
-   * (§9). The python bridge writes `<sessionId>.json` here; the app's watcher reads
-   * them. See `octopus-claude-state.script.ts`.
+   * Dir holding the generated Claude hook recorder script + per-session events logs
+   * (§9). The recorder appends to `<sessionId>.events.jsonl` here; the app's watcher
+   * folds them. See `octopus-claude-state.script.ts`.
    */
   claudeStateDir: string
 }

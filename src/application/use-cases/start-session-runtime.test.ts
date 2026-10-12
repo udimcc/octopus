@@ -131,6 +131,19 @@ describe('startSessionRuntime spawn-vs-attach seam (§6.2)', () => {
     expect(ctx.worktreePath).toBe('/wt/task')
   })
 
+  it('tells state detection fresh vs resume before the runtime is created (§9.3)', async () => {
+    for (const live of [false, true]) {
+      const f = makeDeps({
+        snapshot: snapshot('/wt/task'),
+        liveDaemonSessions: new Set<SessionId>(live ? [SESSION] : [])
+      })
+      const calls: Array<[SessionId, string, number]> = []
+      f.deps.prepareClaudeState = (id, mode) => calls.push([id, mode, f.sessions.created.length])
+      await run(f)
+      expect(calls).toEqual([[SESSION, live ? 'resume' : 'fresh', 0]])
+    }
+  })
+
   it('delivers the configured initial command on a FRESH spawn', async () => {
     const f = makeDeps({
       snapshot: snapshot('/wt/task', { kind: 'terminal', initialCommand: 'npm run dev' })

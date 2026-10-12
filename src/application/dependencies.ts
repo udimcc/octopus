@@ -132,17 +132,25 @@ export interface AppDependencies {
    * `(sessionId, state) => loop.dispatch({ kind: 'ingestSessionState', … })`, so the
    * `setState` + task re-derivation run on the single writer, never inline in the
    * Claude state watcher's file-change callback (§6.6). The watcher (composition
-   * root) is the sole caller: it feeds every session whose python bridge wrote a
-   * state file. Absent ⇒ state ingestion is off.
+   * root) is the sole caller: it feeds every session it tracks (see
+   * {@link prepareClaudeState}). Absent ⇒ state ingestion is off.
    */
   onSessionState?: (sessionId: SessionId, state: SessionState, meta?: StateChangeMeta) => void
   /**
    * Late-bound "refresh state" sink (§5.4 R1, §9.6). Bound by the composition root to
-   * the Claude state watcher's `rescan(sessionId)`, which re-reads that session's
-   * state file and re-emits it through {@link onSessionState}. `refreshSessionState`
+   * the Claude state watcher's `rescan(sessionId)`, which re-folds that session's
+   * events log and re-emits its state through {@link onSessionState}. `refreshSessionState`
    * calls it; absent ⇒ refresh is a no-op (detection opted out).
    */
   refreshClaudeState?: (sessionId: SessionId) => void
+  /**
+   * Late-bound "a runtime is about to start" sink (§9.3). `startSessionRuntime` calls
+   * it just before creating the runtime: `fresh` (a new PTY — any Claude recorded for
+   * this session is gone, so its status starts over) or `resume` (a daemon re-attach —
+   * the Claude in it may still be running, so its recorded events are replayed).
+   * Bound by the composition root to the Claude state watcher; absent ⇒ no-op.
+   */
+  prepareClaudeState?: (sessionId: SessionId, mode: 'fresh' | 'resume') => void
   /**
    * Late-bound sink for a MEANINGFUL session state change to surface as an in-app
    * notification (§9.5). Bound by the composition root — like {@link onSessionState}

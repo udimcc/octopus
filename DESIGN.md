@@ -36,7 +36,7 @@ sessions while **all sessions keep running in the background**.
 | Task-state aggregation rule | **Worst-status-wins:** `Blocked > Working > Waiting > Unknown`. | §3.4 |
 | Status vocabulary (one, shared) | **UI and domain share ONE vocabulary: `Unknown` / `Idle` / `Working` / `NeedsInput`** — no domain-vs-label translation. The enum *member names* are these; the enum **values** stay the original wire strings (`'waiting'`/`'blocked'`) so IPC, the daemon protocol, persistence, and hook payloads need no migration (§10's "signatures never change" holds — only TS member identifiers changed). `Unknown → no icon`. | §3.3, §5.4 |
 | "Just finished" signal (many parallel agents) | **Ready-for-review is a renderer view-model flag, not a domain state.** A `Working→Waiting` transition observed while a session is unfocused raises a highlight that clears on focus. Adds **no** enum member, no port change. The displayed icon (session and task) is a single **display-state** priority — `NeedsInput > Review > Working > Idle > None` — that folds the flag into the state ordering; review is valid **only while the session is Idle**, so a newer `Working` supersedes a stale flag (a running session never shows the static review dot). | §3.4, §5.4, §9.5 |
-| How status is detected | **Claude-only, out-of-band via a python bridge.** A single stdlib-only python3 script wired into Claude's hooks + statusline writes each session's state file (keyed by `OCTOPUS_SESSION_ID`); Octopus never reads the PTY or process table. Non-Claude foreground programs stay `Unknown` (no heuristic). | §9.1, §9.2 |
+| How status is detected | **Claude-only, out-of-band via a hook recorder + app-side fold.** A single stdlib-only python3 script wired into Claude's hooks appends each hook to the session's events log (keyed by `OCTOPUS_SESSION_ID`); a pure app-side fold turns the log (plus transcript facts) into a state. Octopus never reads the PTY or process table. Non-Claude foreground programs stay `Unknown` (no heuristic). | §9.1, §9.2 |
 | Where state is *detected* (daemon vs main) | **Backend-agnostic: neither the runtime nor the daemon participates.** The bridge runs as Claude's own subprocesses; one app-side `ClaudeStateWatcher` (Electron main) file-watches the state dir and feeds `ingestSessionState`. Identical for the in-process and daemon backends — `SessionRuntime` has no state seam, the protocol has no state message. | §9.3, §9.6 |
 | Worktree provisioning | **Repo-local script if present, else native git.** If `<repoDir>/create_worktree.sh` (resp. `delete_worktree.sh`) exists, Octopus runs it (script owns the location); otherwise Octopus provisions the worktree itself via `git worktree`. Detected **per task** on each create/delete. | §6.4, §12.4 |
 | Worktree location | **Octopus-owned by default**, under a configurable base dir `worktree.location` (default `~/octopus_repos/`). A repo-local create script may return any location instead; Octopus stores the path verbatim. `repo_root` stored per task, so multi-repo works with no special support. | §6.3, §6.4, §12.4 |
@@ -71,7 +71,7 @@ sessions while **all sessions keep running in the background**.
 │     WorktreeProvider → SelectingWorktreeProvider (Script | NativeGit)         │
 │     SessionManager / SessionRuntime → PtyTerminalRuntime (node-pty)           │
 │     WorkspacePersistence → SqliteStore (better-sqlite3)                        │
-│     ClaudeStateWatcher (phase 2) → file-watches the python bridge's state dir      │
+│     ClaudeStateWatcher (phase 2) → folds the hook recorder's events logs          │
 │     JenkinsClient (phase 3) → JenkinsHttpClient                                     │
 │     EventBus, Clock, IdGenerator, CredentialsProvider                         │
 └───────────────────────────────────────────────────────────────────────────────┘
@@ -512,7 +512,7 @@ Each terminal session spawns one PTY via node-pty:
 node-pty.spawn(shell, ["-l"], {
   name: "xterm-256color", cols, rows, cwd: worktreePath,
   env: { ...inherited, TERM:"xterm-256color", COLORTERM:"truecolor",
-         OCTOPUS_TASK_ID, OCTOPUS_SESSION_ID /* keys the Claude state file, §9.1 */,
+         OCTOPUS_TASK_ID, OCTOPUS_SESSION_ID /* keys the Claude events log, §9.1 */,
          OCTOPUS_WORKTREE,
          /* stripped: TMUX, STY, WINDOWID */ } })
 ```
@@ -842,7 +842,7 @@ registry**:
 
 **`SessionRuntime`** exposes `start()/stop()/dispose()` and a type-neutral output/interaction handle — it owns
 only the PTY lifecycle, not state detection (§9.6). State is **push-based** but sourced OUT of the runtime: the
-Claude python bridge writes each session's state file and the app-side `ClaudeStateWatcher` emits
+Claude hook recorder appends to each session's events log and the app-side `ClaudeStateWatcher` emits
 `sessionStateChanged` on the `EventBus`; the Application ingests it and recomputes `TaskState`. `EvaluatesState`
 survives as a session-type capability flag (Terminal advertises it), but there is no `stateEvaluator()` seam on
 the runtime.
@@ -858,224 +858,165 @@ additive behind this registry.
 ## 9. Session-State-Detection Subsystem (phase 2 core)
 
 Status reflects **only a program that reports its own state** — in practice Claude Code (§9.2). A bare shell,
-or any other foreground command, is `Unknown` (no icon). State is sourced **out-of-band** from a single
-self-contained python3 bridge that Claude itself runs (via hooks + statusline); Octopus never reads the PTY,
+or any other foreground command, is `Unknown` (no icon). State is sourced **out-of-band**: Claude itself runs a
+tiny python3 **recorder** from its hooks, which appends each hook to a per-session events log; Octopus folds that
+log (plus a few facts tailed from Claude's own transcript) into a state, app-side. Octopus never reads the PTY,
 the process table, or a socket to compute state. The runtime/daemon do not participate at all (§9.6).
 
-### 9.1 The state bridge (one script, three modes)
+The design follows Orca's approach: **the hook only records, the app decides**. The earlier design put the state
+machine inside the python bridge (a read-modify-write state file guarded by a `flock`), which could not see the
+whole picture at once — two background agents, a stale `SubagentStop`, a wake-up prompt — and kept producing
+"done while still working" and "done-then-working" bugs. A pure, replayable fold over an append-only log is
+testable against recorded live traces (`test/fixtures/claude-state/`) and can reason across events.
+
+### 9.1 The hook recorder (one script, record-only)
 
 A single stdlib-only python3 script — `octopus-claude-state.py`, embedded as a string in
 `src/adapters/claude/octopus-claude-state.script.ts` and written into the data dir on startup by
 `ensureClaudeStateScript` (the same embed-and-write-on-boot pattern as the shell-integration rc files, chosen
 over a bundled asset because electron-vite's `out/` vs `release/` layouts make an on-disk asset path fragile).
-It owns **all** state logic and runs in three modes, all driven from `~/.claude/settings.json`:
+It holds **no state logic** and has two modes, both driven from `~/.claude/settings.json`:
 
-- **`hook <Event>`** — wired to Claude's lifecycle hooks (§9.2). Maps the event to a state and records it as
-  the session's `hook` observation.
-- **`statusline`** — wired to `statusLine.command`. Derives state from the session TRANSCRIPT tail, records it
-  as the `transcript` observation, THEN delegates to the user's ORIGINAL statusline command and prints its
-  output verbatim (so the user's status bar is unchanged). This is the resume-recovery path: after `--resume`
-  the prior process's hooks are gone, but the transcript survives.
-- **`get <id>`** — prints the effective state (debug / tooling). Never fails: an unknown id prints `unknown`.
+- **`hook <Event>`** — wired to Claude's lifecycle hooks (§9.2). Appends ONE compact JSON line to
+  `<dataDir>/claude-state/<OCTOPUS_SESSION_ID>.events.jsonl`.
+- **`statusline`** — wired to `statusLine.command`. A pure pass-through: runs the user's ORIGINAL statusline
+  command with the same stdin and prints its output verbatim (so the user's status bar is unchanged). It
+  records nothing.
 
-**Per-session state file.** Keyed by `OCTOPUS_SESSION_ID` (the env var Octopus injects into every managed PTY,
-inherited by the hook/statusline subprocesses — so one global settings entry serves every session and every
-worktree, and the script is a silent no-op outside an Octopus PTY). Written atomically (temp + `os.replace`)
-to `<dataDir>/claude-state/<OCTOPUS_SESSION_ID>.json`, and the whole read-modify-write is serialized per session
-by an advisory `flock` on a stable `<OCTOPUS_SESSION_ID>.lock` file (see the lost-update note below — without it
-the concurrent hook/statusline subprocesses of one session race and drop subagent-counter updates):
+Any other mode is a silent no-op. The hook never prints and always exits 0 (wrapped in a catch-all), so it can
+never disturb Claude.
 
-```
-{ state, reason, updated_at,
-  turn_start_ts, turn_end_ts,               // turn boundaries (§9.1 turn gating)
-  subagent_ids,                             // outstanding subagent agent_ids (id-set path, §9.1)
-  subagents,                                // anonymous launch counter (PreToolUse increments, §9.1)
-  stop_deferred,                            // a Stop was deferred pending subagents (§9.1)
-  hook:       { state, reason, ts, event }, // last in-turn hook observation
-  transcript: { state, reason, mtime } }    // last transcript-derived observation
-```
+**The record.** Common fields `v` (format), `t` (epoch ms at hook time), `ev`, `sid` (Claude `session_id`),
+`aid` (`agent_id`; absent ⇒ the lead agent), `prm` (`prompt_id`). Per event, only what the fold needs:
+`src` (SessionStart source), `tp` (transcript path), `rsn` (SessionEnd reason), `tn` (the task id of a
+harness `<task-notification>` prompt — the prompt text itself is **never** stored), `tool` / `tu`
+(`tool_use_id`) / `ih` (a short hash of the canonical `tool_input`, which correlates a `PermissionRequest` —
+which carries no `tool_use_id` — with its `PreToolUse`), `bga` / `fga` (the agent id of a background launch /
+a finished foreground run, from `PostToolUse(Agent|Task)`'s `tool_response`), `intr` (`is_interrupt`), `at`
+(agent type), and `bg` (the `background_tasks` inventory, `{id, ty, st}` only, capped). Strings are capped; a
+line over 8 KiB drops `bg`/`tp`.
 
-**Effective state = newer-observation-wins** between `hook.ts` (wall-clock at hook time) and
-`transcript.mtime` (the transcript file's mtime), tie → hook. Live, a hook fires at now ≥ the transcript
-mtime, so hooks stay authoritative; after resume the transcript advances with no new hook, so it wins. There
-is **no** fixed staleness window, **no** activity timing, and **no** silence-based heuristic — the two
-observations are self-dating, so the newer one is simply trusted. One exception implements the §9.7 mid-tool
-mitigation: a transcript-derived `blocked` is overridden by an in-turn `working` hook (the hook slot is
-`working` and the turn is open), since a dangling `tool_use` mid-execution is indistinguishable from an
-awaiting-permission one. A real permission prompt records a `blocked` hook, so it is unaffected; with no fresh
-hook (resume), or a closed turn, the transcript still wins.
+**Appending.** `O_WRONLY|O_APPEND|O_CREAT|O_CLOEXEC`, mode `0600`, one `write(2)` per line — whole lines do not
+interleave between the concurrent hook processes of one session (covered by a 30-parallel-process test), so no
+lock is needed. Keyed by `OCTOPUS_SESSION_ID` (the env var Octopus injects into every managed PTY, inherited by
+the hook subprocesses — so one global settings entry serves every session and every worktree, and the script is
+a silent no-op outside an Octopus PTY). The id must match `^[A-Za-z0-9_-]{1,128}$` (it is a file stem).
 
-**Subagent gating (the fix for "delegating session reads done / flickers").** "State" means the *whole* Claude
-session — the main agent **and** any subagents it spawns (foreground **or** background). A subagent inherits the
-parent's `OCTOPUS_SESSION_ID`, so its own hooks write to the *parent's* state file. The bridge tracks each
-subagent's true lifespan and, while **any** is outstanding **and the turn is open**, `effective()` forces
-`working` regardless of either observation slot — so a session waiting on subagents never reads Idle (bug 1) and
-never flickers done-then-working when a subagent returns and the main agent resumes (bug 2).
-
-**One count, two representations — promote-and-reclaim (no capability latch).** Octopus registers **both**
-`SubagentStart` and `SubagentStop` via its own merge-safe injector (`HOOK_EVENTS`, §9.2) — never a hand-edit —
-so the signals are available on every install without the user touching their Claude config. The whole model
-rests on one live-verified ordering invariant: for **every** subagent, `PreToolUse(Agent|Task)` fires **first**
-(before the main agent's `Stop`), and `SubagentStart` fires **later** — for a *background* child, even *after*
-that `Stop`.
-- **`PreToolUse(Task|Agent)` is the launch signal and ALWAYS increments the `subagents` counter.** This is the
-  load-bearing **gap bridge**: because the main agent's `Stop` fires *before* a background child's
-  `SubagentStart`, only this early increment keeps `subagent_count > 0` at `Stop` time, so the `Stop` **defers**
-  instead of flashing the whole session Idle. It is `PreToolUse`, **not** `PostToolUse` — a background subagent's
-  `PostToolUse(Agent)` fires at launch, not completion.
-- **`SubagentStart` PROMOTES that launch from the counter into an `agent_id` set (`subagent_ids`).** Both
-  `SubagentStart` and `SubagentStop` carry `agent_id` (verified from live payloads), so an outstanding child
-  tracked by id is immune to a duplicate or cross-turn `SubagentStop` (a stop for an unknown id is a **no-op**,
-  never under-counting a still-live child — this closes the stray-stop edge a bare counter had). Because
-  `PreToolUse(Agent)` already counted this same launch, `SubagentStart` **reclaims** one anonymous increment as
-  it adds the id (decrement floored at 0), so the child is counted **exactly once** (in the id set). A
-  `SubagentStart` carrying **no** `agent_id` is a no-op: its `PreToolUse` increment already holds the launch and
-  its `SubagentStop` will decrement it.
-- **`SubagentStop` is the close bracket:** it removes its `agent_id` from the set, or (no id / untracked id)
-  decrements the anonymous counter (floored at 0).
-
-**No session-lifetime latch — and why the old one was the background bug.** An earlier version latched a
-`has_subagent_start` flag on the first `SubagentStart` and thereafter **stopped counting `PreToolUse`** (to avoid
-double-counting a launch already promoted into the id set). But the latch was session-lifetime, so it silently
-removed the gap bridge on a session's **2nd+ delegating turn** (and after any mid-turn foreground `SubagentStart`):
-`PreToolUse(Agent)` no longer counted, so a subsequent background launch left `subagent_count == 0` at `Stop`
-time, the turn closed, and the session wrongly read **Idle/"done"** while the background child was still starting
-— exactly the reported symptom. **Reclaim, not a latch, is what prevents the double-count**, and reclaim needs no
-latch: it works identically on turn 1 and turn N. Removing the latch restores the bridge on every turn.
-
-`subagent_count = len(subagent_ids) + subagents`; promote-and-reclaim guarantees a child is counted in exactly
-one representation at a time.
-
-**Why the close bracket is `SubagentStop`, not `PostToolUse` (this was the background bug).** A *background*
-subagent's `PreToolUse(Agent)` **and** `PostToolUse(Agent)` both fire at **launch** — the delegation tool
-returns a handle immediately and the main agent moves on — so `PostToolUse` marks launch, not completion.
-Keying the decrement to it left the counter at 0 for the child's entire run. Worse, Claude fires the main
-agent's `Stop` as soon as *it* yields, typically **before** a background child ends; the old code closed the
-turn and zeroed the counter there, flashing Idle mid-run. The fix: **`Stop`/`StopFailure` defers closing while
-`subagents > 0`** — it records `working`, leaves `turn_end_ts` and the counter untouched, and sets a
-**`stop_deferred`** flag so the pending close is remembered; the turn stays open and the override holds.
-
-The turn then closes on **whichever comes first**:
-- **the main agent resumes and `Stop`s again** — when a background child ends, the harness usually re-invokes
-  the main agent to consume its result (a fresh `UserPromptSubmit`, which clears `stop_deferred`), and it later
-  `Stop`s with `subagents == 0`, closing normally; or
-- **the last child's `SubagentStop` finalizes the deferred `Stop`** — when the decrement drops the counter to 0
-  *and* `stop_deferred` is set, the main agent had already yielded, so the whole session (main + all sub-calls)
-  is genuinely finished: `SubagentStop` sets `turn_end_ts`, records `waiting`, and clears the flag → Idle.
-
-The `stop_deferred` distinction is what makes `SubagentStop` correct in *both* directions: a `SubagentStop`
-with **no** pending Stop means the main agent is still working, so it only decrements and stays Working (no
-premature close, no bug-2 flicker in the common resume case where the child ends *before* the main agent
-yields); a `SubagentStop` **after** a deferred Stop means the parent already finished and will not necessarily
-resume, so it must close — otherwise a *fire-and-forget* child (parent never resumes) would leave the session
-**stuck Working forever**, since the deferred `Stop` never re-fires and the `subagents == 0 … turn_open`
-override blocks the transcript backstop. The residual bug-2 exposure is a sub-second, watcher-coalesced Idle
-blip *only if* the main agent does resume after the finalize — strictly better than an unbounded silent
-stuck-Working (see §9.7 edge 2).
-
-Two deliberate constraints: (a) the override yields to a genuine `blocked` **hook** — if a subagent needs
-approval the user must act, so that is NeedsInput, not Working; (b) it is turn-gated, so a leaked counter can
-never stick a finished session Working past a *closed* turn. Self-healing on both edges: `UserPromptSubmit`
-resets the counter to 0 (a missed `SubagentStop` cannot leak past the next prompt), and a stray `SubagentStop`
-after a clean `Stop` (counter already 0) is out-of-turn, so the turn gate drops its write and `waiting` stands.
-A legacy file with no `subagents` field reads 0 (override inert).
-
-**Turn gating (the fix for "idle session flaps back to Working").** The hook slot holds the last *in-turn*
-observation, not the last hook of any kind. A turn **opens** on `UserPromptSubmit` (`turn_start_ts`) and
-**closes** on `Stop`/`StopFailure` (`turn_end_ts`); it is open iff `turn_start_ts > turn_end_ts`, and a
-**missing `turn_start_ts` ⇒ closed** (so a legacy file, or one that has just seen a `Stop`, is closed). The
-turn-boundary events always record; every other event is a *within-turn* observation and is honored **only
-while the turn is open** — an out-of-turn one aborts the write, leaving the file untouched. Without this, a
-stray `working` sub-event that Claude fires after a turn already ended (e.g. a `SubagentStop` arriving minutes
-after `Stop` with no new prompt) would clobber the terminal `waiting` with a newer `working` and win the
-newer-observation race against the frozen transcript — surfacing a finished session as Working. A blocked
-event (`Notification`/`PermissionRequest`) is gated the same way: a real permission prompt only ever occurs
-mid-turn, so gating never drops a genuine one but does drop a stray post-`Stop` one. Only start/end events move
-the turn boundary; a permission request does **not** close the turn (Claude is still mid-turn, awaiting
-permission), so mid-turn `SubagentStop`→Working (§9.2) is preserved.
-
-**Mis-gate is self-correcting; the old bug was not.** The only new failure mode is dropping a legitimate
-`working` sub-event because a turn's `turn_start_ts` was never recorded (a legacy/resumed file mid-turn). The
-transcript backstop covers exactly this: during real work the statusline fires and `transcript.mtime` advances
-to ~now, so the transcript observation reads `working` and wins; and the next `UserPromptSubmit` re-opens the
-turn, bounding any mis-gate to the current turn. By contrast the bug being fixed (false-`working`-while-idle)
-had **no** backstop — when idle the transcript is frozen at `waiting`, so nothing corrected a spurious
-`working`. The fix trades an uncorrectable error for a correctable one.
+**Nested Claude filter.** A `claude -p` started from *inside* a session's Claude (by a tool, a script, or the
+user) inherits the same `OCTOPUS_SESSION_ID`, and its hooks would otherwise pollute the session's log. The
+recorder walks its process ancestry (`/proc/<pid>/stat`); if it finds a second `claude` ancestor whose
+environment also carries this `OCTOPUS_SESSION_ID`, the hook belongs to a nested Claude and is dropped.
 
 ### 9.2 Claude Code hook / statusline wiring (the only reliable `Blocked`)
 
 "Blocked waiting for permission" is internal to Claude Code — no OS primitive exposes it (it is foreground,
 has printed a prompt, and is reading stdin — indistinguishable from Waiting from outside). Solution: let Claude
-tell us, via its own hooks and statusline, both pointed at the bridge (§9.1).
+tell us, via its own hooks.
 
 - Octopus merges into the user-global `~/.claude/settings.json` on startup (merge-safe + idempotent, tagged
   with `#octopus-state` so only Octopus's own entries are ever touched — see
   `src/adapters/claude/claude-hooks.ts`):
-  - each wired lifecycle **hook** runs `python3 <script> hook <Event>`;
+  - each event in `HOOK_EVENTS` runs `python3 <script> hook <Event>`: `SessionStart`, `SessionEnd`,
+    `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionRequest`,
+    `SubagentStart`, `SubagentStop`, `Stop`, `StopFailure`;
+  - an Octopus entry left on an event no longer in that list (e.g. `Notification` from an older build) is
+    removed, keeping the user's own entries there; `hasAllOctopusHooks` treats such a leftover as "needs a
+    rewrite";
   - `statusLine.command` is repointed at `python3 <script> statusline`, after SAVING the user's original
-    command (to `claude-state/original-statusline`) so the bridge can chain to it and the user's bar is
-    unchanged.
-- **Event → state map** (`HOOK_STATES`), interpreted through the turn gate (§9.1):
-  - `Stop` / `StopFailure` → `waiting` (main agent finished → Idle; **closes** the turn) — **except** when a
-    subagent is still outstanding (`subagents > 0`), where it records `working`, **defers** closing the turn,
-    and sets `stop_deferred` (§9.1 subagent gating), so a background child outliving the main agent's turn does
-    not flash Idle.
-  - `UserPromptSubmit` → `working` (**opens** the turn; resets both `subagent_ids` and the `subagents` counter
-    and clears `stop_deferred`, so a leaked child self-heals at the next prompt).
-  - `SubagentStart` / `PreToolUse` / `PostToolUse` / `SubagentStop` → `working` (in-turn; a delegated subagent
-    finishing does not by itself mean the MAIN agent is idle, so `SubagentStop`→Working — honored while the turn
-    is open). Subagent bookkeeping (§9.1, promote-and-reclaim): `PreToolUse` for a delegation tool (`Task`/`Agent`)
-    **always** increments the anonymous `subagents` counter at launch (the gap bridge — the main agent's `Stop`
-    fires before a background child's `SubagentStart`); `SubagentStart` promotes that launch into `subagent_ids`
-    by `agent_id` and reclaims one counter increment (no double-count, no session-lifetime latch); **`SubagentStop`
-    removes** its `agent_id` (or decrements the counter) and, when
-    `subagent_count` reaches 0 *while a Stop was deferred* (`stop_deferred`), **finalizes the deferred close** —
-    sets `turn_end_ts`, records `waiting`, clears the flag → Idle. `PostToolUse` never touches subagent state —
-    a background subagent's `PostToolUse(Agent)` fires at launch, not completion, so it cannot mark the close.
-  - `Notification` / `PermissionRequest` → `blocked` (Needs input; in-turn) — EXCEPT the idle "waiting for your
-    input" reminder Claude fires after a turn already ended, which the bridge suppresses (reads the payload on
-    stdin; emits no write) so it can't overwrite `Stop`→Idle with a false Needs-input.
-  - Any unlisted/renamed event → `working` (still the agent's turn; never mis-read as Idle).
-- **Transcript inference** (`statusline` mode): a `tool_use` with no matching `tool_result` (dangling) →
-  `blocked` — **except** when *every* dangling `tool_use` is a delegation tool (`Task`/`Agent`), which → `working`
-  (the main agent is waiting on a subagent, i.e. the whole session is still working; this is the resume/no-hook
-  path — live, the `subagents` counter already forces `working`). A mix of a dangling delegation call and a
-  dangling non-delegation tool (a possible real permission prompt) still → `blocked`. A transcript with **no
-  assistant turn at all** (a fresh session, or the brand-new transcript a `/clear` starts) → `waiting`: no work
-  has begun, and `/clear` fires no `UserPromptSubmit` hook, so this transcript read is the only signal — falling
-  through to `working` here is what surfaced a cleared session as Working (§9.7). Else the last assistant turn
-  ended (`end_turn`/`stop_sequence`) → `waiting`; else (an assistant turn exists but did not end cleanly) →
-  `working`.
-- **Graceful degradation.** Every hook is `python3 <script> … 2>/dev/null || true` and the bridge wraps every
-  write, so a failure is a silent no-op and the session stays `Unknown`. Nothing from Claude's payloads is ever
-  executed; the bridge only reads/writes JSON.
+    command (to `claude-state/original-statusline`) so the recorder can chain to it.
+- **`Notification` is deliberately not wired.** It fires both for a real permission prompt (seconds after the
+  `PermissionRequest` that already said so) and for the idle "waiting for your input" reminder after a finished
+  turn — it adds only noise.
+- **Graceful degradation.** Every hook is `python3 <script> … 2>/dev/null || true`, so a failure is a silent
+  no-op and the session stays `Unknown`. Nothing from Claude's payloads is ever executed; the recorder only
+  parses JSON and appends.
 
 Alternatives (inferior): parsing Claude Code's terminal output (brittle, version-coupled) or an Octopus MCP
 server (richer but heavier — defer).
 
-### 9.3 App-side consumer: the state watcher
+### 9.3 App-side consumer: the watcher and the fold
 
-The app half of the edge is `src/adapters/claude/claude-state-watcher.ts` — the **sole** source of session
-state now. It watches the `claude-state/` dir and turns each `<id>.json` change into a
-`(sessionId, SessionState, meta)` push:
+**The fold** (`src/adapters/claude/claude-session-fold.ts`) is a pure reducer: `applyHook` / `applyTranscript`
+fold observations into a `ClaudeFold`, and `resolveFold(fold, now)` yields one `SessionState` plus a `reason`
+string (`<why> <- <last event>`, logged with each transition, §11). Per Octopus session it tracks:
 
-- **Initial scan on construction** (resume recovery): replays every existing file so restored tabs show status
-  immediately after an app restart, without waiting for the next hook.
-- **`fs.watch`** for each subsequent write, per-file debounced (~40 ms) because an atomic temp+replace fires a
-  rapid rename+change burst for one logical write.
-- **Mapping.** `coreToSessionState` (`src/adapters/claude/core-to-session-state.ts`) maps the file's top-level
-  `state` string to the domain enum: `waiting`→Idle, `working`→Working, `blocked`→NeedsInput, else→Unknown.
-  The filename stem IS the `OCTOPUS_SESSION_ID`, which the app knows as `session.id`.
+- **The lead agent's phase** (`none` / `working` / `done` / `ended`; events with no `agent_id` are the lead's).
+  `UserPromptSubmit` and lead tool events → `working`; `Stop` / `StopFailure` / a transcript turn end /
+  `PostToolUseFailure` with `is_interrupt` → `done`; `SessionStart` (not `compact`) → `done` (at rest);
+  `SessionEnd` → `ended` (no icon), except reason `clear`, which a `SessionStart(clear)` follows.
+- **The revive gate.** Once the lead is `done`, a lead event revives it only if it carries the SAME `prompt_id`
+  (a user `Stop` hook continuation); a stray late event of an older prompt changes nothing. Only a new prompt
+  starts a new turn.
+- **A roster of running subagents.** `SubagentStart` adds; `SubagentStop` removes. A child-attributed event for
+  an id the roster does not hold **never** creates an entry — Claude runs internal side agents that emit tool
+  hooks with no `SubagentStart`/`SubagentStop`, and admitting them would stick the session on Working. The lead
+  `Stop`'s `background_tasks` inventory is authoritative for `subagent`-typed entries (reaps a missed stop,
+  re-adds a running one); a `SubagentStop`'s inventory is a stale snapshot and is not reconciled. A
+  `UserPromptSubmit` **never** resets the roster — the harness-injected `<task-notification>` prompt arrives
+  while sibling agents still run (this was bug 1). Background shells and crons are ignored.
+- **`pendingWake`** — background agents that finished but whose result the lead has not picked up yet. When a
+  background agent stops, Claude wakes the lead ~80 ms later with a `<task-notification>` prompt naming its task
+  id, which opens a new lead turn. The session is held Working across that gap (this was bug 2, the
+  done-then-working flicker). The entry clears on the matching `<task-notification>` (prompt `tn`, or its
+  transcript record); a wake that never comes degrades to Idle after `WAKE_GRACE_MS` (10 s) of the lead being
+  at rest — the grace is measured from `max(finished, lead's last turn end)`, so an agent that finishes while
+  the lead is mid-turn is not given up on before Claude can hand its result over. An expired entry is then
+  **dropped** (and its id remembered as consumed) at the next event or watcher timer; otherwise every later
+  `Stop` would re-arm the grace and hold each turn Working for another 10 s, and the log could never rotate. A
+  resumed agent (same id) is re-admitted by its next `SubagentStart`.
+- **Waits (Needs input)** — a `PermissionRequest`, or a `PreToolUse(AskUserQuestion)`, held by the lead or by a
+  subagent (matched by `agent_id`). A request without `agent_id` is attributed through the open tool calls:
+  while the lead works it belongs to the running child that has that exact call (`tool` + `ih`) open — else to
+  the lead; after the lead finished it is held by `?`, a running child. Released by the matching tool completion (`tool_use_id` or `tool` + `ih`), the holder's next tool, the
+  next prompt, or the turn's end.
+- **Conversation boundary.** A new Claude `session_id` is adopted only on a lead `SessionStart` (not
+  `compact`) or a lead prompt, which resets the fold; any other event of a foreign conversation is ignored.
+
+`resolveFold` priority: no signal → `Unknown`; `ended` → `Unknown`; any wait → `NeedsInput` (it wins over
+running background work); lead `working` → `Working`; roster non-empty → `Working`; a `pendingWake` still
+inside its grace → `Working`; else `Idle`. `nextDeadline` tells the watcher when a time-based transition (a
+grace expiry) is due.
+
+**The transcript tail** (`claude-transcript.ts`). Two things fire **no** hook: a denied permission and an
+interrupt (Esc). Claude does write them to its transcript, so while a lead turn is open (or a lead wait is
+held) the watcher tails the transcript named by the hooks' `transcript_path` (last 256 KiB at most) and feeds
+three record kinds to `applyTranscript`:
+`system/turn_duration` (every lead turn's end; its `pendingBackgroundAgentCount` of 0 clears the roster but
+keeps `pendingWake` — whether Claude counts finished-not-yet-handed-over agents is unverified),
+a user record `[Request interrupted by user…]` (a turn end of that `promptId`), and a
+`task-notification`-origin user record (the wake-up — written ~50 ms BEFORE its `UserPromptSubmit` hook, so it
+opens the wake turn itself). `isSidechain` records are skipped. A transcript turn end older than the current
+turn's start is ignored, so a lagging tail can never close a newer turn.
+
+**Verified ordering (Claude Code 2.1.x, from live traces).** For a background agent:
+`PreToolUse(Agent)` → `SubagentStart` → `PostToolUse(Agent)` (with `tool_response.isAsync`/`agentId`), all
+before the lead's `Stop`; the `background_tasks[].id` is the agent id; the wake-up `UserPromptSubmit` follows
+the agent's `SubagentStop` by ~80 ms. A `PermissionRequest` carries the same `tool_input` as its `PreToolUse`
+but no `tool_use_id`. A denied permission fires no hook and leaves the interrupt marker in the transcript.
+
+**The watcher** (`claude-state-watcher.ts`) is the **sole** source of session state. It folds only **tracked**
+sessions, and the runtime-start seam (`deps.prepareClaudeState`, called by `startSessionRuntime` just before the
+runtime is created) says how a session's terminal came to be:
+
+- `reset` — a **fresh** PTY: any Claude the log describes is gone, so the log is deleted and the session
+  starts `Unknown` (a stale "Working" can never survive into a new shell);
+- `attach` — a daemon **re-attach** (§6.2): the Claude in it may still be running, so the whole log
+  (`<id>.events.1.jsonl`, then the current file) is replayed and the real state — including running subagents —
+  shows at once.
+
+One `fs.watch` on the dir, per-file debounced (~40 ms); each settle reads the log from the last offset (whole
+lines; a replaced or shrunk file re-folds from scratch), syncs the transcript tail, emits only on a resolved
+state change, re-arms the deadline timer, and — at rest, over 2 MiB — rotates the log to `<id>.events.1.jsonl`
+(a rest point is a clean replay boundary). At startup, after hydrate, `pruneClaudeStateDir` deletes the logs of
+sessions the workspace no longer holds (and the pre-fold `*.json`/`*.lock` bridge files).
+
 - **Sink.** Each push goes through `deps.onSessionState`, dispatched as `ingestSessionState` on the
-  single-writer command loop — never applied inline in the file-change callback. A stray file for a deleted
-  session is harmless (`ingestSessionState` no-ops for an unknown session).
-- **Refresh affordance (R1, §5.4).** The manual "refresh state" path is `watcher.rescan(sessionId)` — a
-  forced re-read + re-emit of one session's file — wired through `deps.refreshClaudeState`.
+  single-writer command loop — never applied inline in the file-change callback.
+- **Refresh affordance (R1, §5.4).** `watcher.rescan(sessionId)` — a forced re-fold + re-emit of one
+  session's log — wired through `deps.refreshClaudeState`.
 
-There is no `StateProvider`/`CompositeStateProvider`, no `ProgramStateDetectorRegistry`, no structural
-sentinel, no OSC/`tcgetpgrp`/`/proc` polling, and no per-session socket — all removed. `Unknown` is the resting
-state; transitions are event-driven (a file write) and emit immediately, so there is no debounce/hysteresis on
-the state itself (only the watcher's write-coalescing debounce).
+`Unknown` is the resting state; transitions are event-driven and emit immediately (the only debounce is the
+watcher's write coalescing, and the only timer is the wake grace).
 
 ### 9.4 Phase 3 Jenkins state mapping
 
@@ -1158,9 +1099,9 @@ try to reconstruct a `from → to` delta:
 
 - **Stateless message.** The toast is a bold **"State changed"** title over a `<Task> - <Session>` body — no
   old/new state. The user glances at it and checks the session themselves. This is a direct response to
-  Claude's hook timing: a turn that ends *and* needs input makes the bridge write **two** genuine states
-  (`Working → Waiting` on `Stop`, then `→ Blocked` on `Notification`/`PermissionRequest`) an arbitrary gap
-  apart (often >1 s). A `from → to` toast double-fired or showed a stale delta; a stateless "something changed,
+  Claude's hook timing: one logical change often surfaces as **two** genuine states an arbitrary gap apart
+  (e.g. `Working → NeedsInput → Working` around a quickly-approved permission, or a turn that ends and is
+  promptly re-opened). A `from → to` toast double-fired or showed a stale delta; a stateless "something changed,
   go look" cue sidesteps the race entirely. `SessionStateNotification` (the application-layer sink payload) and
   its `SessionStateNotificationEventDTO` therefore carry **only names**, never states.
 - **Fire on a meaningful transition.** `ingestSessionState` calls the `onSessionStateNotification` sink on any
@@ -1191,12 +1132,14 @@ try to reconstruct a `from → to` delta:
 ### 9.6 Where detection runs: out-of-band, backend-agnostic
 
 State detection **does not read the PTY at all** and is **not a runtime concern** — neither backend
-participates. The Claude python bridge (§9.1) runs as Claude's own hook/statusline subprocesses, entirely
-outside Octopus's process tree, and writes each session's state file; the single app-side `ClaudeStateWatcher`
-(§9.3, in Electron main) reads those files and feeds `ingestSessionState` on the command loop. This is
+participates. The Claude hook recorder (§9.1) runs as Claude's own hook subprocesses, entirely outside
+Octopus's process tree, and appends to each session's events log; the single app-side `ClaudeStateWatcher`
+(§9.3, in Electron main) folds those logs and feeds `ingestSessionState` on the command loop. This is
 identical whether the PTY lives in `octopusd` or in-process, so `SessionRuntime` carries **no state seam** and
 the daemon protocol carries **no state message** — both were removed when this replaced the earlier
-socket/composite design.
+socket/composite design. The one runtime-adjacent seam is `deps.prepareClaudeState(id, 'fresh' | 'resume')`,
+called by `startSessionRuntime` (an application use case, not the runtime) so the watcher knows whether a
+terminal is new or re-attached (§9.3).
 
 - **Why the fd's owner no longer matters.** The old design had to host detection wherever the PTY master fd
   lived (in-process → Electron main; daemon → inside `octopusd`) because it needed `tcgetpgrp(master_fd)` and
@@ -1218,99 +1161,38 @@ socket/composite design.
 - **Fallback.** If the daemon launch fails and the app degrades to in-process for that run (§6.2), detection is
   completely unaffected — the bridge + watcher are backend-agnostic by construction.
 
-### 9.7 Known limitations (heuristic edges, verified)
+### 9.7 Known limitations (verified edges)
 
-State detection is a best-effort heuristic layered on signals Claude Code was never designed to export as a
-state machine. It classifies the common path (prompt → work → tools → finish, plus mid-turn permission prompts)
-correctly the large majority of the time, but the following edges are known and **cannot** be eliminated
-without a richer signal (e.g. an Octopus MCP server, deferred in §9.2). They are ordered by user impact.
+State is folded from signals Claude Code was never designed to export as a state machine. The fold classifies
+the recorded live traces exactly (fixture tests), but the following edges remain, ordered by user impact.
 
-- **Mid-tool `tool_use` can transiently read as `Blocked`.** `derive_transcript_state` maps a dangling
-  `tool_use` (a `tool_use` with no matching `tool_result`) → `blocked`, unless every dangling one is a
-  delegation tool (§9.2). A non-delegation tool that is merely *mid-execution*
-  has the identical transcript signature to a tool awaiting a permission prompt. Because `transcript.mtime`
-  advances when the assistant streams a fresh `tool_use` block — potentially *before* the next `PreToolUse`
-  hook fires — a `statusline` tick in that window wins the newer-observation race and flips a `working` session
-  to `NeedsInput`. **Self-correcting** (the next in-turn hook overwrites it), so it is a transient flicker, not
-  a stuck state. Mitigation shipped: transcript-derived `blocked` is only honored when it is not contradicted by
-  a recent in-turn `working` hook (see §9.1) — this collapses the window to the rare case where no hook fires at
-  all.
-- **A turn-less transcript read as `Working` after `/clear` (fixed).** `/clear` starts a brand-new transcript
-  containing only `mode`/`file-history-snapshot`/`user`/`system`/`attachment` records — **no `assistant`
-  record** — and fires **no** `UserPromptSubmit` hook, so no fresh hook observation is recorded. Claude re-renders
-  its status bar, invoking the bridge's `statusline` mode; `derive_transcript_state` found no dangling `tool_use`
-  and no assistant turn and fell through to the terminal `working`. Recorded with a fresh `transcript.mtime`, it
-  beat the prior turn's older `Stop`→`waiting` hook in the newer-observation race, so the session showed Working.
-  Fixed: `derive_transcript_state` returns `waiting` when there is no assistant turn at all (§9.2). Safe because
-  live work always writes an `assistant` record before a `statusline` tick could read the transcript as turn-less.
-- **Interrupt (Esc) mid-tool → sticky `NeedsInput` until the next prompt.** An interrupt leaves a dangling
-  `tool_use` in the transcript with no clean-up hook, so at rest the transcript inference reads `blocked`. There
-  is no event that clears it; it resolves on the next `UserPromptSubmit`. Untested by construction (no hook
-  models an interrupt).
-- **Hooks installed mid-turn → `Unknown` for the current turn.** Turn gating requires a `UserPromptSubmit` to
-  open the turn; a session already running when Octopus first injects the hooks (or on first-run before the
-  user has submitted a prompt under the new settings) has a *closed* turn, so in-turn `PreToolUse`/`PostToolUse`
-  observations are gated out and **no state file is created** — the session stays `Unknown` until the next
-  prompt. The transcript backstop only helps if a `statusline` fires and the transcript is not frozen at a
-  dangling state.
-- **Subagent delegation (background & foreground) is actively handled; residual edges remain.** A session that
-  delegates to subagents (`Task`/`Agent`) is held `Working` for the whole run by the `subagents` counter
-  (`PreToolUse(Task|Agent)`++ .. `SubagentStop`--, with `Stop` deferring turn-close while the count is `> 0`) and
-  by delegation-aware transcript inference on the resume/no-hook path — see §9.1/§9.2. Edges persist, ordered by
-  impact.
-  (1) **A truly *absent* `SubagentStop` latches the session Working with no automatic release.** The
-  `subagent_count > 0` override short-circuits `effective()` *before* the transcript backstop, so a leaked entry
-  (a `SubagentStop` that never fires at all — child crash/kill, or an interrupt (Esc) mid-subagent that surfaces
-  as a deferred `StopFailure`) holds Working until the next `UserPromptSubmit` clears both tracking paths.
-  Because the false state is *Working* (not the milder NeedsInput), it also suppresses the §9.5 ready-for-review
-  highlight, so the very tab that needs attention looks busy. Recovery is the next prompt only; there is no
-  timeout. **This is the accepted residual cost of never reading a delegating session as prematurely-done.**
-  Note the related *duplicate/stray* `SubagentStop` under-count — a spurious stop wrongly cancelling a *live*
-  child — is **closed** once a child is tracked by `agent_id`: `subagent_ids` removal is a no-op for an id not in
-  the set, so only the matching child is ever cleared. The anonymous `subagents` counter (a launch that
-  `PreToolUse` counted but `SubagentStart` has not yet promoted, or a version that emits no `SubagentStart`)
-  remains vulnerable to it — a narrow window, since `SubagentStart` normally promotes the launch promptly.
-  (2) **Fire-and-forget converges without a resume (fixed):** when the main agent `Stop`s while a background
-  child runs, the Stop is deferred with a `stop_deferred` flag; the last child's `SubagentStop` (counter → 0
-  with the flag set) finalizes the close to Idle even if the main agent never resumes (§9.1). The residual
-  exposure is the reverse: if the main agent *does* resume right after that finalize (to consume the child's
-  result), Idle shows for the gap before the fresh `UserPromptSubmit` — a sub-second blip the §9.3 watcher's
-  ~40 ms coalescing usually swallows. Accepted as strictly better than the pre-fix unbounded stuck-Working.
-  (3) **A main-agent `blocked` can be masked by a concurrent background child's routine hooks.** The single
-  `hook` slot cannot represent "main awaiting permission AND child working" at once: while `subagents > 0`, a
-  genuine `PermissionRequest`/`Notification` (→ NeedsInput, correctly) is overwritten back to `working` by the
-  still-running child's next in-turn `PreToolUse`/`PostToolUse`, hiding the prompt behind Working until the main
-  agent re-emits it or the child ends. A permission prompt raised while no child is outstanding is unaffected.
-  (4) **Nested subagents** (a subagent spawning its own subagent) are tracked only if their hooks carry the same
-  `OCTOPUS_SESSION_ID`; a mismatch would under/over-count, but a mismatched `agent_id` is a distinct
-  `subagent_ids` entry (no collision), and the `UserPromptSubmit` reset still bounds any drift to one turn.
-  (5) **Sidechain layout is version-coupled but guarded:** today's Claude writes subagent activity to *separate*
-  `subagents/agent-*.jsonl` files and the `statusline` `transcript_path` names only the main transcript, so a
-  subagent's own dangling `tool_use` never appears there; `derive_transcript_state` additionally skips
-  `isSidechain` records, so even a future version that inlines sidechains into the main transcript stays correct.
-- **Lost-update race between the hook and statusline processes (resolved).** Every hook and the statusline run
-  as independent OS processes doing read-modify-write on the same `<id>.json`; `os.replace` makes each *swap*
-  atomic but not the read-modify-write *pair*. Left unserialized this was **not** the low-probability,
-  self-healing risk once assumed: when a session drives **multiple background subagents**, their `PreToolUse` /
-  `SubagentStart` / `SubagentStop` / `Stop` events fire as concurrent subprocesses and clobber each other's
-  subagent-tally update (~20% loss under load, reproduced). A lost *increment* under-counts the tally so the
-  deferred-Stop finalizer (`subagent_count == 0 && stop_deferred`) fires while a child still runs — the session
-  wrongly flashes Idle/"done"; a lost *decrement* leaves it stuck Working. `write_state` now serializes the entire
-  read → mutate → `os.replace` under an exclusive advisory `flock` (§9.1). It locks a **dedicated `<id>.lock`
-  file**, never the json: `os.replace` swaps the json's inode and `flock` binds to an inode, so a lock on the
-  json's fd would guard the orphaned old inode while the next process locks the new one (no mutual exclusion); the
-  lock file is created once and never replaced or unlinked, so its inode is stable and all racers contend on it.
-  `flock` (not POSIX record locks) releases on close **and** on process exit/crash, so a killed hook leaves no
-  stale lock. The statusline's delegation to the user's original command stays **outside** the lock (it runs after
-  `write_state` returns), so a slow user statusline never stalls another session's hooks. If `fcntl` is
-  unavailable (non-Linux) or the lock can't be taken, it degrades to the prior unlocked behavior — never failing
-  the hook. Covered by concurrency tests that spawn parallel real `python3` processes.
-- **Silent degradation to `Unknown`.** Every hook is `… 2>/dev/null || true` and the bridge swallows all write
+- **A crashed / killed subagent can hold Working.** A subagent that ends with no `SubagentStop` stays in the
+  roster until the lead's next `Stop` inventory (or a `turn_duration` with no pending agents) reaps it — a
+  deliberate trade to never show "done" prematurely. A reaped *background* agent still gets the wake grace.
+- **Esc while background agents run is unverified.** An interrupt that kills running agents is expected to show
+  in `turn_duration`'s `pendingBackgroundAgentCount` (→ roster cleared); if Claude keeps them running the
+  session correctly stays Working.
+- **Denied permission / Esc depend on the transcript format.** Neither fires a hook; both are read from the
+  transcript tail (§9.3). A Claude version that changes the interrupt marker or `turn_duration` would leave a
+  denied prompt on Needs input until the next prompt. Verified on Claude Code 2.1.x.
+- **An approved permission stays `NeedsInput` until the tool finishes.** Claude fires no hook when the user
+  approves; the next signal is the tool's `PostToolUse` (or the holder's next tool). A long command run after
+  approval (e.g. a 2-minute test suite) therefore shows Needs input throughout. Denial and Esc are read from the
+  transcript (below); approval writes nothing there either until the tool result.
+- **Whether a subagent's `PermissionRequest` carries `agent_id` is unverified.** If it does not, the request is
+  attributed through the open tool calls (the child with that exact call open), else to the lead while it is
+  working, or to `?` (a running child) once the lead is done; it shows Needs input and is released by the
+  matching tool completion.
+- **A user `Stop` hook that makes Claude continue** shows a brief Idle between the two halves (the revive gate
+  accepts the same-prompt continuation).
+- **Hooks installed mid-session → `Unknown`** until that Claude's next event that the fold admits (Claude reads
+  hooks at its start).
+- **Silent degradation to `Unknown`.** Every hook is `… 2>/dev/null || true` and the recorder swallows all
   errors (§9.2), so any of: `python3` absent from PATH, `OCTOPUS_SESSION_ID` not surviving into the hook
-  subprocess env, or a Claude version renaming an event / changing the `transcript_path`/`stop_reason` payload
-  shape — degrades the affected session to `Unknown` with no error surfaced. This is the intended
-  graceful-degradation posture, and it is why detection is not, and cannot be advertised as, correct 100% of the
-  time.
+  subprocess env, or a Claude version renaming an event — degrades the affected session to `Unknown` with no
+  error surfaced. This is the intended graceful-degradation posture.
+- **An external same-inode rewrite of a log** that is not smaller than the read offset is not detected as a
+  replacement (only the recorder ever writes the logs, and it only appends).
 - **Ready-for-review on the cross-window task rollup (resolved).** A session that finishes a turn *in place* in a
   focused *secondary* window fires no focus transition, and each renderer knows only its own OS focus — so the
   **main** window's `taskDisplayState` (which folds over sessions in any window) once rolled `Review` onto the task
@@ -1370,10 +1252,10 @@ is untouched: a `JenkinsPane` carries a `windowId` like any session and moves be
 
 ### Phase 2 — Session state + aggregation + icons
 
-- Implement the **out-of-band Claude state bridge** (§9.1): one stdlib-only python3 script, embedded in TS and
+- Implement the **out-of-band Claude hook recorder** (§9.1): one stdlib-only python3 script, embedded in TS and
   written to the data dir on startup, wired into Claude's lifecycle hooks + statusline via a merge-safe edit of
-  `~/.claude/settings.json` (§9.2, §12.1). It writes a per-session state file keyed by `OCTOPUS_SESSION_ID`
-  (turn-gated newer-observation-wins over the hooks + transcript). Flip Terminal's `EvaluatesState` on.
+  `~/.claude/settings.json` (§9.2, §12.1). It appends to a per-session events log keyed by
+  `OCTOPUS_SESSION_ID`; the app-side fold (§9.3) resolves the state. Flip Terminal's `EvaluatesState` on.
 - **Detection is backend-agnostic and not a runtime concern (§9.6):** the bridge runs as Claude's own
   subprocesses, and a single app-side `ClaudeStateWatcher` (Electron main) file-watches the state dir and feeds
   `ingestSessionState`. Same for the in-process and daemon backends — no state seam on `SessionRuntime`, no
@@ -1406,13 +1288,13 @@ is untouched: a `JenkinsPane` carries a `windowId` like any session and moves be
 
 | # | Risk | Sev | Mitigation |
 |---|---|---|---|
-| R1 | State-detection reliability | High | Status is Claude-only, sourced out-of-band from Claude's own hooks + statusline (§9.1, §9.2) — no PTY parsing, no heuristic. Turn-gating stops a stray post-`Stop` sub-event resurrecting Working; the transcript backstop covers a resumed/legacy mid-turn file; `ClaudeStateWatcher.rescan` is the manual "refresh state" affordance; log every transition. |
-| R2 | PTY performance with many sessions | Med | Single epoll loop; output batching (leading-edge + 3 ms trailing coalesce, §6.6); state detection is off the PTY path entirely (§9.6 — external python bridge + file watches), so it adds nothing to the hot path. |
+| R1 | State-detection reliability | High | Status is Claude-only, sourced out-of-band from Claude's own hooks + statusline (§9.1, §9.2) — no PTY parsing, no heuristic. A pure fold over an append-only log, tested against recorded live traces; the revive gate stops a stray post-`Stop` event resurrecting Working; the transcript tail covers a denied permission / Esc (no hook); a daemon re-attach replays the log; `ClaudeStateWatcher.rescan` is the manual "refresh state" affordance; log every transition. |
+| R2 | PTY performance with many sessions | Med | Single epoll loop; output batching (leading-edge + 3 ms trailing coalesce, §6.6); state detection is off the PTY path entirely (§9.6 — external hook recorder + file watches), so it adds nothing to the hot path. |
 | R3 | Worktree provisioning safety (repo-local script **or** native git) | High | Validate the resulting path (absolute, exists, is a directory; warn if not a git worktree); containment check before delete (exactly the stored path, not `/`/`repoDir`/an ancestor); 30 s timeout; show command output; **all inputs passed as argv — no shell interpolation** for both scripts and native git (I17). |
 | R4 | Keeping many sessions alive / crash loses agent work | Med | Phase 1 accepts loss + fresh-shell restore; durable backend (tmux/daemon) is the phase 2+ mitigation behind `SessionManager`; warn on quit if Working/Blocked. |
-| R5 | Security (air-gapped on-prem): state-file trust, secrets | Med | The bridge only reads/writes JSON — nothing from Claude's payloads is ever executed; the watcher reads a small set of known fields and maps unknown states to `Unknown`; `~/.claude/settings.json` edits are merge-safe and tagged (`#octopus-state`), never clobbering the user's config; secrets only via keychain (`credentialsRef`), never in the store/JSON. |
+| R5 | Security (air-gapped on-prem): events-log trust, secrets | Med | The recorder only parses JSON and appends — nothing from Claude's payloads is ever executed, and prompt text is never stored; the fold reads a small set of known fields and ignores unknown events; `~/.claude/settings.json` edits are merge-safe and tagged (`#octopus-state`), never clobbering the user's config; secrets only via keychain (`credentialsRef`), never in the store/JSON. |
 | R6 | Bridge failure degrades gracefully | Low–Med | Every hook is `… 2>/dev/null \|\| true` and the bridge wraps every write; a failure is a silent no-op (session stays `Unknown`) and the user's statusline still renders (the bridge chains to their saved original). |
-| R7 | State flicker | Low | Claude-only, event-driven from discrete hook/transcript observations (§9.1): no activity/staleness timers to flap between. Newer-observation-wins is self-dating; turn-gating prevents a stale sub-event from flipping a finished session. |
+| R7 | State flicker | Low | Claude-only, event-driven from discrete hook/transcript observations (§9.3): the only timer is the bounded wake grace. Background agents and their wake-up hand-off are held Working; the revive gate prevents a stale event from flipping a finished session. |
 | R8 | (phase 1.5) Cross-window move race — window moved between drop and `windowAtPoint`, or overlapping unmount/mount | Low | Hit-test is best-effort; worst case the session lands in the wrong window and is re-draggable. Source/target renderers are separate processes, so a brief double-sink during the move overlap cannot collide; the `pty-router` pending buffer covers the pre-mount gap (§6.7). |
 | R9 | (phase 1.5) Quit blocked by the secondary-window close dialog | Low | `before-quit` sets an `isQuitting` flag; the secondary `close` handler skips its dialog when quitting, so `Ctrl+Q` runs the normal graceful shutdown (§6.7). |
 | R10 | (phase 1.5) Persisted window off-screen after a monitor change | Low | On restore, clamp any window intersecting no display work area to the nearest display (`screen.getAllDisplays()`), preserving size (§6.3). |
@@ -1420,15 +1302,16 @@ is untouched: a `JenkinsPane` carries a `windowId` like any session and moves be
 **Observability:** structured JSON state-transition log at `~/.local/share/octopus/state.log`;
 keyboard-toggled debug overlay showing the last N transitions per session (reason + observation source).
 
-**Testing strategy:** unit (the REAL python3 bridge shelled out — event→state mapping, turn-gating,
-newer-observation-wins, transcript inference; aggregation combinations — all skip-if-no-python3); integration
-(end-to-end: real bridge writes a state file → real `ClaudeStateWatcher` → `coreToSessionState` → sink,
-including the stray-post-`Stop` regression and resume-recovery initial scan); e2e (real Claude Code with the
+**Testing strategy:** unit (the REAL python3 recorder shelled out against a golden recorded trace; the pure fold
+replayed over recorded live hook + transcript traces in `test/fixtures/claude-state/`; aggregation combinations —
+python tests skip-if-no-python3); integration (end-to-end: real recorder appends → real `ClaudeStateWatcher` →
+sink, including both background-agent regressions, fresh-vs-re-attach, and a denied permission via the
+transcript); e2e (real Claude Code with the
 injected hooks → assert Working/Blocked/Idle). Worktree scripts tested against a throwaway repo with a fake
 create/delete script.
 
-**Performance targets:** PTY read→render <5 ms; hook→state-file-write <20 ms; file-change→task icon
-<100 ms (fs.watch + ~40 ms coalescing debounce, §9.3); Jenkins poll 10 s; per-session state file < a few KB.
+**Performance targets:** PTY read→render <5 ms; hook→log-append <20 ms; file-change→task icon
+<100 ms (fs.watch + ~40 ms coalescing debounce, §9.3); Jenkins poll 10 s; per-session events log rotated at rest over 2 MiB.
 
 ---
 

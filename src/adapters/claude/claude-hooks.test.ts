@@ -111,6 +111,22 @@ describe('mergeClaudeHooks (§9.2 — merge-safe, idempotent)', () => {
     expect(stopCmds[0].command).not.toContain('old-cmd')
   })
 
+  it('removes our entry from an event we no longer record, keeping the user’s', () => {
+    const ours = { type: 'command' as const, command: `old ${OCTOPUS_HOOK_MARKER}` }
+    const theirs = { type: 'command' as const, command: 'notify-send hi' }
+    const merged = mergeClaudeHooks(
+      {
+        hooks: {
+          Notification: [{ hooks: [ours] }, { hooks: [theirs] }],
+          SomethingElse: [{ hooks: [ours] }]
+        }
+      },
+      SCRIPT
+    )
+    expect(merged.hooks?.Notification).toEqual([{ hooks: [theirs] }])
+    expect(merged.hooks).not.toHaveProperty('SomethingElse')
+  })
+
   it('does not mutate the input object', () => {
     const input = { hooks: {} }
     const snapshot = JSON.stringify(input)
@@ -165,5 +181,19 @@ describe('hasAllOctopusHooks', () => {
     expect(hasAllOctopusHooks({ hooks: { Stop: [] } }, SCRIPT)).toBe(false)
     // Hooks present but statusline not yet wrapped.
     expect(hasAllOctopusHooks(mergeClaudeHooks({}, SCRIPT), SCRIPT)).toBe(false)
+  })
+
+  it('is false while an event we no longer record still holds an Octopus entry', () => {
+    const { settings } = mergeStatusLine(mergeClaudeHooks({}, SCRIPT), SCRIPT)
+    const legacy = {
+      ...settings,
+      hooks: {
+        ...settings.hooks,
+        Notification: [
+          { hooks: [{ type: 'command' as const, command: `x ${OCTOPUS_HOOK_MARKER}` }] }
+        ]
+      }
+    }
+    expect(hasAllOctopusHooks(legacy, SCRIPT)).toBe(false)
   })
 })

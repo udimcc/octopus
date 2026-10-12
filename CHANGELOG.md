@@ -16,6 +16,20 @@ All notable changes to Octopus are documented here. The format is based on
 
 ### Fixed
 
+- **Claude status went "done" while a background agent was still running.** With two
+  background agents, the first one finishing turned the session Idle while the second
+  still ran. The session now stays Working while any background agent runs.
+- **Claude status flickered done-then-working when a background agent returned.** Between
+  an agent finishing and Claude picking up its result, the session briefly read Idle, which
+  raised a false notification. The session now stays Working across that hand-off. If
+  Claude never picks up the result, the session goes Idle after about 10 seconds.
+- **A denied permission or an Esc left the session on Needs input / Working.** Neither
+  fires a Claude hook; Octopus now reads them from Claude's transcript and shows Idle.
+- **A new terminal could show the status of a Claude from before the restart.** A freshly
+  started terminal now has no status until a Claude in it reports. A terminal re-attached
+  from the daemon still recovers its live status, including running agents.
+- **A `claude -p` run from inside a session changed that session's status.** Hooks of a
+  Claude nested inside the session's own Claude are now ignored.
 - **With two windows, only one of them showed a marked session.** Walking from a tab in
   one window to a tab in another with the session shortcut left the first window with no
   marked tab, and it switched to showing its first session. Each window now keeps its own
@@ -49,6 +63,20 @@ All notable changes to Octopus are documented here. The format is based on
   `XAUTHORITY`, `DBUS_SESSION_BUS_ADDRESS` and `SSH_AUTH_SOCK`. Those vars are now
   overridden per spawn from the app's (current) environment. Already-running shells keep
   the env they were forked with — a process's environment cannot be rewritten.
+
+### Changed
+
+- **Claude status is now decided by Octopus, not by the hook script.** The python script
+  wired into Claude's hooks now only records each hook to a per-session log
+  (`claude-state/<session>.events.jsonl`); Octopus folds that log into the status. The
+  statusline is a pure pass-through to your own statusline command again.
+- **`AskUserQuestion` shows Needs input**, like a permission request.
+- **Quitting Claude clears the session's icon** (no status), instead of leaving it Idle.
+- **Needs input wins over running background agents**, so a permission prompt is never
+  hidden behind Working.
+- **The `Notification` hook is no longer installed.** Octopus removes its old entry from
+  `~/.claude/settings.json` on startup; your own `Notification` hooks are kept. Old
+  per-session state files (`*.json`, `*.lock`) are deleted.
 
 ## [0.2.0]
 

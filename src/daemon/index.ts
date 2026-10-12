@@ -35,8 +35,8 @@ async function main(): Promise<void> {
   ensureDaemonDir(uid)
   const socketPath = controlSocketPath(uid)
 
-  // State detection is no longer a daemon concern (§9.6): the Claude python bridge
-  // writes each session's state file (keyed by OCTOPUS_SESSION_ID) and a single
+  // State detection is no longer a daemon concern (§9.6): the Claude hook recorder
+  // appends to each session's events log (keyed by OCTOPUS_SESSION_ID) and a single
   // app-side watcher feeds the Application. The daemon only owns PTY lifecycle.
   const registry = new PtyRegistry()
 

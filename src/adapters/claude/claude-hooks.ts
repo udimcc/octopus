@@ -4,17 +4,16 @@
  * detection work OUT OF THE BOX for every Octopus user — a user who never touches
  * their Claude config still gets authoritative Working/Waiting/Blocked in Octopus.
  *
- * ## The model (replaces the old socket transport)
- * State no longer travels over a per-session Unix socket. Instead a single python3
- * bridge ({@link ensureClaudeStateScript}, written into the data dir on startup) owns
- * ALL of the state logic; the settings.json only points Claude's events at it:
- *   - every lifecycle HOOK runs `python3 <script> hook <Event>` — the script maps the
- *     event to a state and records it in the session's state file;
- *   - the STATUSLINE runs `python3 <script> statusline` — the script derives state
- *     from the transcript (the resume-recovery path), records it, THEN delegates to
- *     the user's ORIGINAL statusline command and prints its output verbatim, so the
- *     user's status bar is unchanged.
- * Octopus's app-side watcher reads those files and feeds `ingestSessionState`.
+ * ## The model
+ * A single python3 recorder ({@link ensureClaudeStateScript}, written into the data
+ * dir on startup) is pointed at by the settings.json; it holds NO state logic:
+ *   - every lifecycle HOOK runs `python3 <script> hook <Event>` — the script appends
+ *     one compact line (event, ids, tool facts) to the session's events log;
+ *   - the STATUSLINE runs `python3 <script> statusline` — a pure pass-through to the
+ *     user's ORIGINAL statusline command (its output printed verbatim), so the user's
+ *     status bar is unchanged.
+ * Octopus's app-side watcher folds those logs into a state (`claude-session-fold.ts`)
+ * and feeds `ingestSessionState`.
  *
  * Correlation is by `OCTOPUS_SESSION_ID` (injected into every managed PTY), which the
  * hook/statusline subprocesses inherit — so one GLOBAL settings entry serves every
@@ -76,31 +75,26 @@ interface ClaudeSettings {
 }
 
 /**
- * The Claude lifecycle events Octopus wires. The state each maps to lives in the
- * python bridge (`HOOK_STATES`), NOT here — the hook command only names the event, so
- * the mapping has a single source of truth. Mirrors the prior socket mapping:
- *   Stop/StopFailure → waiting, Notification/PermissionRequest → blocked (Notification
- *   suppresses the idle "waiting for your input" reminder, in the script), everything
- *   else → working.
+ * The Claude lifecycle events Octopus records. What each MEANS lives in the app-side
+ * fold (`claude-session-fold.ts`), NOT here — the hook command only names the event.
+ * `Notification` is deliberately absent: it fires both for a real permission prompt
+ * (~6 s after the PermissionRequest that already said so) and for the idle reminder
+ * after a finished turn, so it adds only noise. An install that still carries it (or
+ * any other event we no longer want) is cleaned up by {@link mergeClaudeHooks}.
  */
 export const HOOK_EVENTS: readonly string[] = [
-  'Stop',
-  'StopFailure',
-  'Notification',
+  'SessionStart',
+  'SessionEnd',
+  'UserPromptSubmit',
+  'PreToolUse',
+  'PostToolUse',
+  'PostToolUseFailure',
   'PermissionRequest',
   'SubagentStart',
   'SubagentStop',
-  'PreToolUse',
-  'PostToolUse',
-  'UserPromptSubmit'
+  'Stop',
+  'StopFailure'
 ]
-
-/**
- * The idle "waiting for your input" reminder Claude fires AFTER a turn already ended.
- * Kept as an exported constant for documentation/parity; the actual suppression now
- * happens inside the python bridge (see `IDLE_NOTIFICATION_MARKER` there).
- */
-export const IDLE_NOTIFICATION_MARKER = 'waiting for your input'
 
 /**
  * The shell one-liner a hook runs: invoke the bridge for this event, never fail the
@@ -164,6 +158,16 @@ export function mergeClaudeHooks(settings: ClaudeSettings, scriptPath: string): 
     hooks[event] = userGroups
   }
 
+  // Remove our entry from events we no longer record (e.g. Notification from an older
+  // Octopus); the user's own entries there stay, and an emptied event is dropped.
+  const wanted = new Set(HOOK_EVENTS)
+  for (const [event, groups] of Object.entries(hooks)) {
+    if (wanted.has(event) || !hasOctopusEntry(groups)) continue
+    const kept = stripOctopusEntries(groups)
+    if (kept.length > 0) hooks[event] = kept
+    else delete hooks[event]
+  }
+
   return { ...settings, hooks }
 }
 
@@ -215,8 +219,12 @@ export function hasAllOctopusHooks(settings: ClaudeSettings, scriptPath: string)
     const groups = settings.hooks?.[event]
     return groups !== undefined && hasOctopusEntry(groups)
   })
+  const wanted = new Set(HOOK_EVENTS)
+  const noStale = Object.entries(settings.hooks ?? {}).every(
+    ([event, groups]) => wanted.has(event) || !hasOctopusEntry(groups)
+  )
   const statusOk = settings.statusLine?.command === statusLineCommand(scriptPath)
-  return hooksOk && statusOk
+  return hooksOk && noStale && statusOk
 }
 
 export interface ClaudeHooksResult {

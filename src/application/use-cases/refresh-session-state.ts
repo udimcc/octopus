@@ -4,9 +4,9 @@
  * Flows through the single-writer loop so it orders correctly against close/create
  * (§6.6).
  *
- * State detection is file-based now (§9.6): the Claude python bridge writes each
- * session's state file, and the composition-root watcher feeds `ingestSessionState`.
- * "Refresh" therefore asks the watcher to RE-READ this session's file and re-emit —
+ * State detection is file-based (§9.6): the Claude hook recorder appends to each
+ * session's events log, and the composition-root watcher feeds `ingestSessionState`.
+ * "Refresh" therefore asks the watcher to RE-FOLD this session's log and re-emit —
  * `deps.refreshClaudeState(sessionId)` → `watcher.rescan(...)`. Best-effort and
  * silent: absent sink (detection opted out) is a no-op, and the re-emit, if any,
  * arrives asynchronously as an ordinary `ingestSessionState`, so this emits no event.

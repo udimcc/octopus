@@ -4,8 +4,8 @@
  * only to this interface, so a V2 durable backend (daemon/tmux) is a drop-in
  * `SessionManager` swap with no renderer change (§6.2).
  *
- * State detection is NOT a runtime concern (§9.6): the Claude python bridge writes
- * each session's state file (keyed by OCTOPUS_SESSION_ID) and a single app-side
+ * State detection is NOT a runtime concern (§9.6): the Claude hook recorder appends
+ * to each session's events log (keyed by OCTOPUS_SESSION_ID) and a single app-side
  * watcher feeds the Application. So the runtime owns only the PTY lifecycle, and its
  * contract is identical across the in-process and daemon backends.
  */

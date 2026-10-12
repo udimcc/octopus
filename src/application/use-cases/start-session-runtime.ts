@@ -15,8 +15,8 @@
  *
  * Builds the `SessionRuntimeContext`: cwd = last-known cwd (durable backend, §6.2)
  * or config override or the worktree; env = the process env the adapter sanitizes +
- * augments with OCTOPUS_* (incl. OCTOPUS_SESSION_ID, which the Claude bridge keys
- * state files by, §9.6); onData → `ptyData` event; onExit → the late-bound
+ * augments with OCTOPUS_* (incl. OCTOPUS_SESSION_ID, which the Claude recorder keys
+ * events logs by, §9.6); onData → `ptyData` event; onExit → the late-bound
  * `deps.onRuntimeExit` which re-enters the single-writer loop as a `handleRuntimeExit`
  * command (never mutates inline, §6.6).
  *
@@ -89,6 +89,10 @@ export async function startSessionRuntime(
     onExit: (exitCode, signal) => deps.onRuntimeExit?.(id, exitCode, signal)
   }
 
+  // Tell state detection how this terminal came to be BEFORE it can produce output, so
+  // a fresh shell never inherits a previous Claude's status (§9.3).
+  deps.prepareClaudeState?.(id, resume ? 'resume' : 'fresh')
+
   const runtime = provider.createRuntime(deps.sessions, ctx)
 
   session.markStarting()
@@ -105,10 +109,10 @@ export async function startSessionRuntime(
   session.markRunning()
   deps.runtimes.set(id, runtime)
 
-  // State detection is no longer per-runtime (§9.6): the Claude python bridge writes
-  // each session's state file (keyed by OCTOPUS_SESSION_ID == this session's id) and
-  // the composition-root watcher feeds `onSessionState` for every session globally.
-  // So there is nothing to subscribe here — the runtime owns only its PTY lifecycle.
+  // State detection is not per-runtime (§9.6): Claude's hooks append to the session's
+  // events log (keyed by OCTOPUS_SESSION_ID == this session's id) and the
+  // composition-root watcher feeds `onSessionState`. Nothing to subscribe here — the
+  // runtime owns only its PTY lifecycle.
 
   // Deliver an initial command to the fresh shell, if configured (§3.2). Skipped on
   // a re-attach: the shell already exists (and likely already ran it), so re-running

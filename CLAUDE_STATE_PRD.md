@@ -23,8 +23,8 @@ A Claude session is always in exactly one of four states:
 |---|---|---|
 | **Idle** | Claude is at rest — a turn finished, or the session is freshly sitting at a prompt. No work in flight, nothing needed from the user. | Claude answered and is waiting for the next prompt. |
 | **Working** | Claude is actively doing something. | Claude is thinking, editing files, or running a tool. |
-| **Needs input** | Claude has stopped and needs the user before it can continue. | A permission/approval request. Also used for a session whose terminal has exited or failed to start. |
-| **Unknown** | No status signal (not a Claude session, or Claude hasn't reported yet). | A shell, an editor, or a session that just launched. |
+| **Needs input** | Claude has stopped and needs the user before it can continue. | A permission/approval request, or Claude asking the user a question (`AskUserQuestion`). Also used for a session whose terminal has exited or failed to start. |
+| **Unknown** | No status signal (not a Claude session, Claude hasn't reported yet, or Claude has exited). | A shell, an editor, a session that just launched, or a terminal whose Claude was quit. |
 
 Notes:
 - **Idle** means _no Claude work at all AND no input needed_. A finished turn is Idle; a turn
@@ -153,14 +153,30 @@ changed even while looking elsewhere.
   though the main agent may momentarily appear to stop. The session must **not** flash Idle or
   ready-for-review while a sub-agent is still running, and must not flicker done-then-working when a
   sub-agent returns and the main agent resumes.
+  - **One of several finishing.** When one of several background sub-agents finishes, the session
+    stays Working while any other is still running.
   - **Fire-and-forget sub-agents.** When the main agent finishes but a background sub-agent is still
-    running, the session stays Working; it goes Idle only once the last sub-agent completes.
+    running, the session stays Working; it goes Idle only once the last sub-agent has completed
+    **and** the main agent has picked up its result (Claude wakes the main agent with the result;
+    the session stays Working across that hand-off). If the result is never picked up, the session
+    goes Idle after a short grace (~10 s of the main agent being at rest), and later turns are not
+    held up by it.
+  - **Only sub-agents count.** Background shells and scheduled jobs do not keep a session Working.
+- **Needs input wins over background work.** A permission request or question — from the main agent
+  or from a sub-agent — shows Needs input even while other sub-agents are still running.
+- **Denied permission / Esc.** Denying a permission request, or interrupting Claude (Esc), ends the
+  turn: the session goes **Idle** (with no sub-agent still running).
+- **Claude exits.** Quitting Claude inside a terminal clears the icon (Unknown); the terminal is just
+  a shell again.
 - **Finished session must not revive.** Once a session is correctly Idle for a finished turn, a
   stray late signal must **not** flip it back to Working without a new user prompt.
 - **`/clear`.** Clearing the conversation leaves the session **Idle**, not Working (a fresh/empty
   conversation is at rest).
-- **Session resumed / app restarted.** After Octopus (or the session) restarts, the correct current
-  status is recovered — a mid-turn session reads Working, a finished one reads Idle.
+- **Session resumed / app restarted.** When the terminal survives an Octopus restart (the durable
+  daemon backend re-attaches it), the correct current status is recovered at once — a mid-turn
+  session reads Working, a finished one reads Idle, running sub-agents are still counted. A terminal
+  that is started **fresh** (no surviving process) shows **no** status until a Claude in it
+  reports: whatever an earlier Claude was doing is gone with it.
 - **Exited / failed session.** A session whose terminal exited or failed to start is treated as
   **Needs input** (it demands the user's attention).
 - **Permission requests keep the session busy.** A session awaiting permission is Needs input and is
@@ -172,8 +188,15 @@ changed even while looking elsewhere.
 
 Accepted, low-frequency edge cases (detail in `DESIGN.md §9.7`):
 - A sub-agent that crashes or is interrupted mid-run (no completion signal) can leave the session
-  stuck Working until the next user prompt — a deliberate trade to never show "done" prematurely.
+  stuck Working until the main agent's next turn ends — a deliberate trade to never show "done"
+  prematurely.
 - If Claude's status signals aren't installed when a session starts mid-turn, that session may read
   Unknown until the next turn.
-- A main agent that is blocked _while_ a background sub-agent is working may briefly show Working
-  instead of Needs input (a single status can't hold both at once).
+- A denied permission or an Esc fires no Claude hook; it is read from Claude's transcript, so it
+  depends on Claude's transcript format (verified on Claude Code 2.1.x).
+- A user-defined Claude `Stop` hook that makes Claude continue can show a brief Idle between the
+  two halves of the turn.
+- Approving a permission request fires no Claude signal, so the session stays **Needs input** until
+  the approved tool finishes (a long command run after approval shows Needs input throughout).
+  Denying the main agent's request is detected at once (above); a sub-agent's denied request clears
+  when that sub-agent next acts or finishes.

@@ -1,39 +1,41 @@
 /**
- * The single self-contained python3 script that IS the new Claude state-detection
- * source edge (replacing the socket/composite/OSC/proc pipeline). Octopus writes it
- * into the data dir on startup (see {@link ensureClaudeStateScript}) — the same
- * embed-a-string-and-write-on-boot pattern as `ensureShellIntegrationFiles`, chosen
- * over shipping a bundled asset because electron-vite's `out/` vs `release/` layouts
- * make an on-disk asset path fragile, whereas a data-dir file is location-stable and
- * is exactly how the bash/zsh rc files already work.
+ * The single self-contained python3 script that is the Claude state-detection SOURCE
+ * EDGE (DESIGN §9.2). Octopus writes it into the data dir on startup (see
+ * {@link ensureClaudeStateScript}) — the same embed-a-string-and-write-on-boot
+ * pattern as `ensureShellIntegrationFiles`, chosen over shipping a bundled asset
+ * because electron-vite's `out/` vs `release/` layouts make an on-disk asset path
+ * fragile, whereas a data-dir file is location-stable.
  *
- * ## One script, three modes (all driven from `~/.claude/settings.json`)
- *   - `hook <Event>`  — wired to Claude's lifecycle hooks. Maps the event to a state
- *     (Stop/StopFailure→waiting, Notification/PermissionRequest→blocked, everything
- *     else→working), suppressing the idle "waiting for your input" Notification the
- *     way the old `nc` hook did. Records it as the session's `hook` observation.
- *   - `statusline`    — wired to `statusLine.command`. Derives state from the SESSION
- *     TRANSCRIPT tail (the resume-recovery path: after `--resume` the prior process's
- *     hooks are gone, but the transcript survives). Records it as the `transcript`
- *     observation, THEN delegates to the user's original statusline command and prints
- *     its output verbatim so the user's status bar is unchanged.
- *   - `get <id>`      — prints the effective state for a session id (debug / tooling).
+ * ## A dumb recorder
+ * The script holds NO state logic. Each Claude hook appends ONE trimmed JSON line to
+ * `<dataDir>/claude-state/<OCTOPUS_SESSION_ID>.events.jsonl` — a single `O_APPEND`
+ * write, so concurrent hooks (lead + subagents fire in parallel) interleave whole
+ * lines without a lock. Everything else — the subagent roster, waits, the
+ * task-notification hand-off, interrupts read from the transcript — is the app-side
+ * pure fold (`claude-session-fold.ts`) over that log, which is unit-testable and
+ * replayable. The script never prints on the hook path and always exits 0, so a
+ * failure can never break or alter Claude's behavior.
  *
- * ## State file (per session, keyed by OCTOPUS_SESSION_ID)
- * `<dataDir>/claude-state/<OCTOPUS_SESSION_ID>.json`, written atomically:
- *   { state, reason, updated_at,
- *     hook:       { state, reason, ts, event },
- *     transcript: { state, reason, mtime } }
- * The effective `state` is resolved by NEWER-OBSERVATION-WINS between `hook.ts`
- * (wall-clock at hook time) and `transcript.mtime` (the transcript file's mtime),
- * tie → hook. Live, a hook fires at now ≥ transcript mtime, so hooks stay
- * authoritative; after resume the transcript advances with no new hook, so it wins —
- * no fixed staleness window. Octopus's file-watcher (`claude-state-watcher.ts`) reads
- * `state` and feeds the existing `ingestSessionState` command.
+ * ## Modes (all driven from `~/.claude/settings.json`)
+ *   - `hook <Event>` — append the event's record (inert unless `OCTOPUS_SESSION_ID`
+ *     is set, i.e. outside an Octopus-managed PTY, and for a nested `claude` started
+ *     from inside the session's own Claude, whose hooks would otherwise be mistaken
+ *     for the session's).
+ *   - `statusline`   — a pure pass-through to the user's ORIGINAL statusLine command
+ *     (saved in `claude-state/original-statusline`); it records nothing. Kept
+ *     installed so upgrading never rewrites the user's statusLine setting.
+ *   - anything else  — a no-op.
  *
- * The script only WRITES when `OCTOPUS_SESSION_ID` is set (so it is inert outside an
- * Octopus-managed PTY); `statusline` still delegates in that case so a user running
- * Claude in a plain terminal keeps their status bar.
+ * ## Record (`v:1`, compact ASCII JSON, ≤ 8 KiB; see `HookEvent` in the fold)
+ * Common: `t` (epoch ms), `ev`, `sid` (Claude session_id), `aid` (agent_id; absent ⇒
+ * the lead), `prm` (prompt_id). Per event: SessionStart `src`,`tp`; SessionEnd `rsn`;
+ * UserPromptSubmit `tp`, `tn` (the task id of a harness `<task-notification>` prompt —
+ * the prompt text itself is never stored); Pre/PostToolUse(/Failure) and
+ * PermissionRequest `tool`, `tu` (tool_use_id), `ih` (a short hash of the canonical
+ * tool_input, correlating a PermissionRequest — which has no tool_use_id — to its
+ * tool call), `intr` (is_interrupt); PostToolUse(Agent|Task) `bga` (background launch)
+ * or `fga` (finished foreground run); SubagentStart/Stop `at`; Stop/StopFailure and
+ * SubagentStop `bg` (background_tasks: `{id, ty, st}`, ≤ 32 entries).
  */
 
 import { writeFileSync, mkdirSync, chmodSync } from 'node:fs'
@@ -42,7 +44,7 @@ import { join } from 'node:path'
 /** Filename of the generated script within the data dir. */
 export const CLAUDE_STATE_SCRIPT_NAME = 'octopus-claude-state.py'
 
-/** Sub-directory (of the data dir) holding per-session state files + saved config. */
+/** Sub-directory (of the data dir) holding per-session event logs + saved config. */
 export const CLAUDE_STATE_DIR_NAME = 'claude-state'
 
 /**
@@ -51,24 +53,27 @@ export const CLAUDE_STATE_DIR_NAME = 'claude-state'
  */
 export const ORIGINAL_STATUSLINE_FILE = 'original-statusline'
 
+/** Suffix of a session's event log (`<sessionId>.events.jsonl`). */
+export const EVENTS_FILE_SUFFIX = '.events.jsonl'
+
 /**
- * The python3 source. Pure text — no interpolation. Kept dependency-free (stdlib
- * only) and defensive: every write is wrapped so a failure never breaks the user's
- * statusline, and unknown input degrades to `unknown` rather than raising.
+ * The python3 source. Pure text — no interpolation. Stdlib only, and defensive:
+ * the hook path swallows every exception, so unknown input simply records less.
  */
 export const OCTOPUS_CLAUDE_STATE_SCRIPT = `#!/usr/bin/env python3
-"""Octopus Claude state bridge. Generated by Octopus; do not edit by hand.
+"""Octopus Claude hook recorder. Generated by Octopus; do not edit by hand.
 
 Modes:
   octopus-claude-state.py hook <EventName>   # from a Claude hook (JSON on stdin)
-  octopus-claude-state.py statusline         # from statusLine.command (JSON on stdin)
-  octopus-claude-state.py get <session_id>   # print the effective state
+  octopus-claude-state.py statusline         # from statusLine.command (pass-through)
 
-State is written to <script_dir>/claude-state/<OCTOPUS_SESSION_ID>.json, keyed by the
-env var Octopus injects into each managed PTY. See the TS module header for the model.
+Each hook appends one line to <script_dir>/claude-state/<OCTOPUS_SESSION_ID>.events.jsonl.
+The Octopus app folds that log into the session state; this script decides nothing.
 """
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -76,505 +81,177 @@ import time
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_DIR = os.path.join(SCRIPT_DIR, "claude-state")
 ORIGINAL_STATUSLINE_FILE = os.path.join(STATE_DIR, "original-statusline")
+EVENTS_SUFFIX = ".events.jsonl"
 
-# Substring of the idle "waiting for your input" Notification Claude fires AFTER a
-# turn already ended; it is not a real input need, so we drop it (mirrors the old
-# hook's IDLE_NOTIFICATION_MARKER) and let the prior Stop->waiting stand.
-IDLE_NOTIFICATION_MARKER = "waiting for your input"
-
-# Claude hook event -> (state, reason). Anything not listed is treated as "working"
-# (still the agent's turn) so a new/renamed event never reads as Idle.
-HOOK_STATES = {
-    "Stop": ("waiting", "claude_stop"),
-    "StopFailure": ("waiting", "stop_failure"),
-    "Notification": ("blocked", "notification"),
-    "PermissionRequest": ("blocked", "permission"),
-    "SubagentStart": ("working", "subagent_start"),
-    "SubagentStop": ("working", "subagent_stop"),
-    "PreToolUse": ("working", "pre_tool_use"),
-    "PostToolUse": ("working", "tool_use"),
-    "UserPromptSubmit": ("working", "user_prompt"),
-}
-
-# A turn opens on UserPromptSubmit and closes on Stop/StopFailure. Only these three
-# events move the turn boundary; everything else observes state WITHIN a turn.
-TURN_START_EVENTS = ("UserPromptSubmit",)
-TURN_END_EVENTS = ("Stop", "StopFailure")
-
-WAITING_STOP_REASONS = ("end_turn", "stop_sequence")
-
-# The tools that delegate work to a subagent. "Agent" is the current CLI (2.1.x)
-# name; "Task" the historical one.
-#
-# A subagent's whole lifespan keeps the SESSION Working (main agent + subagents are one
-# unit). Its life is bracketed by two signals, and the ONE invariant that makes counting
-# correct is the live-verified ordering: for every subagent, PreToolUse(Agent|Task) fires
-# FIRST (before the main agent's Stop), and SubagentStart fires LATER (for a BACKGROUND
-# child, even AFTER that Stop). So:
-#
-#  - PreToolUse(Task|Agent) is the LAUNCH signal and ALWAYS increments the anonymous
-#    counter. This is the load-bearing bridge: the main agent's Stop fires before a
-#    background child's SubagentStart, so only this early increment keeps subagent_count
-#    > 0 at Stop time, making Stop DEFER instead of flashing the whole session Idle. It
-#    is PreToolUse, NOT PostToolUse: a BACKGROUND subagent's PostToolUse(Agent) fires at
-#    launch (not completion), so it cannot mark the close.
-#  - SubagentStart (when the running Claude emits it) PROMOTES the launch from the
-#    anonymous counter into an agent_id SET -- outstanding children become an id set that
-#    is immune to duplicate/cross-turn stops (a stop for an unknown id cannot under-count
-#    a live child). Because PreToolUse already counted this same launch, SubagentStart
-#    RECLAIMS one anonymous increment as it adds the id, so the child is counted exactly
-#    once. A SubagentStart with no agent_id is a no-op (its PreToolUse already counted it;
-#    its SubagentStop decrements the anonymous counter).
-#  - SubagentStop is the close bracket: it removes the agent_id from the set, or (no id /
-#    untracked id) decrements the anonymous counter.
-#
-# There is deliberately NO session-lifetime capability latch. An earlier version latched
-# "SubagentStart was seen" and then STOPPED counting PreToolUse -- which silently removed
-# the gap bridge on a session's 2nd+ delegating turn (and after any mid-turn foreground
-# SubagentStart), so Stop closed the turn while a background child was still starting and
-# the session wrongly read Idle/"done". Reclaim (not a latch) is what prevents the
-# double-count, and reclaim needs no latch. See DESIGN 9.2 / 9.7.
-#
-# subagent_count() = len(id set) + anonymous counter; while it is > 0 and the turn is
-# open the whole session reads Working.
-DELEGATION_TOOLS = ("Task", "Agent")
+SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+EVENT_RE = re.compile(r"^[A-Za-z]{1,40}$")
+TASK_ID_RE = re.compile(r"<task-id>\\s*([^<\\s]{1,128})\\s*</task-id>")
+DELEGATION_TOOLS = ("Agent", "Task")
+MAX_LINE = 8192
+MAX_STR = 256
+MAX_PATH = 4096
+MAX_BG = 32
+MAX_ANCESTORS = 32
 
 
-def session_id():
-    sid = os.environ.get("OCTOPUS_SESSION_ID")
-    return sid if sid else None
+def cap(value, limit=MAX_STR):
+    return value[:limit] if isinstance(value, str) and value else None
 
 
-def state_path(sid):
-    return os.path.join(STATE_DIR, sid + ".json")
-
-
-def read_state(sid):
+def input_hash(tool_input):
+    """Short hash of the canonical tool_input (same for PreToolUse and PermissionRequest)."""
+    if tool_input is None:
+        return None
     try:
-        with open(state_path(sid), "r") as f:
-            data = json.load(f)
-            return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
+        canon = json.dumps(tool_input, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    except (TypeError, ValueError):
+        return None
+    return hashlib.sha1(canon.encode("ascii")).hexdigest()[:12]
 
 
-def subagent_ids(data):
-    """The set of outstanding subagent agent_ids (from the SubagentStart..SubagentStop
-    primary path). A list in the JSON file; returned as a list of unique str ids."""
-    ids = data.get("subagent_ids")
-    if not isinstance(ids, list):
-        return []
+def background_tasks(payload):
+    tasks = payload.get("background_tasks")
+    if not isinstance(tasks, list):
+        return None
     out = []
-    for i in ids:
-        if isinstance(i, str) and i not in out:
-            out.append(i)
+    for task in tasks[:MAX_BG]:
+        if isinstance(task, dict) and isinstance(task.get("id"), str):
+            entry = {"id": cap(task.get("id"), 64)}
+            if cap(task.get("type"), 64):
+                entry["ty"] = cap(task.get("type"), 64)
+            if cap(task.get("status"), 64):
+                entry["st"] = cap(task.get("status"), 64)
+            out.append(entry)
     return out
 
 
-def anon_count(data):
-    """The anonymous fallback counter (subagents field), 0 if absent/legacy."""
-    n = data.get("subagents")
-    return n if isinstance(n, (int, float)) else 0
+def task_notification_id(prompt):
+    if not isinstance(prompt, str) or not prompt.lstrip().startswith("<task-notification>"):
+        return None
+    match = TASK_ID_RE.search(prompt[:4096])
+    return match.group(1) if match else None
 
 
-def subagent_count(data):
-    """How many delegated subagents are currently outstanding (0 if absent/legacy).
+def build_record(event, payload):
+    rec = {"v": 1, "t": int(time.time() * 1000), "ev": event}
+    for key, field in (("sid", "session_id"), ("aid", "agent_id"), ("prm", "prompt_id")):
+        if cap(payload.get(field)):
+            rec[key] = cap(payload.get(field))
+    if event == "SessionStart":
+        rec["src"] = cap(payload.get("source"))
+        rec["tp"] = cap(payload.get("transcript_path"), MAX_PATH)
+    elif event == "SessionEnd":
+        rec["rsn"] = cap(payload.get("reason"))
+    elif event == "UserPromptSubmit":
+        rec["tp"] = cap(payload.get("transcript_path"), MAX_PATH)
+        rec["tn"] = task_notification_id(payload.get("prompt"))
+    elif event in ("PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest"):
+        tool = cap(payload.get("tool_name"))
+        rec["tool"] = tool
+        rec["tu"] = cap(payload.get("tool_use_id"))
+        rec["ih"] = input_hash(payload.get("tool_input"))
+        if event == "PostToolUseFailure" and payload.get("is_interrupt") is True:
+            rec["intr"] = True
+        response = payload.get("tool_response")
+        if event == "PostToolUse" and tool in DELEGATION_TOOLS and isinstance(response, dict):
+            agent = cap(response.get("agentId"))
+            background = response.get("isAsync") is True or response.get("status") == "async_launched"
+            if agent:
+                rec["bga" if background else "fga"] = agent
+    elif event in ("SubagentStart", "SubagentStop"):
+        rec["at"] = cap(payload.get("agent_type"))
+    if event in ("Stop", "StopFailure", "SubagentStop"):
+        rec["bg"] = background_tasks(payload)
+    rec = {k: v for k, v in rec.items() if v is not None}
+    line = json.dumps(rec, separators=(",", ":"), ensure_ascii=True)
+    if len(line) >= MAX_LINE:
+        rec.pop("bg", None)
+        rec.pop("tp", None)
+        line = json.dumps(rec, separators=(",", ":"), ensure_ascii=True)
+    return line + "\\n"
 
-    Sum of the two tracking paths (only one is ever populated for a given subagent, see
-    the DELEGATION_TOOLS note): the id SET from SubagentStart..SubagentStop, plus the
-    anonymous numeric fallback counter for versions that emit no SubagentStart."""
-    return len(subagent_ids(data)) + anon_count(data)
+
+def read_proc(pid, name):
+    try:
+        with open("/proc/%d/%s" % (pid, name), "rb") as f:
+            return f.read()
+    except (OSError, ValueError):
+        return None
 
 
-def effective(data):
-    """Newer observation wins (hook.ts vs transcript.mtime); tie -> hook.
+def parent_and_comm(pid):
+    stat = read_proc(pid, "stat")
+    if not stat:
+        return None, None
+    # "pid (comm) state ppid ..." -- comm may contain spaces/parens, so split on the LAST ")".
+    head, _, tail = stat.rpartition(b")")
+    comm = head.partition(b"(")[2].decode("utf-8", "replace")
+    fields = tail.split()
+    try:
+        return int(fields[1]), comm
+    except (IndexError, ValueError):
+        return None, comm
 
-    One exception: a transcript-derived "blocked" is ambiguous -- a dangling tool_use
-    is EITHER an awaiting-permission prompt OR a tool merely mid-execution. When an
-    in-turn "working" hook contradicts it, prefer the hook even if transcript.mtime is
-    newer, so a tool mid-execution does not transiently read as NeedsInput. A real
-    permission prompt records a "blocked" hook (not "working"), so it is unaffected;
-    the resume path (no fresh hook, or a closed turn) lets the transcript win as before.
-    See DESIGN 9.7 (mid-tool tool_use) and 9.1.
+
+def environ_has(pid, entry):
+    env = read_proc(pid, "environ")
+    return env is not None and entry in env.split(b"\\0")
+
+
+def is_nested_claude(sid):
+    """True when this hook's claude was itself started from inside the session's Claude.
+
+    A \`claude -p\` run by the session's agent (Bash tool) inherits OCTOPUS_SESSION_ID, so
+    its hooks would be recorded as the session's. Walk the process ancestry: the hook's
+    own claude is the nearest \`claude\` ancestor; a further \`claude\` ancestor that also
+    carries this OCTOPUS_SESSION_ID means we are nested. Any doubt -> not nested.
     """
-    hook = data.get("hook") if isinstance(data.get("hook"), dict) else None
-    tr = data.get("transcript") if isinstance(data.get("transcript"), dict) else None
-    # Outstanding subagent(s) => the whole session is Working, regardless of the main
-    # transcript (a background subagent's launch is NOT dangling, so the transcript
-    # reads the main agent's "waiting" -- only this override keeps the session Working)
-    # or a stale transcript "blocked". The turn stays open across the main agent's Stop
-    # while a child lives (Stop defers closing when subagents > 0, see run_hook), so this
-    # holds until the child ends. Still turn-gated so a leaked counter cannot outlive the
-    # turn: the next UserPromptSubmit zeroes it, and the eventual Stop with no child
-    # remaining closes the turn. A genuine permission prompt (a "blocked" HOOK) still
-    # wins -- if a subagent needs approval the user must act (NeedsInput). See DESIGN 9.2 / 9.7.
-    if subagent_count(data) > 0 and turn_open(data):
-        if hook and hook.get("state") == "blocked":
-            return hook.get("state", "unknown"), hook.get("reason")
-        return "working", "subagent"
-    if (
-        hook
-        and tr
-        and tr.get("state") == "blocked"
-        and hook.get("state") == "working"
-        and turn_open(data)
-    ):
-        return hook.get("state", "unknown"), hook.get("reason")
-    h_ts = hook.get("ts") if hook else None
-    t_ts = tr.get("mtime") if tr else None
-    if hook and tr and isinstance(h_ts, (int, float)) and isinstance(t_ts, (int, float)):
-        if h_ts >= t_ts:
-            return hook.get("state", "unknown"), hook.get("reason")
-        return tr.get("state", "unknown"), tr.get("reason")
-    if hook:
-        return hook.get("state", "unknown"), hook.get("reason")
-    if tr:
-        return tr.get("state", "unknown"), tr.get("reason")
-    return "unknown", None
+    entry = ("OCTOPUS_SESSION_ID=" + sid).encode("ascii")
+    seen_claude = False
+    pid = os.getppid()
+    for _ in range(MAX_ANCESTORS):
+        if pid is None or pid <= 1:
+            return False
+        ppid, comm = parent_and_comm(pid)
+        if comm == "claude":
+            if seen_claude and environ_has(pid, entry):
+                return True
+            seen_claude = True
+        pid = ppid
+    return False
 
 
-def turn_open(data):
-    """Is a Claude turn currently in progress? A turn opens on UserPromptSubmit
-    (turn_start_ts) and closes on Stop/StopFailure (turn_end_ts); it is open iff the
-    last start is more recent than the last end. Missing start => closed (no turn has
-    begun, or a legacy file that predates these fields), so a stray post-Stop event
-    can never resurrect an active state."""
-    start = data.get("turn_start_ts")
-    end = data.get("turn_end_ts")
-    if not isinstance(start, (int, float)):
-        return False
-    if not isinstance(end, (int, float)):
-        return True
-    return start > end
-
-
-def lock_path(sid):
-    return os.path.join(STATE_DIR, sid + ".lock")
-
-
-def acquire_lock(sid):
-    """Best-effort exclusive lock serializing the read-modify-write in write_state
-    across the CONCURRENT per-event subprocesses of one session (each Claude hook and
-    the statusline runs as its own \`python3 <script> ...\` process). Returns an open fd
-    to hold -- closing it releases the lock -- or None if locking is unavailable, in
-    which case the caller proceeds UNLOCKED exactly as before. A lock failure must
-    never break a Claude hook/statusline, so every failure degrades, never raises.
-
-    We lock a DEDICATED <id>.lock file, NOT the state json. write_state swaps the json's
-    inode on every write (os.replace), and flock binds to an inode: a lock held on the
-    json's fd would guard the orphaned OLD inode while the next process opens+locks the
-    NEW one, giving zero mutual exclusion. The lock file is created once and never
-    replaced or unlinked, so its inode is stable and every racer contends on the same
-    object. flock (not lockf / POSIX record locks, which are per-PID and drop on ANY fd
-    close) is deliberate: it is bound to the open file description and released by the
-    kernel on close AND on process exit/crash, so a killed hook leaves no stale lock and
-    a blocking LOCK_EX cannot wedge. The critical section is a few local-fs ops (sub-ms),
-    so blocking is fine. See DESIGN 9.1."""
+def append_line(sid, line):
+    path = os.path.join(STATE_DIR, sid + EVENTS_SUFFIX)
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
     try:
-        import fcntl
-    except ImportError:
-        return None  # non-Linux / no fcntl -> unlocked fallback (Linux is the target)
-    try:
-        fd = os.open(lock_path(sid), os.O_RDWR | os.O_CREAT, 0o600)
-    except OSError:
-        return None
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        return fd
-    except OSError:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-        return None
-
-
-def release_lock(fd):
-    """Release + close a lock fd from acquire_lock (no-op on None). Never raises."""
-    if fd is None:
-        return
-    try:
-        import fcntl
-
-        fcntl.flock(fd, fcntl.LOCK_UN)
-    except (ImportError, OSError):
-        pass
-    try:
-        os.close(fd)
-    except OSError:
-        pass
-
-
-def write_state(sid, mutate):
-    """Read-modify-write the session file atomically. Best-effort: never raises.
-    A mutate that returns False aborts the write, leaving the file byte-for-byte
-    untouched (used to gate stray, out-of-turn hook observations).
-
-    The WHOLE read -> mutate -> os.replace runs under a per-session flock (acquire_lock).
-    Each hook and the statusline fire as SEPARATE python3 subprocesses; when a session
-    drives multiple background subagents their events race on this read-modify-write.
-    os.replace makes each write atomic, but the read+mutate+replace as a whole is not:
-    unlocked, the second replace clobbers the first (a lost update). A lost subagent
-    increment under-counts the tally, so the deferred Stop finalizes while a child still
-    runs -> premature Idle/"done"; a lost decrement leaves the session stuck Working.
-    The lock is dropped in \`finally\`. delegate_statusline runs OUTSIDE it (in
-    run_statusline, after this returns), so a slow user statusline never stalls hooks."""
-    lock_fd = None
-    try:
+        fd = os.open(path, flags, 0o600)
+    except FileNotFoundError:
         os.makedirs(STATE_DIR, exist_ok=True)
-        lock_fd = acquire_lock(sid)
-        data = read_state(sid)
-        if mutate(data) is False:
-            return
-        state, reason = effective(data)
-        data["state"] = state
-        data["reason"] = reason
-        data["updated_at"] = time.time()
-        tmp = state_path(sid) + ".tmp." + str(os.getpid())
-        with open(tmp, "w") as f:
-            json.dump(data, f)
-        os.replace(tmp, state_path(sid))
-    except OSError:
-        pass
-    finally:
-        release_lock(lock_fd)
-
-
-def derive_transcript_state(path):
-    """Infer state from the transcript tail. Returns a state string or None.
-
-    - a dangling tool_use (no matching tool_result) whose tool is a delegation tool
-      (Agent/Task) => working: the main agent is waiting on a subagent, i.e. the whole
-      session is still working (this is the resume / no-hook path -- live, the subagent
-      counter already forces working). See DESIGN 9.2 / 9.7.
-    - any OTHER dangling tool_use => blocked (at rest this is a pending permission /
-      interrupted tool; live, a hook overrides it via newer ts);
-    - no assistant turn at all (a fresh session, or the brand-new transcript a /clear
-      starts) => waiting: no turn has run, so the session is idle, not working. /clear
-      fires no UserPromptSubmit hook, so this transcript read is the only signal and it
-      must not fall through to working. See DESIGN 9.2 / 9.7;
-    - else the last assistant turn ended (end_turn/stop_sequence) => waiting;
-    - else (an assistant turn exists but did not end cleanly) => working.
-    """
-    if not path:
-        return None
-    issued = set()
-    issued_names = {}
-    answered = set()
-    last_assistant = None
+        fd = os.open(path, flags, 0o600)
     try:
-        with open(path, "r", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(rec, dict):
-                    continue
-                # Skip subagent sidechain records: a delegated subagent's dangling
-                # tool_use must not read as the PARENT session being blocked. Benign on
-                # Claude versions that split subagents into separate files (the case
-                # today), but guards a version that inlines sidechains into the main
-                # transcript. See DESIGN 9.7 (subagent sidechains).
-                if rec.get("isSidechain"):
-                    continue
-                rtype = rec.get("type")
-                msg = rec.get("message") if isinstance(rec.get("message"), dict) else {}
-                content = msg.get("content")
-                if rtype == "assistant":
-                    last_assistant = msg
-                    if isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "tool_use":
-                                issued.add(block.get("id"))
-                                issued_names[block.get("id")] = block.get("name")
-                elif rtype == "user":
-                    if isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "tool_result":
-                                answered.add(block.get("tool_use_id"))
-    except OSError:
-        return None
-    dangling = issued - answered
-    if dangling:
-        # A dangling delegation tool_use (Agent/Task) means the main agent is waiting on
-        # a subagent -- Working, not awaiting input. Only when EVERY dangling tool_use is
-        # a delegation call do we read working; a mix with a non-delegation dangling tool
-        # (a possible real permission prompt) still reads blocked, letting the counter /
-        # in-turn hook correct it live if it was merely mid-execution.
-        if all(issued_names.get(i) in DELEGATION_TOOLS for i in dangling):
-            return "working"
-        return "blocked"
-    if last_assistant is None:
-        # No assistant turn at all: a fresh session, or the new transcript a /clear
-        # starts. No work has begun, so this is idle -- not working. (/clear fires no
-        # UserPromptSubmit hook, so this transcript read is the sole signal; falling
-        # through to working here is what made a cleared session show Working.)
-        return "waiting"
-    if last_assistant.get("stop_reason") in WAITING_STOP_REASONS:
-        return "waiting"
-    return "working"
+        os.write(fd, line.encode("ascii"))  # ONE write: O_APPEND keeps lines whole
+    finally:
+        os.close(fd)
 
 
 def run_hook(event):
-    # Drain stdin (Claude pipes the hook payload); needed for the Notification branch.
     try:
-        payload = sys.stdin.read()
+        raw = sys.stdin.read()
     except (OSError, ValueError):
-        payload = ""
-    sid = session_id()
-    if sid is None:
+        raw = ""
+    sid = os.environ.get("OCTOPUS_SESSION_ID") or ""
+    if not SESSION_ID_RE.match(sid) or not EVENT_RE.match(event or ""):
         return
-    mapped = HOOK_STATES.get(event, ("working", "hook"))
-    # Suppress the post-turn idle reminder so it can't overwrite Stop->waiting.
-    if event == "Notification" and IDLE_NOTIFICATION_MARKER in payload:
-        return
-    state, reason = mapped
-    is_turn_start = event in TURN_START_EVENTS
-    is_turn_end = event in TURN_END_EVENTS
-    # PreToolUse/PostToolUse carry the tool name on stdin (no matcher is wired, so
-    # this is the only way to know which tool fired). Best-effort parse -- a missing
-    # or malformed payload just yields no tool_name and leaves the counter untouched.
-    tool_name = None
-    agent_id = None
     try:
-        parsed = json.loads(payload) if payload else None
-        if isinstance(parsed, dict):
-            tool_name = parsed.get("tool_name")
-            aid = parsed.get("agent_id")
-            agent_id = aid if isinstance(aid, str) and aid else None
+        payload = json.loads(raw) if raw else {}
     except ValueError:
-        pass
-
-    def mutate(data):
-        now = time.time()
-        rec_state, rec_reason = state, reason
-        # Turn-boundary events always record; everything else is a WITHIN-turn
-        # observation and is honored only while a turn is open. A stray sub-event
-        # (e.g. a SubagentStop arriving minutes after Stop with no new prompt) would
-        # otherwise clobber the terminal waiting state with a newer working one and win
-        # the newer-observation-wins race against the frozen transcript. Gating the write
-        # leaves the file untouched, so effective state stays waiting.
-        if not (is_turn_start or is_turn_end) and not turn_open(data):
-            return False
-        if is_turn_start:
-            data["turn_start_ts"] = now
-            # A fresh turn owns a fresh subagent tally on BOTH paths; also self-heals a
-            # leaked entry (a subagent whose SubagentStop never arrived) at the next
-            # prompt.
-            data["subagents"] = 0
-            data["subagent_ids"] = []
-            data["stop_deferred"] = False
-        elif is_turn_end:
-            # Stop means the MAIN agent finished -- but the whole session isn't done
-            # while a background subagent it launched is still running. Claude fires
-            # Stop as soon as the main agent yields (often BEFORE a background child
-            # ends), so closing here would flash Idle mid-run (bug 1). Defer: if any
-            # subagent is outstanding, do NOT close the turn and do NOT zero the tally;
-            # keep the session Working (the effective() override holds while the turn is
-            # open) but REMEMBER that a Stop is pending via stop_deferred. That flag is
-            # what lets the LATER SubagentStop that drains the counter to 0 finalize the
-            # close itself (see below), so a fire-and-forget child whose parent never
-            # resumes cannot leave the session stuck Working.
-            if subagent_count(data) > 0:
-                rec_state, rec_reason = "working", "subagent_active"
-                data["stop_deferred"] = True
-            else:
-                data["turn_end_ts"] = now
-                data["stop_deferred"] = False
-        elif event == "SubagentStart":
-            # PROMOTE this launch from the anonymous counter into the agent_id SET so
-            # outstanding children become an id set that a duplicate / cross-turn
-            # SubagentStop cannot under-count. PreToolUse(Agent) ALWAYS counted this same
-            # launch first (verified live: it fires before SubagentStart), so RECLAIM one
-            # anonymous increment as we add the id -- the child ends up counted exactly
-            # once (len(id set) instead of an anon tally). The decrement is floored at 0,
-            # so it is a harmless no-op if this Start had no matching PreToolUse increment
-            # (e.g. a version that emits Start without a delegation PreToolUse). Without
-            # the reclaim a fire-and-forget child would leave anon stuck at 1 after its
-            # SubagentStop clears the id, so subagent_count never reaches 0 and the
-            # deferred Stop never finalizes -- stuck Working forever.
-            #
-            # A SubagentStart with NO agent_id needs no action: its PreToolUse(Agent)
-            # increment already counts the launch and its SubagentStop will decrement it.
-            # (We do NOT re-increment here, which would double-count that same launch.)
-            if agent_id is not None:
-                ids = subagent_ids(data)
-                if agent_id not in ids:
-                    ids.append(agent_id)
-                    data["subagents"] = max(0, anon_count(data) - 1)
-                data["subagent_ids"] = ids
-        elif event == "SubagentStop":
-            # A launched subagent truly ended -- the close bracket for both paths. NOT
-            # PostToolUse: a BACKGROUND subagent's PostToolUse(Agent) fires at LAUNCH, so
-            # only SubagentStop marks real completion. Remove by agent_id from the id set
-            # (a duplicate / cross-turn stop for an unknown id is a no-op, so it cannot
-            # under-count a still-live child); otherwise decrement the anonymous counter
-            # (floored at 0). Note agent_id is present even on the FALLBACK path's stops,
-            # so we only treat the id set as authoritative when it actually holds this id.
-            ids = subagent_ids(data)
-            if agent_id is not None and agent_id in ids:
-                ids.remove(agent_id)
-                data["subagent_ids"] = ids
-            else:
-                data["subagents"] = max(0, anon_count(data) - 1)
-            if subagent_count(data) == 0 and data.get("stop_deferred"):
-                # The main agent already Stopped (we deferred it) and the LAST child just
-                # ended -- so the whole session (main + all sub-calls) is genuinely
-                # finished NOW. Finalize the deferred Stop: close the turn and record
-                # waiting, exactly as a non-deferred Stop would, so effective() reads
-                # Idle. If the main agent instead resumes to consume the result, that is
-                # a genuinely new working period (a fresh UserPromptSubmit reopens the
-                # turn) -- not the false done of bug 2, whose "done" was premature; here
-                # the main agent truly had yielded. Without this a fire-and-forget child
-                # whose parent never resumes would leave the session stuck Working with no
-                # event left to close the turn (the deferred Stop never re-fires).
-                data["turn_end_ts"] = now
-                data["stop_deferred"] = False
-                rec_state, rec_reason = "waiting", "claude_stop"
-        elif event == "PreToolUse" and tool_name in DELEGATION_TOOLS:
-            # LAUNCH signal: ALWAYS count the delegation into the anonymous counter. This
-            # is the gap bridge -- the main agent's Stop fires before a background child's
-            # SubagentStart, so this early increment is what makes Stop defer instead of
-            # flashing Idle. If SubagentStart later fires for this launch, it PROMOTES the
-            # child into the id set and reclaims this increment (see above), so the child
-            # is never double-counted. Counting unconditionally here (no capability latch)
-            # is what keeps the bridge working on a session's 2nd+ delegating turn.
-            data["subagents"] = anon_count(data) + 1
-        data["hook"] = {"state": rec_state, "reason": rec_reason, "ts": now, "event": event}
-        return None
-
-    write_state(sid, mutate)
-
-
-def run_statusline():
-    try:
-        raw = sys.stdin.buffer.read()
-    except (OSError, ValueError):
-        raw = b""
-    # Record the transcript-derived observation (resume recovery) before delegating.
-    sid = session_id()
-    if sid is not None:
-        try:
-            payload = json.loads(raw.decode("utf-8", "replace")) if raw else {}
-        except ValueError:
-            payload = {}
-        transcript = payload.get("transcript_path") if isinstance(payload, dict) else None
-        derived = derive_transcript_state(transcript)
-        if derived is not None:
-            try:
-                mtime = os.path.getmtime(transcript)
-            except OSError:
-                mtime = time.time()
-
-            def mutate(data):
-                data["transcript"] = {"state": derived, "reason": "transcript", "mtime": mtime}
-
-            write_state(sid, mutate)
-    delegate_statusline(raw)
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    if is_nested_claude(sid):
+        return
+    append_line(sid, build_record(event, payload))
 
 
 def delegate_statusline(raw):
@@ -586,7 +263,7 @@ def delegate_statusline(raw):
     except OSError:
         command = None
     if not command:
-        return  # no prior statusline -> Octopus adds no bar of its own (passthrough no-op)
+        return  # no prior statusline -> Octopus adds no bar of its own
     try:
         result = subprocess.run(
             ["sh", "-c", command], input=raw, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
@@ -597,35 +274,32 @@ def delegate_statusline(raw):
         pass
 
 
-def run_get(sid):
-    if not sid:
-        print("unknown")
-        return
-    state, _ = effective(read_state(sid))
-    print(state)
-
-
 def main(argv):
     mode = argv[1] if len(argv) > 1 else ""
     if mode == "hook":
-        run_hook(argv[2] if len(argv) > 2 else "")
+        try:
+            run_hook(argv[2] if len(argv) > 2 else "")
+        except BaseException:
+            pass  # never fail or alter a Claude hook
     elif mode == "statusline":
-        run_statusline()
-    elif mode == "get":
-        run_get(argv[2] if len(argv) > 2 else session_id())
-    # Unknown mode: no-op (never fail a hook/statusline caller).
+        try:
+            raw = sys.stdin.buffer.read()
+        except (OSError, ValueError):
+            raw = b""
+        delegate_statusline(raw)
+    # Any other mode: no-op.
 
 
 if __name__ == "__main__":
     main(sys.argv)
+    sys.exit(0)
 `
 
 /**
  * Write the python3 script into `dir` (the data dir) and return its absolute path.
- * Also ensures the `claude-state/` sub-dir exists so the first hook/statusline write
- * (and the app's watcher) never race a missing directory. Best-effort chmod +x —
- * the script is always invoked via `python3 <path>`, so execute permission is a
- * nicety, not a requirement.
+ * Also ensures the `claude-state/` sub-dir exists so the first hook append (and the
+ * app's watcher) never race a missing directory. Best-effort chmod +x — the script is
+ * always invoked via `python3 <path>`, so execute permission is a nicety.
  */
 export function ensureClaudeStateScript(dir: string): string {
   mkdirSync(dir, { recursive: true })

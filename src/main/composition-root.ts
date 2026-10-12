@@ -47,6 +47,7 @@ import { createStateLogFile } from '../adapters/observability/state-log-file'
 import { ensureClaudeHooks } from '../adapters/claude/claude-hooks'
 import {
   createClaudeStateWatcher,
+  pruneClaudeStateDir,
   type ClaudeStateWatcher
 } from '../adapters/claude/claude-state-watcher'
 import { PtySessionManager } from '../adapters/session/pty-session-manager'
@@ -335,25 +336,34 @@ export function bootstrap(): AppContext {
     })
   }
 
-  // Claude state watcher (§9.6): the SOLE source of session-state now. The python
-  // bridge (wired into settings.json above) writes `<sessionId>.json` under
-  // `claudeStateDir` from Claude's hooks + statusline; this watches that dir and
-  // feeds each change through `onSessionState`. The initial scan replays existing
-  // files, which is the resume-recovery path — a session reopened with `--resume`
-  // (whose original process's hooks are gone) still gets its state from the
-  // transcript-derived file the statusline last wrote. Gated by the same opt-out as
-  // hook injection; `sessionId` is the state file's stem (== OCTOPUS_SESSION_ID).
+  // Claude state watcher (§9.3, §9.6): the SOLE source of session-state. The python
+  // recorder (wired into settings.json above) appends every Claude hook to
+  // `<sessionId>.events.jsonl` under `claudeStateDir`; the watcher folds each TRACKED
+  // session's log and feeds each state change through `onSessionState`. A session is
+  // tracked from its runtime start (`prepareClaudeState`): a fresh PTY drops the old
+  // log (its Claude is gone), a daemon re-attach replays it (its Claude may still be
+  // running). Logs of sessions the workspace no longer holds are pruned here. Gated by
+  // the same opt-out as hook injection; the log's stem is OCTOPUS_SESSION_ID.
   let claudeStateWatcher: ClaudeStateWatcher | undefined
   if (getSettings().terminal.injectClaudeHooks !== false) {
+    const keep = new Set<string>()
+    for (const task of workspace.tasks()) {
+      for (const session of task.sessions()) keep.add(session.id)
+    }
+    pruneClaudeStateDir(paths.claudeStateDir, keep)
     claudeStateWatcher = createClaudeStateWatcher({
       dir: paths.claudeStateDir,
       sink: (sessionId, state, meta) => deps.onSessionState?.(asSessionId(sessionId), state, meta),
       onError: (message) => console.warn(`[octopus] claude state watcher: ${message}`)
     })
-    // The "refresh state" affordance (§5.4 R1): re-read one session's file NOW and
-    // re-emit. Late-bound like the sinks above so `refreshSessionState` stays a pure
-    // application use-case with no adapter import.
+    // The "refresh state" affordance (§5.4 R1): re-fold one session's log NOW and
+    // re-emit. Late-bound like the sinks above so the use-cases stay pure application
+    // code with no adapter import.
     deps.refreshClaudeState = (sessionId): void => claudeStateWatcher?.rescan(sessionId)
+    deps.prepareClaudeState = (sessionId, mode): void => {
+      if (mode === 'fresh') claudeStateWatcher?.reset(sessionId)
+      else claudeStateWatcher?.attach(sessionId)
+    }
   }
 
   // 6. Window registry + IPC handlers (§6.7). The registry routes each event to the
@@ -514,7 +524,7 @@ export function bootstrap(): AppContext {
       )
       // Re-attach EVERY Ready task's sessions at boot, not just the one the first
       // window will focus, so a re-attached shell resumes streaming immediately and
-      // the Claude state watcher's file-derived status shows without waiting for the
+      // the Claude state watcher's replayed status shows without waiting for the
       // user to focus the task. We dispatch `startTaskSessions` (NOT `switchTask`) so
       // no active-task pointer moves and no `activeTaskChanged` fires; it's idempotent
       // with the later focus switch (§6.2, §9.6, §6.6 — runs on the single writer).

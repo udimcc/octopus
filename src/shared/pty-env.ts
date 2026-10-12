@@ -11,8 +11,8 @@
  *     OCTOPUS_TASK_ID, OCTOPUS_SESSION_ID, OCTOPUS_WORKTREE }
  *   stripped: TMUX, TMUX_PANE, STY, WINDOWID.
  *
- * OCTOPUS_SESSION_ID is load-bearing for state detection (§9.6): the Claude python
- * bridge keys each session's state file by it, so it must equal `session.id`.
+ * OCTOPUS_SESSION_ID is load-bearing for state detection (§9.6): the Claude hook
+ * recorder keys each session's events log by it, so it must equal `session.id`.
  *
  * Pure, no I/O — fully unit-testable and safe under both TS projects (no `Buffer`
  * or node types, so it compiles under `tsconfig.web` too).
