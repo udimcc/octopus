@@ -24,6 +24,7 @@ import type {
   CreateSessionInput,
   CloseSessionInput,
   SwitchSessionInput,
+  FocusSessionInput,
   RenameSessionInput,
   ReorderSessionInput,
   SessionCwdInput,
@@ -65,6 +66,14 @@ export const CHANNELS = {
    * across windows — the piece a same-window `markVisibleSessionSeen` can't reach.
    */
   sessionMarkSeen: 'session:markSeen',
+
+  /**
+   * Persist the focused window's marked session as the task's "last focused session"
+   * (renderer → main, fire-and-forget, §5.4, I10). Like `session:markSeen` it's a
+   * `send` (no reply). Routed through the command loop (it writes the task row) but
+   * emits NO event and raises no window — unlike `session:switch`.
+   */
+  sessionFocus: 'session:focus',
 
   /**
    * A session's live current working directory (request/reply). A stateless
@@ -173,7 +182,9 @@ export interface OctopusAPI {
      * Switch a task's visible tab (§5.4). Routes through the loop so it can move
      * the persisted active-session pointer and broadcast `activeSessionChanged` —
      * the path that makes `Ctrl+Shift+Arrow` cross window boundaries (a task's
-     * sessions can live in different windows; the hosting window raises itself).
+     * sessions can live in different windows). Every window receives the event, but
+     * only the HOST window (`event.windowId`) moves its mark and raises itself; the
+     * others keep their own marked tab and just apply the global ready-for-review clear.
      */
     switch(input: SwitchSessionInput): Promise<CommandAck>
     rename(input: RenameSessionInput): Promise<CommandAck>
@@ -196,6 +207,12 @@ export interface OctopusAPI {
      * view-model clears (the cross-window piece `markVisibleSessionSeen` can't reach).
      */
     markSeen(input: MarkSessionSeenInput): void
+    /**
+     * Fire-and-forget report that this session is now the focused window's marked tab
+     * (§5.4, I10). Persist-only: main records it as the task's "last focused session";
+     * no event, no window raise (use `switch` for a user-driven switch).
+     */
+    focus(input: FocusSessionInput): void
   }
 
   /** Multi-window control (V1.5, §5.6, §6.7). */

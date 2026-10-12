@@ -13,6 +13,11 @@
  * `sessionMovedToWindow` carrying both endpoints — the registry routes it to the
  * from- and to-windows so both re-render (the source unmounts the pane, the target
  * mounts it).
+ *
+ * `opts.cause` (internal callers only — NOT part of the IPC command input) tags WHY
+ * the session moved: `close-window.ts` passes `'windowClosed'` for its move-to-main
+ * disposition, so the main window keeps its existing mark for the task instead of
+ * marking each re-homed session. Published only when given.
  */
 
 import type { AppDependencies } from '../dependencies'
@@ -20,7 +25,15 @@ import type { MoveSessionToWindowInput } from '../commands'
 import { locateSession } from './locate-session'
 import { InvariantViolationError } from '../../domain/errors'
 
-export function moveSessionToWindow(deps: AppDependencies, input: MoveSessionToWindowInput): void {
+export interface MoveSessionToWindowOptions {
+  readonly cause?: 'windowClosed'
+}
+
+export function moveSessionToWindow(
+  deps: AppDependencies,
+  input: MoveSessionToWindowInput,
+  opts?: MoveSessionToWindowOptions
+): void {
   const located = locateSession(deps.workspace, input.sessionId)
   if (!located) {
     throw new InvariantViolationError(`session ${input.sessionId} not found`)
@@ -40,6 +53,7 @@ export function moveSessionToWindow(deps: AppDependencies, input: MoveSessionToW
     sessionId: input.sessionId,
     taskId: session.taskId,
     fromWindowId,
-    toWindowId: input.targetWindowId
+    toWindowId: input.targetWindowId,
+    ...(opts?.cause !== undefined ? { cause: opts.cause } : {})
   })
 }

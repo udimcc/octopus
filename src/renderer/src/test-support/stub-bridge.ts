@@ -68,7 +68,8 @@ export function makeStubBridge(options?: {
       move: ack,
       cwd: vi.fn().mockResolvedValue(null),
       refreshState: vi.fn(),
-      markSeen: vi.fn()
+      markSeen: vi.fn(),
+      focus: vi.fn()
     },
     windows: {
       create: ack,

@@ -1,15 +1,20 @@
 /**
  * `switchSession` use case (DESIGN §3.3, §5.4). Moves a task's active-session
- * pointer (which tab is visible) to the given session, persists it, and emits
- * `activeSessionChanged` to ALL windows.
+ * pointer (the persisted "last focused session", I10) to the given session, persists
+ * it, and emits `activeSessionChanged` to ALL windows.
  *
  * Why this exists (Bug: `Ctrl+Shift+Arrow` didn't switch sessions across windows):
  * a task's sessions can be hosted in different windows (§6.7), yet the active-tab
  * cycle was a renderer-local store mutation — landing on a session in another window
  * did nothing visible and never told that window. Routing the switch through the
- * loop lets us broadcast one event: every window updates its `activeSessionByTask`
- * pointer, and the window that HOSTS the target (carried as `windowId`) raises itself
- * to the OS foreground (done in the composition root, which owns `BrowserWindow`).
+ * loop lets us broadcast one event. Every window receives it, but only the window
+ * that HOSTS the target (carried as `windowId`) moves its mark (+ `activeTaskId`) and
+ * raises itself to the OS foreground (the raise is done in the composition root,
+ * which owns `BrowserWindow`); non-host windows keep displaying their own marked
+ * session. All windows apply the global ready-for-review clear (§9.5).
+ *
+ * A mere FOCUS change (no user switch) uses the persist-only `focusSession` instead —
+ * see `focus-session.ts` for why reusing this would feed back on itself.
  *
  * NO session lifecycle changes — switching is purely visibility, mirroring
  * `switchTask` (I9). A no-op switch (target already the task's active session) still

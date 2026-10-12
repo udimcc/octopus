@@ -29,6 +29,7 @@ import type {
   CreateSessionInput,
   CloseSessionInput,
   SwitchSessionInput,
+  FocusSessionInput,
   RenameSessionInput,
   ReorderSessionInput,
   SessionCwdInput,
@@ -371,6 +372,16 @@ export function registerIpcHandlers(
   ipcMain.on(CHANNELS.sessionRefreshState, (_e, input: RefreshSessionStateInput) => {
     void loop.dispatch({
       kind: 'refreshSessionState',
+      input: { sessionId: asSessionId(input.sessionId) }
+    })
+  })
+
+  // Last-focused-session persist (§5.4, I10): fire-and-forget, like the refresh above.
+  // Routed through the loop because it writes the task row, but it emits no event and
+  // raises no window — the renderer already shows the mark it's reporting.
+  ipcMain.on(CHANNELS.sessionFocus, (_e, input: FocusSessionInput) => {
+    void loop.dispatch({
+      kind: 'focusSession',
       input: { sessionId: asSessionId(input.sessionId) }
     })
   })

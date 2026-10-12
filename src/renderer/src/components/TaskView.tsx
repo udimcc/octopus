@@ -11,7 +11,7 @@
 
 import { SessionPane } from './SessionPane'
 import { SessionTabBar } from './SessionTabBar'
-import { useStore } from '../store/store'
+import { useStore, activeSessionInWindow } from '../store/store'
 
 export interface TaskViewProps {
   readonly taskId: string
@@ -22,18 +22,17 @@ export function TaskView({ taskId, active }: TaskViewProps): React.JSX.Element {
   const task = useStore((s) => s.tasks[taskId])
   const sessions = useStore((s) => s.sessions)
   const windowId = useStore((s) => s.windowId)
-  const activeByTask = useStore((s) => s.activeSessionByTask[taskId])
+  // THIS window's marked session (§3.7) — not shared with other windows, so a switch to
+  // a session hosted elsewhere leaves this window showing what it had.
+  const activeSessionId = useStore((s) => activeSessionInWindow(s, taskId, s.windowId))
 
   // Only this window's sessions render here (V1.5, §5.6): a session moved to another
   // window unmounts its pane so its terminal stops rendering in this one. Derived in
   // the render body from stable slices (not a selector) so the fresh array doesn't
-  // defeat zustand's Object.is bail-out. The global active tab may point at a session
-  // living in another window, so fall back to this window's first session.
+  // defeat zustand's Object.is bail-out.
   const windowSessionIds = task
     ? task.sessionIds.filter((id) => sessions[id]?.windowId === windowId)
     : []
-  const activeSessionId =
-    activeByTask && windowSessionIds.includes(activeByTask) ? activeByTask : windowSessionIds[0]
 
   // Hidden tasks stay mounted but out of layout so their terminals keep running.
   const style: React.CSSProperties = active

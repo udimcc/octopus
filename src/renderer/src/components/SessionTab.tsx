@@ -32,6 +32,8 @@ export interface MoveTarget {
 export interface SessionTabProps {
   readonly session: SessionDTO
   readonly active: boolean
+  /** Play the one-shot focus flash on this (marked) tab (§5.4). */
+  readonly flash?: boolean
   readonly onActivate: () => void
   readonly onRename: (title: string) => void
   readonly onClose: () => void
@@ -54,6 +56,7 @@ export interface SessionTabProps {
 export function SessionTab({
   session,
   active,
+  flash = false,
   onActivate,
   onRename,
   onClose,
@@ -133,7 +136,7 @@ export function SessionTab({
       ref={setNodeRef}
       {...attributes}
       {...listeners}
-      className="session-tab"
+      className={flash ? 'session-tab session-tab--focus-flash' : 'session-tab'}
       role="tab"
       aria-selected={active}
       aria-label={session.title}

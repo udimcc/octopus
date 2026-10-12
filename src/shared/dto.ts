@@ -278,6 +278,16 @@ export interface SwitchSessionInput {
   readonly sessionId: string
 }
 
+/**
+ * Persist that this session is now the FOCUSED window's marked tab (§5.4, I10;
+ * fire-and-forget). Persist-only: moves the task's stored "last focused session"
+ * pointer and nothing else — no event, no window raise. Wire mirror of the
+ * application command.
+ */
+export interface FocusSessionInput {
+  readonly sessionId: string
+}
+
 export interface RenameSessionInput {
   readonly sessionId: string
   readonly title: string

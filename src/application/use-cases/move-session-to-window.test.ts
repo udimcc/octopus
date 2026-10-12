@@ -39,6 +39,29 @@ describe('moveSessionToWindow (§3.7, §6.7, I18)', () => {
       fromWindowId: MAIN_WINDOW_ID,
       toWindowId: win
     })
+    // An explicit move (drag / "Move to") carries no cause, so the target marks it.
+    expect(moved[0]).not.toHaveProperty('cause')
+  })
+
+  it('publishes the cause when an internal caller supplies one (window-close move-to-main)', async () => {
+    const fd = await seedWithSession()
+
+    moveSessionToWindow(
+      fd.deps,
+      { sessionId: fd.sessionId, targetWindowId: asWindowId('win-2') },
+      { cause: 'windowClosed' }
+    )
+
+    expect(fd.bus.ofType('sessionMovedToWindow')).toEqual([
+      {
+        type: 'sessionMovedToWindow',
+        sessionId: fd.sessionId,
+        taskId: fd.taskId,
+        fromWindowId: MAIN_WINDOW_ID,
+        toWindowId: asWindowId('win-2'),
+        cause: 'windowClosed'
+      }
+    ])
   })
 
   it('leaves taskId and lifecycle untouched — a move is a pure view re-assignment, not a restart (I7/I18)', async () => {

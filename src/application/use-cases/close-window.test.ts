@@ -36,6 +36,7 @@ describe('closeWindow (§3.7, §6.7)', () => {
   it('move-to-main: reassigns every hosted session back to the main window, kills nothing', async () => {
     const fd = await seedWindowWithTwoSessions()
     const runtimes = fd.sessions.created.slice()
+    fd.bus.events.length = 0
 
     await closeWindow(fd.deps, { windowId: fd.windowId, disposition: 'move-to-main' })
 
@@ -49,6 +50,17 @@ describe('closeWindow (§3.7, §6.7)', () => {
     // No runtime was stopped/disposed.
     expect(runtimes.every((r) => !r.stopped && !r.disposed)).toBe(true)
     expect(fd.persistence.deletedSessions).toEqual([])
+
+    // Each re-home is tagged `windowClosed` so main keeps its own marks (§6.7).
+    const moves = fd.bus.ofType('sessionMovedToWindow')
+    expect(moves.map((e) => e.sessionId)).toEqual(fd.sessionIds)
+    for (const e of moves) {
+      expect(e).toMatchObject({
+        fromWindowId: fd.windowId,
+        toWindowId: MAIN_WINDOW_ID,
+        cause: 'windowClosed'
+      })
+    }
 
     // The window row is gone and windowClosed announced.
     expect(fd.persistence.windows.has(fd.windowId)).toBe(false)

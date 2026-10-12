@@ -21,6 +21,7 @@ import type {
   CreateSessionInput,
   CloseSessionInput,
   SwitchSessionInput,
+  FocusSessionInput,
   RenameSessionInput,
   ReorderSessionInput,
   SessionCwdInput,
@@ -70,7 +71,8 @@ const octopusAPI: OctopusAPI = {
     refreshState: (input: RefreshSessionStateInput): void =>
       ipcRenderer.send(CHANNELS.sessionRefreshState, input),
     markSeen: (input: MarkSessionSeenInput): void =>
-      ipcRenderer.send(CHANNELS.sessionMarkSeen, input)
+      ipcRenderer.send(CHANNELS.sessionMarkSeen, input),
+    focus: (input: FocusSessionInput): void => ipcRenderer.send(CHANNELS.sessionFocus, input)
   },
 
   windows: {

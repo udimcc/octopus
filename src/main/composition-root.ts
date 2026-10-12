@@ -371,8 +371,8 @@ export function bootstrap(): AppContext {
 
   // Cross-window session switch (§5.4): when the active session moves to a session
   // hosted in another window, bring THAT OS window to the foreground so the switch
-  // is visible. The renderer store already re-points the tab on the same broadcast;
-  // this is the OS-level raise the renderer can't do. Resolve the target window by
+  // is visible. The host window's renderer already moves its mark on the same
+  // broadcast; this is the OS-level raise the renderer can't do. Resolve the target window by
   // reversing `windowIds` (webContents.id → WindowId). Kept here (composition root)
   // because only main owns `BrowserWindow`; the registry stays transport-agnostic.
   bus.subscribe((event) => {
@@ -383,6 +383,11 @@ export function bootstrap(): AppContext {
       if (win.isMinimized()) win.restore()
       win.show()
       win.focus()
+      // Same VDI passive-repaint stall as the §9.5 toast sink below: on the GPU-less
+      // SwiftShader compositor a raised-but-uninteracted window may not paint its first
+      // frame, so the renderer's focus flash wouldn't show. `invalidate` just schedules
+      // a full repaint (no-op cost on a real GPU).
+      win.webContents.invalidate()
       return
     }
   })

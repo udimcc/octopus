@@ -87,8 +87,10 @@ export interface ActiveTaskChangedEvent {
  * The active session (visible tab) of a task changed (§5.4). Broadcast to ALL
  * windows so cross-window session switching works: sessions of one task can live in
  * different windows, so a `Ctrl+Shift+Arrow` cycle can land on a session hosted
- * elsewhere. Every window updates its `activeSessionByTask` pointer; the window that
- * HOSTS the session (`windowId`) additionally raises itself to the OS foreground.
+ * elsewhere. Every window receives it, but only the window that HOSTS the session
+ * (`windowId`) moves its mark (and `activeTaskId`) and raises itself to the OS
+ * foreground; non-host windows keep displaying their own marked session. All windows
+ * apply the global ready-for-review clear for the session (§9.5).
  */
 export interface ActiveSessionChangedEvent {
   readonly type: 'activeSessionChanged'
@@ -143,6 +145,13 @@ export interface SessionMovedToWindowEvent {
   readonly taskId: TaskId
   readonly fromWindowId: WindowId
   readonly toWindowId: WindowId
+  /**
+   * Set when the move is the "move sessions to main" disposition of closing a window
+   * (§6.7). The receiving renderer then KEEPS its existing mark for the task instead of
+   * marking the moved session; an explicit drag / "Move to" (no cause) marks the moved
+   * session in the target window.
+   */
+  readonly cause?: 'windowClosed'
 }
 
 // ── Dormant V2 state seams (§10 V1) — emitted by nobody in V1 ─────────────────────

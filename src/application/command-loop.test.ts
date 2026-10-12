@@ -113,6 +113,17 @@ describe('CommandLoop error translation (§7)', () => {
     expect(workspace.tasks().map((t) => t.name)).toEqual(['after-error'])
   })
 
+  it('treats focusSession for an unknown session as ok (fire-and-forget, raced a close)', async () => {
+    const { deps } = makeDeps()
+    const loop = new CommandLoop(deps)
+
+    const result = await loop.dispatch({
+      kind: 'focusSession',
+      input: { sessionId: asSessionId('ghost') }
+    })
+    expect(result).toEqual({ ok: true })
+  })
+
   it('reports success for a synchronous command', async () => {
     const { deps } = makeDeps()
     const loop = new CommandLoop(deps)

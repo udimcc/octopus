@@ -9,7 +9,9 @@ import { InMemoryEventBus } from '../adapters/event-bus/in-memory-event-bus'
 import { CHANNELS } from '../shared/ipc'
 import { OUTPUT_TAIL_MAX_BYTES } from '../shared/output-tail'
 import type { EventDTO } from '../shared/events'
-import { asTaskId, asSessionId, asWindowId } from '../domain/ids'
+import { asTaskId, asSessionId, asWindowId, asTypeId } from '../domain/ids'
+import { SessionLifecycle } from '../domain/lifecycle'
+import { SessionState } from '../domain/state'
 
 /** A fake WebContents recording `send` calls, with a controllable destroyed flag. */
 class FakeWebContents {
@@ -79,6 +81,29 @@ describe('createWindowRegistry routing (§6.7)', () => {
     expect(win2.sent).toEqual([
       { type: 'sessionRenamed', taskId: 't1', sessionId: 's1', title: 'renamed' }
     ])
+  })
+
+  it('broadcasts sessionCreated to ALL windows even though the session is hosted in one (replicated store)', () => {
+    // s1 lives in win-2; main must still learn of it (cycling + a later move-in).
+    const { bus, main, win2 } = twoWindows(() => WIN2)
+    bus.publish({
+      type: 'sessionCreated',
+      taskId: asTaskId('t1'),
+      session: {
+        id: asSessionId('s1'),
+        taskId: asTaskId('t1'),
+        typeId: asTypeId('terminal'),
+        title: 'Terminal 1',
+        config: { kind: 'terminal' },
+        lifecycle: SessionLifecycle.Running,
+        state: SessionState.Unknown,
+        order: 0,
+        createdAt: 1,
+        windowId: WIN2
+      }
+    })
+    expect(main.sent.map((d) => d.type)).toEqual(['sessionCreated'])
+    expect(win2.sent.map((d) => d.type)).toEqual(['sessionCreated'])
   })
 
   it('broadcasts a session-scoped event when the session no longer resolves (e.g. sessionClosed after removal)', () => {

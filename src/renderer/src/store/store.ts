@@ -79,7 +79,16 @@ export interface StoreData {
   readonly sessions: Readonly<Record<string, SessionDTO>>
   readonly taskOrder: readonly string[]
   readonly activeTaskId?: string
-  /** task id → the session tab shown when that task is active. */
+  /**
+   * task id → THIS window's marked session tab: the one this window displays when that
+   * task is active (DESIGN §3.7, §5.4). PER-WINDOW, not replicated: each renderer keeps
+   * its own mark, so switching to a session hosted in another window leaves this window
+   * still showing (and marking) what it had. Invariant: the mark is a session of that
+   * task hosted in THIS window, or absent (this window hosts none of its sessions).
+   * Readers go through {@link activeSessionInWindow}, which also guards the invariant.
+   * Renderer-only — the backend's `task.activeSessionId` is the persisted "last focused
+   * session" (the focused window's mark), used to seed marks on hydrate.
+   */
   readonly activeSessionByTask: Readonly<Record<string, string>>
   readonly sessionTypes: readonly SessionTypeDTO[]
   readonly settings: SettingsDTO
@@ -112,6 +121,11 @@ export interface StoreData {
    */
   readonly windowFocused: boolean
   /**
+   * Whether this window has ever had OS focus. Its FIRST focus gain (the window appearing)
+   * does not flash the marked tab (§5.4) — only moving back into an already-seen window does.
+   */
+  readonly windowFocusedOnce: boolean
+  /**
    * Rolling ring of recent state transitions for the debug overlay (§11), newest
    * last, capped at {@link DEBUG_RING_CAPACITY}. Populated from every
    * `sessionStateChanged` event regardless of overlay visibility, so opening it
@@ -122,7 +136,22 @@ export interface StoreData {
   readonly nextDebugSeq: number
   /** Whether the debug overlay is currently shown in THIS window (keyboard-toggled). */
   readonly debugOverlayOpen: boolean
+  /**
+   * Focus flash (§5.4): while `focusFlashOn`, the marked tab of the active task gets a
+   * one-shot accent fade so the user can tell which session is focused after moving to
+   * this window (its mark may not have changed at all). Armed when this window GAINS OS
+   * focus (except its first-ever gain, see {@link windowFocusedOnce}), or when a switch lands on a session hosted here while still unfocused (the
+   * raise's focus event may trail the `activeSessionChanged` event). Turned off by blur
+   * or by `endFocusFlash` after {@link FOCUS_FLASH_MS}. Whichever tab is marked while it is
+   * on carries the class, so a mark that moves mid-flash moves the flash with it.
+   * `focusFlashSeq` identifies the current flash so a stale expiry timer is ignored.
+   */
+  readonly focusFlashOn: boolean
+  readonly focusFlashSeq: number
 }
+
+/** Duration of the focus flash (§5.4). Keep in sync with `.session-tab--focus-flash` in globals.css. */
+export const FOCUS_FLASH_MS = 1000
 
 export interface StoreActions {
   hydrate(state: WindowedWorkspaceStateDTO): void
@@ -138,7 +167,10 @@ export interface StoreActions {
   setGroupTasksByRepo(value: boolean): void
   pushToast(kind: ToastKind, message: string): void
   dismissToast(id: number): void
-  /** Record this window's OS focus (§9.5); regaining focus clears the active tab's flag. */
+  /**
+   * Record this window's OS focus (§9.5). Gaining it flashes the marked tab (§5.4); the
+   * "looked at" ready-for-review clear is left to `markVisibleSessionSeen`.
+   */
   setWindowFocused(focused: boolean): void
   /**
    * "Watched it finish in place" clear (§9.5). A session that finishes (Working → Idle)
@@ -153,10 +185,14 @@ export interface StoreActions {
    * "seen" cross-window via `sessions.markSeen` — a turn finished in place fires no
    * focus transition, so the OTHER windows (esp. the main window's task rollup, which
    * folds over sessions in any window) can't learn it was seen any other way (§9.5).
+   * It is also the ONLY "looked at" clear for a task switch and a window focus gain:
+   * with per-window marks only the focused window knows which session is on screen.
    */
   markVisibleSessionSeen(): string | undefined
   /** Toggle the keyboard-triggered debug overlay for this window (§11). */
   toggleDebugOverlay(): void
+  /** End focus flash `seq` (§5.4); ignored if a newer flash has started since. */
+  endFocusFlash(seq: number): void
 }
 
 export type Store = StoreData & StoreActions
@@ -198,9 +234,12 @@ export function initialData(): StoreData {
     windows: [],
     hasUnseenFinishedTurn: {},
     windowFocused: true,
+    windowFocusedOnce: false,
     debugTransitions: [],
     nextDebugSeq: 1,
-    debugOverlayOpen: false
+    debugOverlayOpen: false,
+    focusFlashOn: false,
+    focusFlashSeq: 0
   }
 }
 
@@ -222,7 +261,44 @@ function normalizeTask(dto: TaskDTO): { entry: TaskEntry; sessions: SessionDTO[]
   return { entry, sessions }
 }
 
-function hydrateData(state: WindowedWorkspaceStateDTO): StoreData {
+/**
+ * Choose a window's mark (§3.7): the first candidate hosted in this window, else the
+ * window's first hosted tab, else `undefined` (it hosts none of the task's sessions).
+ */
+function pickMark(
+  hosted: readonly string[],
+  ...candidates: readonly (string | undefined)[]
+): string | undefined {
+  for (const c of candidates) {
+    if (c && hosted.includes(c)) return c
+  }
+  return hosted[0]
+}
+
+/** Set (or, for `undefined`, drop) this window's mark for a task; identity when unchanged. */
+function withMark(data: StoreData, taskId: string, sessionId: string | undefined): StoreData {
+  if (data.activeSessionByTask[taskId] === sessionId) return data
+  if (sessionId === undefined) {
+    return { ...data, activeSessionByTask: omit(data.activeSessionByTask, taskId) }
+  }
+  return { ...data, activeSessionByTask: { ...data.activeSessionByTask, [taskId]: sessionId } }
+}
+
+/** Start a new focus flash (§5.4). */
+function armFlash(data: StoreData): StoreData {
+  return { ...data, focusFlashOn: true, focusFlashSeq: data.focusFlashSeq + 1 }
+}
+
+/**
+ * Project a workspace snapshot into this window's store. Each task's mark (§3.7) is the
+ * previous mark if still hosted here (a SettingsModal re-hydrate must not reset what each
+ * window shows), else the persisted last-focused session if hosted here, else this
+ * window's first hosted tab.
+ */
+function hydrateData(
+  state: WindowedWorkspaceStateDTO,
+  prevMarks: Readonly<Record<string, string>> = {}
+): StoreData {
   const base = initialData()
   const tasks: Record<string, TaskEntry> = {}
   const sessions: Record<string, SessionDTO> = {}
@@ -233,8 +309,9 @@ function hydrateData(state: WindowedWorkspaceStateDTO): StoreData {
     const { entry, sessions: ss } = normalizeTask(t)
     tasks[entry.id] = entry
     for (const s of ss) sessions[s.id] = s
-    if (entry.activeSessionId) activeSessionByTask[entry.id] = entry.activeSessionId
-    else if (ss.length > 0) activeSessionByTask[entry.id] = ss[0].id
+    const hosted = ss.filter((s) => s.windowId === state.thisWindowId).map((s) => s.id)
+    const mark = pickMark(hosted, prevMarks[entry.id], entry.activeSessionId)
+    if (mark) activeSessionByTask[entry.id] = mark
   }
 
   return {
@@ -270,10 +347,11 @@ export function sessionIdsInWindow(
 }
 
 /**
- * The session to show for a task IN this window: the window-scoped active tab if it
- * still lives here, else the first windowed session (the global `activeSessionByTask`
- * may point at a session that lives in another window). `undefined` → this window
- * hosts none of the task's sessions (renders an empty pane area).
+ * The session to show (and mark) for a task IN this window (§3.7): this window's mark,
+ * defensively falling back to its first hosted tab should the mark ever not be hosted
+ * here. `undefined` → this window hosts none of the task's sessions (renders an empty
+ * pane area). The single resolver every reader goes through — tab bar, pane stack,
+ * `isSessionFocused`, keyboard shortcuts, search — so they always agree.
  */
 export function activeSessionInWindow(
   data: StoreData,
@@ -288,8 +366,9 @@ export function activeSessionInWindow(
 
 /**
  * Is `sessionId` currently FOCUSED from this renderer's vantage (§9.5)? True only
- * when it is the session actually ON SCREEN: its task is the active task, it is that
- * task's active tab, it is hosted in THIS window, and this window has OS focus. A
+ * when it is the session actually ON SCREEN: its task is the active task, it is this
+ * window's marked tab for that task, it is hosted in THIS window, and this window has
+ * OS focus. A
  * session whose task is not the viewed task (some other `activeTaskId` is on screen),
  * or that lives in another window, or when this window is blurred, or that isn't its
  * task's active tab, counts as unfocused — so a `Working → Waiting` there raises
@@ -305,7 +384,7 @@ export function isSessionFocused(data: StoreData, sessionId: string): boolean {
   if (!data.windowFocused) return false
   if (session.windowId !== data.windowId) return false
   if (data.activeTaskId !== session.taskId) return false
-  return data.activeSessionByTask[session.taskId] === sessionId
+  return activeSessionInWindow(data, session.taskId, data.windowId) === sessionId
 }
 
 /**
@@ -439,12 +518,11 @@ function removeSession(data: StoreData, taskId: string, sessionId: string): Stor
   if (task) {
     const sessionIds = task.sessionIds.filter((id) => id !== sessionId)
     next = patchTask(next, taskId, { sessionIds })
+    // Closing this window's marked tab re-marks the LAST tab still in this window (§3.7);
+    // other windows' marks are untouched.
     if (next.activeSessionByTask[taskId] === sessionId) {
-      const activeSessionByTask = { ...next.activeSessionByTask }
-      const fallback = sessionIds[sessionIds.length - 1]
-      if (fallback) activeSessionByTask[taskId] = fallback
-      else delete activeSessionByTask[taskId]
-      next = { ...next, activeSessionByTask }
+      const ids = sessionIdsInWindow(next, taskId, data.windowId)
+      next = withMark(next, taskId, ids[ids.length - 1])
     }
     // The removed session no longer contributes to the task rollup — recompute its
     // worst-wins state so a closed `Working`/`NeedsInput` session stops pinning the
@@ -489,18 +567,22 @@ export function reduceEvent(
       const isNew = !data.tasks[entry.id]
       const sessions = { ...data.sessions }
       for (const s of ss) sessions[s.id] = s
-      const activeSessionByTask = { ...data.activeSessionByTask }
-      // Derive the visible tab for a task that arrives carrying sessions
-      // (reconciled/hydrated tasks); a fresh task has none, so nothing to set.
-      const preferred = entry.activeSessionId ?? entry.sessionIds[0]
-      if (preferred && !activeSessionByTask[entry.id]) activeSessionByTask[entry.id] = preferred
-      return {
-        ...data,
-        tasks: { ...data.tasks, [entry.id]: entry },
-        sessions,
-        activeSessionByTask,
-        taskOrder: isNew ? [...data.taskOrder, entry.id] : data.taskOrder
-      }
+      // Derive this window's mark for a task that arrives carrying sessions
+      // (reconciled/hydrated tasks): keep a still-hosted mark, else the persisted
+      // last-focused session if hosted here, else this window's first tab (§3.7). A
+      // fresh task has none, so nothing to set.
+      const hosted = ss.filter((s) => s.windowId === data.windowId).map((s) => s.id)
+      const mark = pickMark(hosted, data.activeSessionByTask[entry.id], entry.activeSessionId)
+      return withMark(
+        {
+          ...data,
+          tasks: { ...data.tasks, [entry.id]: entry },
+          sessions,
+          taskOrder: isNew ? [...data.taskOrder, entry.id] : data.taskOrder
+        },
+        entry.id,
+        mark
+      )
     }
 
     case 'taskDeleted': {
@@ -530,27 +612,23 @@ export function reduceEvent(
       return { ...data, taskOrder: known }
     }
 
-    case 'activeTaskChanged': {
-      // Switching to a task focuses its globally-active session, so the user has now
-      // looked at it — clear its ready-for-review flag (§9.5). GLOBAL + unconditional,
-      // mirroring activeSessionChanged: broadcast to every window on a deliberate switch,
-      // and the main-window task rollup (`taskDisplayState`) folds over sessions in ANY
-      // window, so a guarded or per-window clear would leave the dot lit. Target the
-      // replicated global pointer (`activeSessionByTask[taskId]`, identical in every
-      // window) so all windows drop the SAME session and the rollup stays consistent.
-      const next: StoreData = { ...data, activeTaskId: event.taskId }
-      const active = event.taskId ? data.activeSessionByTask[event.taskId] : undefined
-      if (!active) return next
-      return { ...next, hasUnseenFinishedTurn: clearReady(next.hasUnseenFinishedTurn, active) }
-    }
+    case 'activeTaskChanged':
+      // Pure visibility (I9). NO ready-for-review clear here (§9.5): a task switch makes
+      // each window show ITS OWN mark for the task, and only the focused window's mark is
+      // actually looked at — which window that is, only that window knows. Its
+      // `markVisibleSessionSeen` effect (App) clears that one session on the settled
+      // render and relays `sessions.markSeen` → `sessionSeen` to every window, so the
+      // main-window rollup converges without wrongly marking a blurred window's tab seen.
+      return { ...data, activeTaskId: event.taskId }
 
     case 'activeSessionChanged': {
       // Broadcast to every window so cross-window session switching works (§5.4):
       // a task's sessions can live in different windows, so the cycle can land on a
-      // session hosted elsewhere. All windows move the tab pointer; the window that
-      // HOSTS the session (`event.windowId === thisWindowId`) also makes the task
-      // active so its `TaskView` is the one on screen when the OS raises it (the
-      // raise itself is done in main).
+      // session hosted elsewhere. Only the window that HOSTS the session
+      // (`event.windowId === thisWindowId`) moves its mark and makes the task active, so
+      // its `TaskView` is the one on screen when the OS raises it (the raise itself is
+      // done in main). Every OTHER window keeps its own mark (§3.7): the window the user
+      // just left keeps showing — and marking — the session it had.
       //
       // The ready-for-review CLEAR is GLOBAL, not host-only (§9.5): switching to a
       // session focuses and raises its host window (composition-root), so the user has
@@ -558,14 +636,21 @@ export function reduceEvent(
       // (`taskDisplayState`) is shown only in the main window yet folds over sessions
       // hosted in ANY window, so a host-only clear left the main window's task dot lit
       // after the user focused a session living in another window.
-      const hosting = event.windowId === data.windowId
-      const next: StoreData = {
-        ...data,
-        activeSessionByTask: { ...data.activeSessionByTask, [event.taskId]: event.sessionId },
-        activeTaskId: hosting ? event.taskId : data.activeTaskId,
-        hasUnseenFinishedTurn: clearReady(data.hasUnseenFinishedTurn, event.sessionId)
+      const cleared = clearReady(data.hasUnseenFinishedTurn, event.sessionId)
+      if (event.windowId !== data.windowId) {
+        return cleared === data.hasUnseenFinishedTurn
+          ? data
+          : { ...data, hasUnseenFinishedTurn: cleared }
       }
-      return next
+      let next: StoreData = { ...data, activeTaskId: event.taskId, hasUnseenFinishedTurn: cleared }
+      if (data.sessions[event.sessionId]?.windowId === data.windowId) {
+        next = withMark(next, event.taskId, event.sessionId)
+      }
+      // A switch from ANOTHER window lands here while we are still blurred: flash now
+      // (§5.4) rather than rely on the raise's focus event, which may arrive first (and
+      // flash the old mark — the flash follows the mark, so it moves here) or late.
+      // `setWindowFocused` dedupes against a flash already on.
+      return data.windowFocused ? next : armFlash(next)
     }
 
     case 'sessionCreated': {
@@ -576,10 +661,9 @@ export function reduceEvent(
       const sessionIds = task.sessionIds.includes(s.id)
         ? task.sessionIds
         : [...task.sessionIds, s.id]
-      return {
-        ...patchTask(next, event.taskId, { sessionIds }),
-        activeSessionByTask: { ...next.activeSessionByTask, [event.taskId]: s.id }
-      }
+      const added = patchTask(next, event.taskId, { sessionIds })
+      // Every window learns of the session; only the window hosting it marks it (§3.7).
+      return s.windowId === data.windowId ? withMark(added, event.taskId, s.id) : added
     }
 
     case 'sessionExited': {
@@ -754,12 +838,29 @@ export function reduceEvent(
       // `windowId === thisWindowId`, so patching the flat record makes the source
       // window's filter drop the pane and the target window's filter mount it. The
       // session may be unknown to a window that never held it (harmless no-op).
+      //
+      // Marks (§3.7): the TARGET window marks the moved session — the user put it there
+      // to look at it — unless the move is the "move sessions to main" disposition of
+      // closing a window (`cause: 'windowClosed'`), which must not replace what the
+      // target was showing (it marks the moved session only if it had no mark). The
+      // SOURCE window, if the moved session was its mark, re-marks the neighbouring tab
+      // (right, else left).
       const s = data.sessions[event.sessionId]
       if (!s) return data
-      return {
+      const before = sessionIdsInWindow(data, s.taskId, data.windowId)
+      const next: StoreData = {
         ...data,
         sessions: { ...data.sessions, [event.sessionId]: { ...s, windowId: event.toWindowId } }
       }
+      if (event.toWindowId === data.windowId) {
+        const keep = event.cause === 'windowClosed' ? next.activeSessionByTask[s.taskId] : undefined
+        return withMark(next, s.taskId, keep ?? s.id)
+      }
+      if (data.activeSessionByTask[s.taskId] === s.id) {
+        const i = before.indexOf(s.id)
+        return withMark(next, s.taskId, before[i + 1] ?? before[i - 1])
+      }
+      return next
     }
 
     case 'windowCreated': {
@@ -807,30 +908,35 @@ const notificationThrottle = createNotificationThrottle()
 export const useStore = create<Store>((set, get) => ({
   ...initialData(),
 
-  hydrate: (state) => set(hydrateData(state)),
+  // Re-hydrate (SettingsModal) keeps this window's marks and its live OS-focus value:
+  // `useWindowFocus` seeds `windowFocused` from `document.hasFocus()` on mount, before the
+  // async `getState` lands, so resetting it to the default `true` would make every
+  // window look focused (and push its mark as the focused session, §5.4).
+  hydrate: (state) =>
+    set((data) => ({
+      ...hydrateData(state, data.activeSessionByTask),
+      windowFocused: data.windowFocused,
+      windowFocusedOnce: data.windowFocusedOnce,
+      focusFlashSeq: data.focusFlashSeq
+    })),
 
   applyEvent: (event) => set((data) => reduceEvent(data, event, notificationThrottle.admit)),
 
-  setActiveTask: (taskId) =>
-    set((data) => {
-      // Immediate same-window feedback before the tasks.switch round-trip lands the
-      // broadcast activeTaskChanged — and the only clear when the target is already the
-      // workspace-active task (switchTask skips the event then). Mirrors setActiveSession:
-      // focusing a task clears its globally-active session's ready-for-review flag (§9.5).
-      const active = data.activeSessionByTask[taskId]
-      if (!active) return { activeTaskId: taskId }
-      return {
-        activeTaskId: taskId,
-        hasUnseenFinishedTurn: clearReady(data.hasUnseenFinishedTurn, active)
-      }
-    }),
+  // Immediate same-window feedback before the tasks.switch round-trip lands the broadcast
+  // activeTaskChanged. No ready-for-review clear here (§9.5): the on-screen session is
+  // cleared — and relayed to every window — by `markVisibleSessionSeen` on the settled
+  // render; clearing it locally first would swallow that cross-window relay.
+  setActiveTask: (taskId) => set({ activeTaskId: taskId }),
 
   setActiveSession: (taskId, sessionId) =>
-    set((data) => ({
-      activeSessionByTask: { ...data.activeSessionByTask, [taskId]: sessionId },
-      // Focusing a session is the ONLY clear path for its ready-for-review flag (§9.5).
-      hasUnseenFinishedTurn: clearReady(data.hasUnseenFinishedTurn, sessionId)
-    })),
+    set((data) => {
+      // Focusing a session clears its ready-for-review flag (§9.5); the paired
+      // `sessions.switch` broadcast clears it in every other window.
+      const hasUnseenFinishedTurn = clearReady(data.hasUnseenFinishedTurn, sessionId)
+      // Only a session hosted here can be this window's mark (§3.7).
+      if (data.sessions[sessionId]?.windowId !== data.windowId) return { hasUnseenFinishedTurn }
+      return { ...withMark(data, taskId, sessionId), hasUnseenFinishedTurn }
+    }),
 
   setGroupTasksByRepo: (value) =>
     set((data) => ({ settings: { ...data.settings, groupTasksByRepo: value } })),
@@ -841,17 +947,21 @@ export const useStore = create<Store>((set, get) => ({
 
   setWindowFocused: (focused) =>
     set((data) => {
-      if (data.windowFocused === focused) return data
-      const next = { ...data, windowFocused: focused }
-      // Regaining focus counts as "looking at" the currently-visible session (§9.5) —
-      // the same clear path as an explicit tab click. Nothing to clear on blur.
-      if (!focused) return next
-      const activeTaskId = data.activeTaskId
-      const visible = activeTaskId
-        ? activeSessionInWindow(next, activeTaskId, data.windowId)
-        : undefined
-      if (!visible) return next
-      return { ...next, hasUnseenFinishedTurn: clearReady(data.hasUnseenFinishedTurn, visible) }
+      // Blur ends any focus flash (§5.4).
+      if (!focused) {
+        return data.windowFocused ? { ...data, windowFocused: false, focusFlashOn: false } : data
+      }
+      if (data.windowFocused && data.windowFocusedOnce) return data
+      const next = { ...data, windowFocused: true, windowFocusedOnce: true }
+      // The window's first-ever focus (it just appeared, or the mount-time seed of an
+      // already-focused window) doesn't flash. Moving back INTO it flashes the marked tab
+      // (§5.4) — unless a flash is already on (armed by an `activeSessionChanged` that beat
+      // this focus event), so it doesn't restart. Regaining focus also counts as "looking
+      // at" the visible session (§9.5), but that clear is left to `markVisibleSessionSeen`
+      // on the settled render, which relays it to every window (a local clear here would
+      // swallow the relay).
+      if (!data.windowFocusedOnce || data.windowFocused || next.focusFlashOn) return next
+      return armFlash(next)
     }),
 
   markVisibleSessionSeen: () => {
@@ -863,7 +973,7 @@ export const useStore = create<Store>((set, get) => ({
     const data = get()
     const taskId = data.activeTaskId
     if (!taskId) return undefined
-    const sid = data.activeSessionByTask[taskId]
+    const sid = activeSessionInWindow(data, taskId, data.windowId)
     if (!sid || !data.hasUnseenFinishedTurn[sid]) return undefined
     if (!isSessionFocused(data, sid)) return undefined
     set({ hasUnseenFinishedTurn: clearReady(data.hasUnseenFinishedTurn, sid) })
@@ -872,7 +982,12 @@ export const useStore = create<Store>((set, get) => ({
     return sid
   },
 
-  toggleDebugOverlay: () => set((data) => ({ debugOverlayOpen: !data.debugOverlayOpen }))
+  toggleDebugOverlay: () => set((data) => ({ debugOverlayOpen: !data.debugOverlayOpen })),
+
+  endFocusFlash: (seq) =>
+    set((data) =>
+      data.focusFlashOn && data.focusFlashSeq === seq ? { focusFlashOn: false } : data
+    )
 }))
 
 /** Return `map` with `sessionId` cleared, or `map` unchanged if it wasn't set (§9.5). */

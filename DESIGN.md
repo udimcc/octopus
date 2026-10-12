@@ -264,9 +264,28 @@ persistence concept, not a domain aggregate** — the domain stays pure and its 
 **Sync model.** All windows share the single existing `activeTaskId` pointer (§3.2). A given window `W`
 renders exactly the sessions where `session.taskId === activeTaskId && session.windowId === W`. Switching the
 active task therefore switches sessions in **every** window simultaneously — the `activeTaskChanged` event is
-just broadcast to all windows (§6.7). A window may render **zero** sessions (empty state). `activeSessionId`
-within a task is a per-window UI selection, not shared. Roles: the **main** window shows the progress panel
-and sessions; **secondary** windows are session-only.
+just broadcast to all windows (§6.7). A window may render **zero** sessions (empty state). Roles: the **main**
+window shows the progress panel and sessions; **secondary** windows are session-only.
+
+**Per-window marks.** Each window keeps its **own** marked (displayed) tab per task — `activeSessionByTask` in
+that window's store holds a session the window hosts, or nothing (`activeSessionInWindow` resolves a missing
+mark to the window's first tab). It is renderer-only view state: no DB column, no DTO field. The **focused
+session** is the marked tab of the OS-focused window for the active task; it is what the session shortcuts
+anchor on (§5.4), and it is what persists as `task.activeSessionId` (I10). So with two windows, each shows its
+marked session, and moving between them never blanks or re-points the window just left.
+- **Cross-window switch** (keyboard walk into another window's tab): `switchSession` broadcasts
+  `activeSessionChanged{windowId}`; **only the host** moves its mark, and main raises the host (§6.7). The
+  window left keeps its mark.
+- **Focus gain** (mouse click into the window, Alt+Tab, the raise above): the window persists its mark as the
+  focused session via the persist-only `focusSession` command (pointer write, no event, no raise — so a focus
+  event racing ahead of `activeSessionChanged` can't flip the host back). It also flashes the marked tab (§5.4).
+- **Restore** (no DB change): the window hosting the persisted `task.activeSessionId` marks it; every other
+  window marks its first hosted tab. A re-hydrate keeps a mark that is still hosted.
+- **Move** (drag / "Move to"): the target window marks the moved session. If it was the source's mark, the
+  source falls back to the right neighbour, else the left. The bulk "move to main" on a window close
+  (`sessionMovedToWindow{cause:'windowClosed'}`) keeps main's mark; main marks a moved session only if it
+  hosted none of that task's sessions.
+- **Close** of a window's marked tab: the window falls back to its **last** remaining tab.
 
 ---
 
@@ -308,7 +327,8 @@ All `TaskView`s and their `SessionPane`s stay mounted; only the active ones are 
 
 ### 5.2 State management & data flow
 
-Zustand store holds: `tasks`, `sessions`, `activeTaskId`, `activeSessionId` (per task), and (phase 2) each
+Zustand store holds: `tasks`, `sessions`, `activeTaskId`, THIS window's marked session per task
+(`activeSessionByTask`, §3.7), and (phase 2) each
 session's `state` (already a field on `SessionDTO`/`TaskEntry` — the phase-1 seam, always `'unknown'` in
 phase 1) plus a `hasUnseenFinishedTurn` map and the `sessionDisplayState`/`taskDisplayState` selectors that
 fold it (with a display-time on-screen check) into the §3.4 display-state priority (§9.5). **High-frequency `ptyData` bypasses the store** — it is delivered by IPC directly to the
@@ -382,6 +402,11 @@ restore complexity). The serialize-and-replay path is kept available for a futur
 
 - **Tabs:** horizontal scroll on overflow with chevrons; overflow "…" menu beyond ~8 tabs; drag-reorder via
   `@dnd-kit/core`; per-tab `×` close (fires `pty:destroy`).
+- **Focus flash:** when a window gains OS focus (keyboard cross-window switch, a mouse click anywhere in it,
+  Alt+Tab), its marked tab of the active task (§3.7) plays a 1 s accent-fill fade (`--accent-flash` → the
+  normal active-tab background) to show which session is now focused. It is a store flag (`focusFlashOn`,
+  ended by a `FOCUS_FLASH_MS` timer in `App`), not a status indicator. It does not play on a same-window
+  switch, on a window's first appearance, or under `prefers-reduced-motion`.
 - **New Task:** modal with three tabs and an info button (top-right) whose hover/focus tooltip explains the
   active tab's delete behavior. **From New Worktree** (default): four fields — **name**, **repo directory**
   (a native OS directory picker via a `dialog:pickDirectory` IPC), **source branch**, **new branch**
@@ -422,7 +447,8 @@ restore complexity). The serialize-and-replay path is kept available for a futur
   `taskPrevKey`, defaults `Ctrl+Shift+↓`/`↑`), new session (`newSessionKey`, default `Ctrl+Shift+N`), new task
   (`newTaskKey`, default `Ctrl+Shift+T`), close session (`closeSessionKey`, default `Ctrl+Shift+W`), and
   terminal search (`searchKey`, default `Ctrl+Shift+F`) — each bound independently (no "opposite" is
-  inferred). A capture accepts any key but is validated to require ≥1 modifier (so it can't shadow a bare
+  inferred). Next/prev session and close session act on THIS window's mark (§3.7); next/prev walk the
+  active task's tabs across windows, raising the host window when the walk leaves this one. A capture accepts any key but is validated to require ≥1 modifier (so it can't shadow a bare
   terminal keystroke) and is checked for conflicts against every other configurable chord (and
   `RESERVED_CHORDS`, currently empty) before Save is allowed. `Ctrl+Shift+C/V` copy/paste and `Esc` close
   modal/dropdown are not configurable. Because every binding requires a modifier, terminal `Ctrl+C` etc. are
@@ -458,7 +484,9 @@ Each OS window is a **separate Electron renderer process** with its own Zustand 
 
 **Rendering & keep-alive.** The §5.3 rules are unchanged and apply **per window**: every session assigned
 to a window stays mounted with `visibility:hidden` when not the active tab (never `display:none`).
-`SecondaryWorkspace` filters the session set to `session.windowId === thisWindowId`. The WebGL context
+`SecondaryWorkspace` filters the session set to `session.windowId === thisWindowId`, and each window shows
+its own marked tab per task (§3.7) — `TaskView`/`SessionTabBar` resolve it via `activeSessionInWindow`, never
+a pointer shared between windows. The WebGL context
 budget (`terminal/webgl-budget.ts`, §5.3) is a **module-level** singleton and thus already **per-renderer-
 process** — each window gets its own ~15-context budget with no change, and on a software-GL/VDI host every
 window independently stays on xterm's DOM renderer.
@@ -651,7 +679,8 @@ carry it over a Unix socket unchanged.
 
 ```
 Commands (UI→backend): createTask{name,repoDir,sourceBranch,newBranch}, deleteTask{force?},
-  renameTask, reorderTask, createSession, closeSession, renameSession, reorderSession,
+  renameTask, reorderTask, createSession, closeSession, switchSession, focusSession (persist-only, §3.7),
+  renameSession, reorderSession,
   writeToPty, resizePty, getState, updateSettings
 Queries (UI→backend, no domain mutation): pickDirectory (native OS folder picker for the New-Task modal)
 Events (backend→UI):  ptyData, sessionCreated, sessionExited, sessionClosed,
@@ -688,11 +717,13 @@ Events (backend→UI):  ptyData, sessionCreated, sessionExited, sessionClosed,
 **Event routing — `WindowRegistry`.** The single-target event forwarder (§6.5, one `webContents`) is
 replaced by a **`WindowRegistry`**: a `Map<WindowId, { webContents, ready, pending[] }>` with **one** bus
 subscription whose closure routes each mapped `EventDTO` by kind:
-- **`ptyData` and session-scoped events** (`sessionCreated/Exited/Closed/Reordered`) → **only the
+- **`ptyData` and session-scoped events** (`sessionExited/Closed/Reordered`) → **only the
   window hosting that session** (look up `session.windowId`; drop silently if the session is mid-close).
+  `sessionCreated` is **broadcast**: every renderer replicates the full session set, and the cross-window
+  session walk (§5.4) and the main window's rollup need sessions created in other windows.
 - **`sessionMovedToWindow`** (new) → **both** the source and target windows, so both re-render in one cycle.
 - **Task-level / broadcast events** (`taskCreated/Deleted/Renamed/Reordered/Stale`, `sessionRenamed`,
-  `activeTaskChanged`, `scriptProgress/Error`, `error`, settings, and the dormant phase 2
+  `activeTaskChanged`, `activeSessionChanged`, `scriptProgress/Error`, `error`, settings, and the dormant phase 2
   `sessionStateChanged/taskStateChanged`) → **all** windows — every window keeps its active-task view (and the
   main window its full task list) correct. `sessionRenamed` broadcasts (not host-scoped) because every renderer
   replicates the full session set including `title`; host-only routing left non-host windows showing the stale
@@ -711,7 +742,11 @@ can receive them (generalizes the §6.5 single-window `onHydrate`).
 - **Query (bypasses the command loop, like `pickDirectory`):** `windowAtPoint{x,y}` → the `windowId` of the
   Octopus window whose OS bounds contain the screen point, or `null` (empty desktop). Used by cross-window DnD.
 - **Events:** `windowCreated`, `windowClosed`, `sessionMovedToWindow{sessionId, taskId, fromWindowId,
-  toWindowId}`.
+  toWindowId, cause?}` (`cause: 'windowClosed'` marks the bulk move-to-main, so main keeps its mark, §3.7).
+
+**Cross-window switch raise.** On `activeSessionChanged` the composition root raises the host `BrowserWindow`
+and calls `webContents.invalidate()`, so the VDI's software compositor repaints the host's moved mark and
+focus flash without waiting for input (§9.7).
 
 **Move choreography (reuses the existing replay path — no PTY restart).** PTYs are keyed only by `sessionId`
 in main, so moving a session is a pure view re-assignment: `moveSessionToWindow` →
@@ -763,7 +798,8 @@ once) — `ptyData` in the register→`getState` gap is unbounded in principle.
   cannot move between tasks (each task is a distinct worktree). **I8.** Task names need not be unique (soft UX
   warning only; identity is `TaskId`).
 - **I9.** ≤1 `activeTaskId`; switching tasks changes only visibility, never any session's lifecycle.
-  **I10.** `activeSessionId` (if set) references a session in that task.
+  **I10.** `activeSessionId` (if set) references a session in that task. It records the last **focused**
+  session — the OS-focused window's mark (§3.7) — written by `switchSession` or the persist-only `focusSession`.
 - **I11.** `TaskState` is always derived, never assigned; recomputed on session add/remove and on each
   ingested `sessionStateChanged` (pure `max` → cannot drift).
 - **I12.** An `Exited`/`StartFailed` session maps to `Blocked` for aggregation; a session without the
@@ -1067,9 +1103,11 @@ stream** and lives only in the Zustand store:
   out of the `Working → Waiting` guard.
 - **Clear.** This clears the underlying *"looked" memory* (display-time suppression, below, additionally hides
   the dot in the instant before a clear lands). There are two on-screen clear mechanisms:
-  - **Bring on screen (focus transition, global).** When the session's tab becomes active in a focused window
-    (`setActiveSession`/`activeSessionChanged`/`setActiveTask`/`activeTaskChanged`/`setWindowFocused` regain) →
-    `hasUnseenFinishedTurn[sessionId] = false`. This clear is **global** (broadcast to every window's store),
+  - **Bring on screen (focus transition, global).** When the session's tab becomes active
+    (`setActiveSession` in its own window, or `activeSessionChanged` in every window) →
+    `hasUnseenFinishedTurn[sessionId] = false`. A task switch or a window focus gain does **not** clear here:
+    each window marks its own session (§3.7), so only the focused window knows which one is on screen, and
+    the watch-in-place clear below handles those (relayed, so also global). This clear is **global** (broadcast to every window's store),
     which also keeps the cross-window task rollup honest: a session on screen in *its own* window is not-focused
     from the main window's perspective, so the display-time gate alone can't suppress its `Review` in the
     main-window rollup — the global clear can.

@@ -39,6 +39,8 @@
   --accent-hover: #5eead4;
   --accent-active: #14b8a6;
   --accent-subtle: rgba(45, 212, 191, 0.14);
+  /* Focus flash start colour (§5.4) — a strong accent tint that fades to --bg-app. */
+  --accent-flash: rgba(45, 212, 191, 0.45);
   --on-accent: #04211d;
 
   /* Working-status dot — blue, distinct from the teal accent (§9.5). */
@@ -331,6 +333,31 @@ button:focus-visible {
 
 @media (prefers-reduced-motion: reduce) {
   .status-pulse {
+    animation: none;
+  }
+}
+
+/* Focus flash (§5.4): moving INTO a window fades its marked tab from a strong accent tint
+   to the normal active-tab background, so the user can tell which session is focused even
+   when the mark didn't change. The animation overrides the tab's inline background while
+   it runs and ends on the same --bg-app, so there is no jump. Duration = FOCUS_FLASH_MS
+   (store.ts). background-color only (no transform/filter) — cheap under SwiftShader.
+   `prefers-reduced-motion` disables it, like the status pulse. */
+.session-tab--focus-flash {
+  animation: session-tab-focus-flash 1s ease-out;
+}
+
+@keyframes session-tab-focus-flash {
+  from {
+    background-color: var(--accent-flash);
+  }
+  to {
+    background-color: var(--bg-app);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-tab--focus-flash {
     animation: none;
   }
 }

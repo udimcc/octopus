@@ -97,9 +97,19 @@ export interface CloseSessionInput {
  * tab click, this runs on the loop so it can move the persisted active-session
  * pointer and emit `activeSessionChanged` to ALL windows — the path that makes
  * `Ctrl+Shift+Arrow` work across windows (a task's sessions can live in different
- * windows; the hosting window raises itself on the event).
+ * windows). Only the HOST window moves its mark (and raises itself) on the event;
+ * other windows keep their own marked tab and apply the global ready-for-review clear.
  */
 export interface SwitchSessionInput {
+  readonly sessionId: SessionId
+}
+
+/**
+ * Record a session as its task's "last focused session" (I10, §5.4): the renderer
+ * sends this when the focused window's marked tab changes. Persist-only — no event,
+ * no window raise (see `use-cases/focus-session.ts` for why it isn't `switchSession`).
+ */
+export interface FocusSessionInput {
   readonly sessionId: SessionId
 }
 
@@ -223,6 +233,7 @@ export type Command =
   | { readonly kind: 'createSession'; readonly input: CreateSessionInput }
   | { readonly kind: 'closeSession'; readonly input: CloseSessionInput }
   | { readonly kind: 'switchSession'; readonly input: SwitchSessionInput }
+  | { readonly kind: 'focusSession'; readonly input: FocusSessionInput }
   | { readonly kind: 'renameSession'; readonly input: RenameSessionInput }
   | { readonly kind: 'reorderSession'; readonly input: ReorderSessionInput }
   | { readonly kind: 'writeToPty'; readonly input: WriteToPtyInput }

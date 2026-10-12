@@ -15,7 +15,7 @@ import type { Settings } from '../ports/settings-store'
 import type { SessionConfigDTO } from '../shared/dto'
 import { SessionLifecycle, TaskLifecycle } from '../domain/lifecycle'
 import { SessionState, TaskState } from '../domain/state'
-import { asTaskId, asSessionId, asTypeId } from '../domain/ids'
+import { asTaskId, asSessionId, asTypeId, asWindowId } from '../domain/ids'
 
 const worktree: WorktreeRefSnapshot = {
   path: '/wt/t1',
@@ -277,6 +277,45 @@ describe('toEventDTO (§6.5) — total over the DomainEvent union', () => {
           })
       },
       {
+        event: {
+          type: 'sessionMovedToWindow',
+          sessionId: asSessionId('s1'),
+          taskId: asTaskId('t1'),
+          fromWindowId: asWindowId('win-2'),
+          toWindowId: asWindowId('main')
+        },
+        // An explicit move: no `cause` key at all on the wire.
+        expect: (d) => {
+          expect(d).toEqual({
+            type: 'sessionMovedToWindow',
+            sessionId: 's1',
+            taskId: 't1',
+            fromWindowId: 'win-2',
+            toWindowId: 'main'
+          })
+          expect(d).not.toHaveProperty('cause')
+        }
+      },
+      {
+        event: {
+          type: 'sessionMovedToWindow',
+          sessionId: asSessionId('s1'),
+          taskId: asTaskId('t1'),
+          fromWindowId: asWindowId('win-2'),
+          toWindowId: asWindowId('main'),
+          cause: 'windowClosed'
+        },
+        expect: (d) =>
+          expect(d).toEqual({
+            type: 'sessionMovedToWindow',
+            sessionId: 's1',
+            taskId: 't1',
+            fromWindowId: 'win-2',
+            toWindowId: 'main',
+            cause: 'windowClosed'
+          })
+      },
+      {
         event: { type: 'taskStateChanged', taskId: asTaskId('t1'), state: TaskState.NeedsInput },
         expect: (d) =>
           expect(d).toEqual({ type: 'taskStateChanged', taskId: 't1', state: 'blocked' })
@@ -289,8 +328,8 @@ describe('toEventDTO (§6.5) — total over the DomainEvent union', () => {
     }
   })
 
-  it('covers all 17 DomainEvent variants (guards against an unmapped addition)', () => {
+  it('covers 18 DomainEvent variants (guards against an unmapped addition)', () => {
     const distinct = new Set(cases.map((c) => c.event.type))
-    expect(distinct.size).toBe(17)
+    expect(distinct.size).toBe(18)
   })
 })

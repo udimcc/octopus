@@ -5,7 +5,8 @@
  *
  *   - `move-to-main` — reassign every hosted session back to the main window
  *     (reusing `moveSessionToWindow`, so PTYs keep running and re-home in the main
- *     window's `TaskView`). Nothing is killed.
+ *     window's `TaskView`). Nothing is killed. Each move carries
+ *     `cause: 'windowClosed'` so the main window keeps its existing marks.
  *   - `kill-sessions` — close every hosted session (reusing `closeSession`, the
  *     full Running→Stopping→Closed teardown + row delete).
  *
@@ -40,7 +41,13 @@ export async function closeWindow(deps: AppDependencies, input: CloseWindowInput
 
   if (input.disposition === 'move-to-main') {
     for (const session of hosted) {
-      moveSessionToWindow(deps, { sessionId: session.id, targetWindowId: MAIN_WINDOW_ID })
+      // Tagged so the main window keeps its own mark per task (§6.7) rather than
+      // marking each re-homed session as if the user had dragged it there.
+      moveSessionToWindow(
+        deps,
+        { sessionId: session.id, targetWindowId: MAIN_WINDOW_ID },
+        { cause: 'windowClosed' }
+      )
     }
   } else {
     for (const session of hosted) {

@@ -31,7 +31,7 @@
  */
 
 import { useEffect } from 'react'
-import { useStore } from '../store/store'
+import { useStore, activeSessionInWindow } from '../store/store'
 import { groupTasksByRepo } from '../store/group-tasks'
 import { matchesChord } from '../keybindings/chords'
 
@@ -81,10 +81,11 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
       // by the hosting window's rank — its index in `store.windows`, which is creation
       // order (hydrated ORDER BY created_at, then append-on-`windowCreated`). A stable sort
       // keeps each window's tabs in their tab order, so the cycle walks window 1's tabs,
-      // then window 2's, etc., and wraps across the whole set. We anchor "current" on the
-      // GLOBAL `activeSessionByTask` pointer (switching crosses windows and updates it
-      // everywhere) and dispatch `sessions.switch`, which round-trips, moves the persisted
-      // pointer, raises the hosting window, and broadcasts `activeSessionChanged`.
+      // then window 2's, etc., and wraps across the whole set. We anchor "current" on THIS
+      // window's mark (§3.7): shortcuts are handled by the OS-focused window, whose mark IS
+      // the focused session. We dispatch `sessions.switch`, which round-trips, moves the
+      // persisted pointer, raises the hosting window, and broadcasts `activeSessionChanged`
+      // (only the host moves its mark, so this window keeps showing what it had).
       const cycleSession = (delta: number): void => {
         if (!activeTaskId) return
         const task = store.tasks[activeTaskId]
@@ -98,7 +99,7 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
         }
         const ids = [...task.sessionIds].sort((a, b) => windowRank(a) - windowRank(b))
         if (ids.length === 0) return
-        const curId = store.activeSessionByTask[activeTaskId]
+        const curId = activeSessionInWindow(store, activeTaskId, store.windowId)
         const cur = curId ? ids.indexOf(curId) : -1
         const next = ids[(cur + delta + ids.length) % ids.length]
         if (next) void window.octopusAPI.sessions.switch({ sessionId: next })
@@ -111,10 +112,10 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
         }
       }
 
-      // Close the active session of the active task, if there is one.
+      // Close the focused session — this window's mark for the active task — if any.
       const closeSession = (): void => {
         if (!activeTaskId) return
-        const sid = store.activeSessionByTask[activeTaskId]
+        const sid = activeSessionInWindow(store, activeTaskId, store.windowId)
         if (sid) void window.octopusAPI.sessions.close({ sessionId: sid })
       }
 

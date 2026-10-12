@@ -75,8 +75,9 @@ export interface ActiveTaskChangedEventDTO {
 }
 /**
  * A task's active session (visible tab) changed (§5.4). Broadcast to all windows so
- * session switching spans windows: the pointer updates everywhere and the hosting
- * window (`windowId`) raises itself. The DTO mirror of `ActiveSessionChangedEvent`.
+ * session switching spans windows: only the hosting window (`windowId`) moves its
+ * mark and raises itself; the others keep their own mark and apply the global
+ * ready-for-review clear. The DTO mirror of `ActiveSessionChangedEvent`.
  */
 export interface ActiveSessionChangedEventDTO {
   readonly type: 'activeSessionChanged'
@@ -128,6 +129,13 @@ export interface SessionMovedToWindowEventDTO {
   readonly taskId: string
   readonly fromWindowId: string
   readonly toWindowId: string
+  /**
+   * Set when the move is the "move sessions to main" disposition of closing a window
+   * (§6.7). The receiving renderer then KEEPS its existing mark for the task instead of
+   * marking the moved session; an explicit drag / "Move to" (no cause) marks the moved
+   * session in the target window.
+   */
+  readonly cause?: 'windowClosed'
 }
 
 // ── Dormant V2 state seams (§10) — emitted by nobody in V1 ───────────────────

@@ -152,3 +152,15 @@ describe('<SessionTab> context menu', () => {
     expect(screen.queryByRole('menuitem', { name: 'Refresh state' })).not.toBeInTheDocument()
   })
 })
+
+describe('<SessionTab> focus flash (§5.4)', () => {
+  it('adds the flash class only while `flash` is set', () => {
+    renderTab({ active: true, flash: true })
+    expect(screen.getByRole('tab')).toHaveClass('session-tab', 'session-tab--focus-flash')
+  })
+
+  it('renders the plain tab by default', () => {
+    renderTab({ active: true })
+    expect(screen.getByRole('tab')).not.toHaveClass('session-tab--focus-flash')
+  })
+})

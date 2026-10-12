@@ -238,14 +238,19 @@ describe('useKeyboardShortcuts (§5.4 — Shift-gated)', () => {
     render(<Host onNewTask={vi.fn()} />)
     chord('ArrowRight')
     expect(window.octopusAPI.sessions.switch).toHaveBeenLastCalledWith({ sessionId: 's3' })
-    // The store re-points on the broadcast `activeSessionChanged`; the stub bridge does
-    // not round-trip, so advance the global pointer manually to simulate it.
-    useStore.setState((s) => ({ activeSessionByTask: { ...s.activeSessionByTask, t1: 's3' } }))
+    // The host (this window) moves its mark on the broadcast `activeSessionChanged`; the
+    // stub bridge does not round-trip, so apply the event manually to simulate it.
+    const switched = (sessionId: string, windowId: string): void =>
+      useStore
+        .getState()
+        .applyEvent({ type: 'activeSessionChanged', taskId: 't1', sessionId, windowId })
+    switched('s3', 'main')
     chord('ArrowRight')
     expect(window.octopusAPI.sessions.switch).toHaveBeenLastCalledWith({ sessionId: 's2' })
-    useStore.setState((s) => ({ activeSessionByTask: { ...s.activeSessionByTask, t1: 's2' } }))
-    chord('ArrowRight')
-    expect(window.octopusAPI.sessions.switch).toHaveBeenLastCalledWith({ sessionId: 's1' }) // wrapped
+    // s2 lives in win-2: that window becomes the focused one and handles the next press
+    // (covered below); THIS window keeps its own mark, so it still anchors on s3 (§3.7).
+    switched('s2', 'win-2')
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s3')
   })
 
   it("wraps only after the last window's tabs, not within a single window", () => {
@@ -263,9 +268,10 @@ describe('useKeyboardShortcuts (§5.4 — Shift-gated)', () => {
     expect(window.octopusAPI.sessions.switch).toHaveBeenLastCalledWith({ sessionId: 's2' })
   })
 
-  it('anchors on the GLOBAL active session, wherever it is hosted', () => {
-    // Global activeSessionByTask points at s2 (in win-2), while this renderer is `main`.
-    // Grouped order is [s1, s3, s2]; from s2 (last), ArrowRight wraps to s1.
+  it("anchors on THIS window's mark, not a session focused in another window (§3.7)", () => {
+    // The persisted last-focused session is s2 (in win-2), while this renderer is `main`,
+    // whose mark is its own s3. Grouped order is [s1, s3, s2]; from s3, ArrowRight goes
+    // to s2 — the walk continues from what THIS (focused) window shows.
     const t = task('t1', {
       sessions: [
         session('s1', { windowId: 'main' }),
@@ -275,14 +281,29 @@ describe('useKeyboardShortcuts (§5.4 — Shift-gated)', () => {
       activeSessionId: 's2'
     })
     seed([t], 't1', 'main', [win('main'), win('win-2')])
+    useStore.setState((s) => ({ activeSessionByTask: { ...s.activeSessionByTask, t1: 's3' } }))
     render(<Host onNewTask={vi.fn()} />)
     chord('ArrowRight')
-    expect(window.octopusAPI.sessions.switch).toHaveBeenLastCalledWith({ sessionId: 's1' })
+    expect(window.octopusAPI.sessions.switch).toHaveBeenLastCalledWith({ sessionId: 's2' })
+  })
+
+  it("Ctrl+Shift+W closes THIS window's mark, not a session focused elsewhere (§3.7)", () => {
+    const t = task('t1', {
+      sessions: [
+        session('s1', { windowId: 'main' }),
+        session('s2', { order: 1, windowId: 'win-2' })
+      ],
+      activeSessionId: 's2'
+    })
+    seed([t], 't1', 'main', [win('main'), win('win-2')])
+    render(<Host onNewTask={vi.fn()} />)
+    chord('KeyW')
+    expect(window.octopusAPI.sessions.close).toHaveBeenCalledWith({ sessionId: 's1' })
   })
 
   it('cycles from a secondary window across into the main window', () => {
-    // Same layout, but the focused renderer IS win-2 (hosting only s2). Cycling still
-    // spans all windows off the shared global pointer; from s2, ArrowRight wraps to s1.
+    // Same layout, but the focused renderer IS win-2 (hosting only s2, its mark). Cycling
+    // still spans all windows; from s2 (last in grouped order), ArrowRight wraps to s1.
     const t = task('t1', {
       sessions: [
         session('s1', { windowId: 'main' }),

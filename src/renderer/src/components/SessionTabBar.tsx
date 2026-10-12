@@ -26,7 +26,12 @@ import {
 import { SortableContext, horizontalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
 import { SessionTab } from './SessionTab'
 import { NewSessionDropdown } from './NewSessionDropdown'
-import { useStore, sessionDisplayState, isSessionFocused } from '../store/store'
+import {
+  useStore,
+  sessionDisplayState,
+  isSessionFocused,
+  activeSessionInWindow
+} from '../store/store'
 import { color, radius, shadow } from '../style/tokens'
 
 export interface SessionTabBarProps {
@@ -42,7 +47,11 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
   const hasUnseenFinishedTurn = useStore((s) => s.hasUnseenFinishedTurn)
   const windowId = useStore((s) => s.windowId)
   const windows = useStore((s) => s.windows)
-  const activeSessionId = useStore((s) => s.activeSessionByTask[taskId])
+  // THIS window's marked tab (§3.7). Each window marks its own; reading a shared pointer
+  // left no tab marked here once focus moved to a session hosted in another window.
+  const activeSessionId = useStore((s) => activeSessionInWindow(s, taskId, s.windowId))
+  // Focus flash (§5.4): the marked tab of the on-screen task, while the flash is on.
+  const flashing = useStore((s) => s.focusFlashOn && s.activeTaskId === taskId)
   const setActiveSession = useStore((s) => s.setActiveSession)
   // Subscribe to the on-screen inputs so a tab's icon recomputes when window focus or
   // the active task changes (§9.5): the review dot is suppressed at DISPLAY time for an
@@ -240,6 +249,7 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
                   key={sid}
                   session={s}
                   active={sid === activeSessionId}
+                  flash={flashing && sid === activeSessionId}
                   onActivate={() => activate(sid)}
                   onRename={(title) => window.octopusAPI.sessions.rename({ sessionId: sid, title })}
                   onClose={() => window.octopusAPI.sessions.close({ sessionId: sid })}

@@ -4,8 +4,8 @@
  * `Map<WindowId, WindowEntry>` and, from ONE bus subscription, routes each mapped
  * `EventDTO` to the right window(s) by kind:
  *
- *   - **`ptyData` + session-scoped events** (`sessionCreated/Exited/Closed/
- *     Reordered`) → ONLY the window hosting that session. The host is resolved via
+ *   - **`ptyData` + session-scoped events** (`sessionExited/Closed/Reordered`) →
+ *     ONLY the window hosting that session. The host is resolved via
  *     the injected `resolveSessionWindow(sessionId)` (a workspace lookup of
  *     `session.windowId`). If the session can't be resolved — it was already
  *     removed from its task before the event was published, as `sessionClosed`
@@ -18,6 +18,12 @@
  *     patches only `windowId`) would re-mount the tab showing the pre-rename name.
  *     Broadcasting keeps the replicated title current everywhere; the reducer no-ops
  *     for a window that doesn't hold the session.
+ *   - **`sessionCreated`** → ALL windows (broadcast), for the same replication reason.
+ *     A window that never learns of a session created in another window is missing
+ *     it from its store: its session cycling (`Ctrl+Shift+Arrow`) skips it, and when
+ *     the session is later moved INTO that window (`sessionMovedToWindow` patches only
+ *     `windowId`) there's nothing to mount. The renderer marks a new session only in
+ *     its HOSTING window (the one matching `session.windowId`); others just store it.
  *   - **`sessionMovedToWindow`** → BOTH endpoints (`fromWindowId` + `toWindowId`),
  *     so the source unmounts the pane and the target mounts it in one cycle.
  *   - **everything else** (task-level, `activeTaskChanged`, script/error, window
@@ -105,13 +111,13 @@ export interface WindowRegistry {
 
 /**
  * Session-scoped events routed only to the hosting window (§6.7). `sessionRenamed`
- * is deliberately NOT here: `title` is replicated in every window's store, so a
- * rename must broadcast (see the header comment) — host-only routing left non-host
- * windows stale, which surfaced when the session was moved into them.
+ * and `sessionCreated` are deliberately NOT here: every window's store replicates
+ * every session (title included), so both must broadcast (see the header comment) —
+ * host-only routing left non-host windows stale or missing the session, which
+ * surfaced when the session was moved into them.
  */
 const SESSION_SCOPED: ReadonlySet<EventDTO['type']> = new Set([
   'ptyData',
-  'sessionCreated',
   'sessionExited',
   'sessionClosed',
   'sessionReordered'

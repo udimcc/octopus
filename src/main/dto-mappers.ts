@@ -237,7 +237,9 @@ export function toEventDTO(e: DomainEvent): EventDTO {
         sessionId: e.sessionId,
         taskId: e.taskId,
         fromWindowId: e.fromWindowId,
-        toWindowId: e.toWindowId
+        toWindowId: e.toWindowId,
+        // Only when present: an explicit move carries no `cause` key at all.
+        ...(e.cause !== undefined ? { cause: e.cause } : {})
       }
     case 'sessionStateChanged':
       return {

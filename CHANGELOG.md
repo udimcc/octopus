@@ -6,8 +6,24 @@ All notable changes to Octopus are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Focus flash on the session tab.** When a window gains focus (the session shortcut
+  walking into another window, a mouse click into it, or Alt+Tab), its marked tab fades
+  from a strong accent tint to the normal active-tab background over 1 second, to show
+  which session is now focused. Switching tabs within a window doesn't flash, and neither
+  does a window's first appearance or a system with reduced motion enabled.
+
 ### Fixed
 
+- **With two windows, only one of them showed a marked session.** Walking from a tab in
+  one window to a tab in another with the session shortcut left the first window with no
+  marked tab, and it switched to showing its first session. Each window now keeps its own
+  marked session per task and keeps showing it when focus moves away. The focused session
+  is the marked tab of the focused window. The session shortcuts start from it, and it is
+  what's restored after a restart. Moving a session to another window marks it there; if
+  it was the source window's marked tab, the source falls back to the neighbouring tab.
+  Closing a window's marked tab falls back to the window's last tab.
 - **Scrollback lost when reopening the app.** A restored session's first event is the
   daemon's whole-buffer replay; both pre-hydration queues (main's per-window queue and
   the renderer's pre-mount buffer) counted *events* and dropped the oldest on overflow,

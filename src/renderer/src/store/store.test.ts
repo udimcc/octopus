@@ -134,33 +134,72 @@ describe('reduceEvent (§5.2)', () => {
     expect(d.activeSessionByTask.t1).toBe('s1')
   })
 
-  it('activeSessionChanged re-points the tab in EVERY window; the host window also makes the task active (§5.4)', () => {
-    // `this` window is 'main'; the target session s2 is hosted in 'win-2'.
-    let d: StoreData = { ...initialData(), windowId: 'main' }
+  /** The user's layout: window `main` hosts s1, s2; window `win-2` hosts s3, s4 (task t1). */
+  function twoWindows(thisWindowId: string): StoreData {
+    let d: StoreData = { ...initialData(), windowId: thisWindowId }
     d = reduceEvent(d, { type: 'taskCreated', task: task('t1') })
-    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s1', 't1') })
-    d = reduceEvent(d, {
-      type: 'sessionCreated',
+    for (const [id, windowId] of [
+      ['s1', 'main'],
+      ['s2', 'main'],
+      ['s3', 'win-2'],
+      ['s4', 'win-2']
+    ]) {
+      d = reduceEvent(d, {
+        type: 'sessionCreated',
+        taskId: 't1',
+        session: session(id, 't1', { windowId })
+      })
+    }
+    return d
+  }
+
+  it('each window marks its own session; a new session is marked only by its host (§3.7)', () => {
+    // Every window learns of every session, but marks only the ones it hosts: main's
+    // last-created hosted tab is s2, win-2's is s4.
+    const main = twoWindows('main')
+    expect(main.tasks.t1.sessionIds).toEqual(['s1', 's2', 's3', 's4'])
+    expect(main.activeSessionByTask.t1).toBe('s2')
+    expect(twoWindows('win-2').activeSessionByTask.t1).toBe('s4')
+  })
+
+  it('activeSessionChanged moves ONLY the host window mark; the window left keeps its own (§3.7)', () => {
+    // The reported bug: from s2 (main), switching to s3 (win-2) left main showing s1 with
+    // no tab marked, because the shared pointer pointed into win-2.
+    const event = {
+      type: 'activeSessionChanged',
       taskId: 't1',
-      session: session('s2', 't1', { windowId: 'win-2' })
-    })
+      sessionId: 's3',
+      windowId: 'win-2'
+    } as const
+    const main = reduceEvent({ ...twoWindows('main'), activeTaskId: undefined }, event)
+    expect(main.activeSessionByTask.t1).toBe('s2')
+    expect(activeSessionInWindow(main, 't1', 'main')).toBe('s2')
+    expect(main.activeTaskId).toBeUndefined() // non-host: the active TASK doesn't move either
 
-    // Non-host window: pointer updates, but the active TASK does not change here.
-    const notHost = reduceEvent(
-      { ...d, activeTaskId: undefined },
-      { type: 'activeSessionChanged', taskId: 't1', sessionId: 's2', windowId: 'win-2' }
-    )
-    expect(notHost.activeSessionByTask.t1).toBe('s2')
-    expect(notHost.activeTaskId).toBeUndefined()
-
-    // Host window ('main' hosting a session in it): switch to a main-hosted session
-    // makes the task active so its view is on screen when the OS raises the window.
-    const host = reduceEvent(
-      { ...d, activeTaskId: undefined },
-      { type: 'activeSessionChanged', taskId: 't1', sessionId: 's1', windowId: 'main' }
-    )
-    expect(host.activeSessionByTask.t1).toBe('s1')
+    // Host window: moves its mark and makes the task active so its view is on screen
+    // when the OS raises it.
+    const host = reduceEvent({ ...twoWindows('win-2'), activeTaskId: undefined }, event)
+    expect(host.activeSessionByTask.t1).toBe('s3')
     expect(host.activeTaskId).toBe('t1')
+  })
+
+  it('activeSessionChanged flashes the host only when it lands while the host is unfocused (§5.4)', () => {
+    const event = {
+      type: 'activeSessionChanged',
+      taskId: 't1',
+      sessionId: 's3',
+      windowId: 'win-2'
+    } as const
+    // Cross-window: the host is still blurred (the raise is in flight) → flash now.
+    const blurredHost = reduceEvent({ ...twoWindows('win-2'), windowFocused: false }, event)
+    expect(blurredHost.focusFlashOn).toBe(true)
+    expect(blurredHost.focusFlashSeq).toBe(1)
+    // Same-window switch: the host already has focus → no flash.
+    expect(reduceEvent(twoWindows('win-2'), event).focusFlashOn).toBe(false)
+    // Non-host never flashes.
+    expect(reduceEvent({ ...twoWindows('main'), windowFocused: false }, event).focusFlashOn).toBe(
+      false
+    )
   })
 
   it('activeSessionChanged clears the ready-for-review flag in EVERY window (§9.5)', () => {
@@ -518,6 +557,237 @@ describe('useStore hydrate + actions', () => {
 })
 
 /**
+ * Per-window marks (§3.7): each window keeps its OWN marked tab per task — a session it
+ * hosts, or none. The window left by a cross-window switch keeps showing what it had.
+ */
+describe('per-window marks (§3.7)', () => {
+  beforeEach(() => {
+    useStore.setState(initialData())
+  })
+
+  /** Snapshot: t1 has s1, s2 in `main` and s3, s4 in `win-2`; persisted pointer `active`. */
+  function snapshot(thisWindowId: string, active?: string): WindowedWorkspaceStateDTO {
+    return {
+      tasks: [
+        task('t1', {
+          sessions: [
+            session('s1', 't1', { order: 0 }),
+            session('s2', 't1', { order: 1 }),
+            session('s3', 't1', { order: 2, windowId: 'win-2' }),
+            session('s4', 't1', { order: 3, windowId: 'win-2' })
+          ],
+          activeSessionId: active
+        })
+      ],
+      activeTaskId: 't1',
+      sessionTypes: [],
+      settings: initialData().settings,
+      version: 1,
+      thisWindowId,
+      thisWindowRole: thisWindowId === 'main' ? 'main' : 'secondary',
+      windows: []
+    }
+  }
+
+  it('hydrate marks the persisted pointer where it is hosted, else the first hosted tab', () => {
+    useStore.getState().hydrate(snapshot('win-2', 's4'))
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s4')
+    useStore.setState(initialData())
+    useStore.getState().hydrate(snapshot('main', 's4'))
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
+  })
+
+  it('hydrate leaves no mark in a window hosting none of the task’s sessions', () => {
+    useStore.getState().hydrate(snapshot('win-9', 's1'))
+    expect(useStore.getState().activeSessionByTask.t1).toBeUndefined()
+  })
+
+  it('re-hydrate keeps a still-hosted mark and the live window focus', () => {
+    useStore.getState().hydrate(snapshot('main', 's1'))
+    useStore.getState().setActiveSession('t1', 's2')
+    useStore.getState().setWindowFocused(false)
+    useStore.getState().hydrate(snapshot('main', 's3')) // e.g. the SettingsModal re-hydrate
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+    expect(useStore.getState().windowFocused).toBe(false)
+  })
+
+  it('re-hydrate drops a mark that is no longer hosted here', () => {
+    useStore.getState().hydrate(snapshot('main', 's2'))
+    const moved = snapshot('main', 's1')
+    const t1 = moved.tasks[0]
+    const sessions = t1.sessions.map((x) => (x.id === 's2' ? { ...x, windowId: 'win-2' } : x))
+    useStore.getState().hydrate({ ...moved, tasks: [{ ...t1, sessions }] })
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
+  })
+
+  it('taskCreated carrying sessions marks per window', () => {
+    const t = snapshot('main', 's3').tasks[0]
+    const main = reduceEvent(
+      { ...initialData(), windowId: 'main' },
+      { type: 'taskCreated', task: t }
+    )
+    const win2 = reduceEvent(
+      { ...initialData(), windowId: 'win-2' },
+      { type: 'taskCreated', task: t }
+    )
+    expect(main.activeSessionByTask.t1).toBe('s1')
+    expect(win2.activeSessionByTask.t1).toBe('s3')
+  })
+
+  it('isSessionFocused follows THIS window’s mark, whatever the persisted pointer says', () => {
+    useStore.getState().hydrate(snapshot('main', 's3'))
+    const d = useStore.getState()
+    expect(isSessionFocused(d, 's1')).toBe(true)
+    expect(isSessionFocused(d, 's3')).toBe(false) // hosted elsewhere
+    expect(isSessionFocused({ ...d, windowFocused: false }, 's1')).toBe(false)
+  })
+
+  it('setActiveSession does not mark a session hosted in another window', () => {
+    useStore.getState().hydrate(snapshot('main', 's2'))
+    useStore.getState().setActiveSession('t1', 's3')
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+  })
+
+  describe('sessionClosed', () => {
+    it('closing the mark re-marks the LAST tab still in this window', () => {
+      useStore.getState().hydrate(snapshot('main', 's1'))
+      useStore.getState().applyEvent({ type: 'sessionClosed', taskId: 't1', sessionId: 's1' })
+      // s4 is the task's last session, but it lives in win-2.
+      expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+    })
+
+    it('closing a session in another window leaves this window’s mark alone', () => {
+      useStore.getState().hydrate(snapshot('main', 's1'))
+      useStore.getState().applyEvent({ type: 'sessionClosed', taskId: 't1', sessionId: 's3' })
+      expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
+    })
+
+    it('closing the window’s only tab leaves no mark', () => {
+      useStore.getState().hydrate(snapshot('win-2', 's3'))
+      useStore.getState().applyEvent({ type: 'sessionClosed', taskId: 't1', sessionId: 's3' })
+      useStore.getState().applyEvent({ type: 'sessionClosed', taskId: 't1', sessionId: 's4' })
+      expect(useStore.getState().activeSessionByTask.t1).toBeUndefined()
+    })
+  })
+
+  describe('sessionMovedToWindow', () => {
+    const move = (sessionId: string, fromWindowId: string, toWindowId: string) =>
+      ({ type: 'sessionMovedToWindow', sessionId, taskId: 't1', fromWindowId, toWindowId }) as const
+
+    it('the TARGET window marks the moved session', () => {
+      useStore.getState().hydrate(snapshot('win-2', 's4'))
+      useStore.getState().applyEvent(move('s1', 'main', 'win-2'))
+      expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
+    })
+
+    it('a "move to main" on window close keeps the target’s existing mark', () => {
+      useStore.getState().hydrate(snapshot('main', 's2'))
+      useStore.getState().applyEvent({ ...move('s3', 'win-2', 'main'), cause: 'windowClosed' })
+      expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+      expect(useStore.getState().sessions.s3.windowId).toBe('main')
+    })
+
+    it('a "move to main" on window close marks the moved session if the target had none', () => {
+      useStore.getState().hydrate(snapshot('win-9'))
+      useStore.getState().applyEvent({ ...move('s3', 'win-2', 'win-9'), cause: 'windowClosed' })
+      expect(useStore.getState().activeSessionByTask.t1).toBe('s3')
+    })
+
+    it('the SOURCE re-marks the right neighbour when its mark moves out', () => {
+      useStore.getState().hydrate(snapshot('main', 's1'))
+      useStore.getState().applyEvent(move('s1', 'main', 'win-2'))
+      expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+    })
+
+    it('the SOURCE re-marks the left neighbour when its rightmost mark moves out', () => {
+      useStore.getState().hydrate(snapshot('main', 's2'))
+      useStore.getState().applyEvent(move('s2', 'main', 'win-2'))
+      expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
+    })
+
+    it('the SOURCE drops its mark when its last tab moves out', () => {
+      useStore.getState().hydrate(snapshot('win-2', 's3'))
+      useStore.getState().applyEvent(move('s3', 'win-2', 'main'))
+      useStore.getState().applyEvent(move('s4', 'win-2', 'main'))
+      expect(useStore.getState().activeSessionByTask.t1).toBeUndefined()
+    })
+
+    it('moving a non-marked tab out keeps the source’s mark', () => {
+      useStore.getState().hydrate(snapshot('main', 's1'))
+      useStore.getState().applyEvent(move('s2', 'main', 'win-2'))
+      expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
+    })
+
+    it('a third window keeps its mark and just records the new host', () => {
+      useStore.getState().hydrate(snapshot('main', 's1'))
+      useStore.getState().applyEvent(move('s3', 'win-2', 'win-9'))
+      expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
+      expect(useStore.getState().sessions.s3.windowId).toBe('win-9')
+    })
+  })
+})
+
+/** Focus flash (§5.4): moving INTO a window flashes its marked tab for FOCUS_FLASH_MS. */
+describe('focus flash (§5.4)', () => {
+  beforeEach(() => {
+    useStore.setState(initialData())
+  })
+
+  const focus = (f: boolean): void => useStore.getState().setWindowFocused(f)
+
+  it('the window’s first focus (it just appeared) does not flash', () => {
+    focus(false) // mount seed of a not-yet-shown window
+    focus(true)
+    expect(useStore.getState().focusFlashOn).toBe(false)
+  })
+
+  it('the mount seed of an already-focused window does not flash', () => {
+    focus(true)
+    expect(useStore.getState().focusFlashOn).toBe(false)
+    expect(useStore.getState().windowFocusedOnce).toBe(true)
+  })
+
+  it('moving back INTO a window flashes; blur ends it', () => {
+    focus(true)
+    focus(false)
+    focus(true)
+    expect(useStore.getState().focusFlashOn).toBe(true)
+    expect(useStore.getState().focusFlashSeq).toBe(1)
+    focus(false)
+    expect(useStore.getState().focusFlashOn).toBe(false)
+  })
+
+  it('a repeated focus while focused does not re-arm', () => {
+    focus(true)
+    focus(false)
+    focus(true)
+    focus(true)
+    expect(useStore.getState().focusFlashSeq).toBe(1)
+  })
+
+  it('a focus event trailing an already-armed flash does not restart it', () => {
+    // activeSessionChanged armed it while this host was still blurred (the raise in flight).
+    useStore.setState({
+      windowFocused: false,
+      windowFocusedOnce: true,
+      focusFlashOn: true,
+      focusFlashSeq: 4
+    })
+    focus(true)
+    expect(useStore.getState().focusFlashOn).toBe(true)
+    expect(useStore.getState().focusFlashSeq).toBe(4)
+  })
+
+  it('endFocusFlash ends only the current flash', () => {
+    useStore.setState({ focusFlashOn: true, focusFlashSeq: 2 })
+    useStore.getState().endFocusFlash(1) // stale timer
+    expect(useStore.getState().focusFlashOn).toBe(true)
+    useStore.getState().endFocusFlash(2)
+    expect(useStore.getState().focusFlashOn).toBe(false)
+  })
+})
+
+/**
  * Ready-for-review (§9.5): a pure renderer view-model derived from the state stream.
  * Raised UNCONDITIONALLY on `working → waiting`; the dot is suppressed at display time
  * while on screen, and the flag is cleared when the session is brought on screen (focus
@@ -604,9 +874,18 @@ describe('ready-for-review (§9.5)', () => {
     expect(useStore.getState().hasUnseenFinishedTurn.s2).toBeUndefined()
   })
 
-  it('regaining window focus clears the visible session flag', () => {
-    useStore.setState({ ...base(), windowFocused: false, hasUnseenFinishedTurn: { s1: true } })
+  it('regaining window focus leaves the clear to markVisibleSessionSeen, which relays it (§9.5)', () => {
+    // A local clear here would swallow the cross-window `sessions.markSeen` relay, so the
+    // main window's rollup could stay lit for a session the user focused in another window.
+    useStore.setState({
+      ...base(),
+      windowFocused: false,
+      windowFocusedOnce: true,
+      hasUnseenFinishedTurn: { s1: true }
+    })
     useStore.getState().setWindowFocused(true)
+    expect(useStore.getState().hasUnseenFinishedTurn.s1).toBe(true)
+    expect(useStore.getState().markVisibleSessionSeen()).toBe('s1')
     expect(useStore.getState().hasUnseenFinishedTurn.s1).toBeUndefined()
   })
 
@@ -712,10 +991,11 @@ describe('ready-for-review (§9.5)', () => {
     expect(taskDisplayState(d, 't1')).toBe('idle')
   })
 
-  it('activeTaskChanged clears the flag for the task’s global active session (§9.5)', () => {
-    // Switching BACK to a task (not between its sessions) must clear the dot: the active
-    // session tab pointer never moves, so no activeSessionChanged fires — the clear has
-    // to ride on activeTaskChanged. Model "away on t-other, then switch to t1".
+  it('activeTaskChanged leaves the flag; the focused window clears its on-screen mark (§9.5)', () => {
+    // Switching BACK to a task (not between its sessions) must clear the dot. Each window
+    // shows its OWN mark for the task, and only the focused window's is looked at, so the
+    // reducer can't pick the session — the settled-render markVisibleSessionSeen does.
+    // Model "away on t-other, then switch to t1" in the focused window.
     let d: StoreData = {
       ...base(),
       sessions: { ...base().sessions, s1: { ...base().sessions.s1, state: 'waiting' } },
@@ -724,23 +1004,31 @@ describe('ready-for-review (§9.5)', () => {
     }
     d = reduceEvent(d, { type: 'activeTaskChanged', taskId: 't1' })
     expect(d.activeTaskId).toBe('t1')
-    expect(d.hasUnseenFinishedTurn.s1).toBeUndefined()
+    expect(d.hasUnseenFinishedTurn.s1).toBe(true)
+    // On screen → the dot is already suppressed at display time...
     expect(taskDisplayState(d, 't1')).toBe('idle')
+    // ...and the settled-render effect clears (and relays) it.
+    useStore.setState(d)
+    expect(useStore.getState().markVisibleSessionSeen()).toBe('s1')
+    expect(useStore.getState().hasUnseenFinishedTurn.s1).toBeUndefined()
   })
 
-  it('activeTaskChanged clears globally even in a blurred / non-host window (§9.5)', () => {
-    // The clear is unconditional: a window that is blurred and does not render the
-    // switched-to session still drops the global pointer's session, so the main window's
-    // task rollup stays consistent (same rationale as activeSessionChanged).
+  it('activeTaskChanged does NOT mark a blurred window’s tab seen (§9.5)', () => {
+    // The task becomes visible in every window, but a blurred window's mark is not being
+    // looked at: its flag stays and the dot shows (until the user looks or it's relayed).
     let d: StoreData = {
       ...base(),
+      sessions: { ...base().sessions, s1: { ...base().sessions.s1, state: 'waiting' } },
       windowId: 'main',
       windowFocused: false,
       activeTaskId: 't-other',
       hasUnseenFinishedTurn: { s1: true }
     }
     d = reduceEvent(d, { type: 'activeTaskChanged', taskId: 't1' })
-    expect(d.hasUnseenFinishedTurn.s1).toBeUndefined()
+    expect(d.hasUnseenFinishedTurn.s1).toBe(true)
+    expect(taskDisplayState(d, 't1')).toBe('review')
+    useStore.setState(d)
+    expect(useStore.getState().markVisibleSessionSeen()).toBeUndefined()
   })
 
   it('activeTaskChanged with an undefined taskId leaves flags untouched', () => {
@@ -757,10 +1045,12 @@ describe('ready-for-review (§9.5)', () => {
     expect(d.hasUnseenFinishedTurn.s1).toBe(true)
   })
 
-  it('setActiveTask clears the flag on the task’s active session', () => {
+  it('setActiveTask leaves the clear to markVisibleSessionSeen, which relays it (§9.5)', () => {
     useStore.setState({ ...base(), activeTaskId: 't-other', hasUnseenFinishedTurn: { s1: true } })
     useStore.getState().setActiveTask('t1')
     expect(useStore.getState().activeTaskId).toBe('t1')
+    expect(useStore.getState().hasUnseenFinishedTurn.s1).toBe(true)
+    expect(useStore.getState().markVisibleSessionSeen()).toBe('s1')
     expect(useStore.getState().hasUnseenFinishedTurn.s1).toBeUndefined()
   })
 

@@ -14,8 +14,8 @@
  * than lost. Do not reorder these two lines.
  */
 
-import { useCallback, useEffect, useState } from 'react'
-import { useStore } from './store/store'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useStore, activeSessionInWindow, FOCUS_FLASH_MS } from './store/store'
 import { initEventRouting } from './pty/pty-router'
 import { openSearch } from './terminal/terminal-search'
 import { ProgressPanel } from './components/ProgressPanel'
@@ -36,8 +36,8 @@ const shellStyle: React.CSSProperties = {
 }
 
 /**
- * Track this window's OS focus (§9.5) so ready-for-review raises only for sessions
- * the user isn't looking at, and regaining focus clears the visible one. Seeded from
+ * Track this window's OS focus (§9.5) so ready-for-review shows only for sessions the
+ * user isn't looking at, and gaining focus flashes the marked tab (§5.4). Seeded from
  * `document.hasFocus()` for a window that opens already-focused.
  */
 function useWindowFocus(): void {
@@ -71,6 +71,10 @@ function useWindowFocus(): void {
  * fires no focus *transition* to broadcast, so the main window's task rollup — which
  * spans sessions in any window but knows only its own focus — can't otherwise learn the
  * session was seen. Only the hosting (focused) window clears here, so only it relays.
+ *
+ * It is also the ONLY "looked at" clear for a task switch and a window focus gain: each
+ * window marks its own session (§3.7), so only the focused window knows which one is on
+ * screen — the store's task-switch / focus paths deliberately leave the flag to this.
  */
 function useMarkVisibleSessionSeen(): void {
   const markVisibleSessionSeen = useStore((s) => s.markVisibleSessionSeen)
@@ -90,6 +94,45 @@ function useMarkVisibleSessionSeen(): void {
     sessions,
     hasUnseenFinishedTurn
   ])
+}
+
+/**
+ * Persist the focused session (§5.4, I10). The focused session is THIS window's mark for
+ * the active task while this window has OS focus, so whenever that pair changes — focus
+ * gained (incl. a click into the terminal body), or the mark moved while focused — tell
+ * main via the persist-only `sessions.focus` (no event, no raise). Not `sessions.switch`:
+ * on a cross-window keyboard switch the raise's focus event can land BEFORE the
+ * `activeSessionChanged` that moves this window's mark, and a switch to the stale mark
+ * would broadcast and flip the host back. Persist-only writes are just eventually
+ * consistent (old mark, then new mark — FIFO through the single writer).
+ */
+function usePersistFocusedSession(): void {
+  const windowFocused = useStore((s) => s.windowFocused)
+  const focusedSid = useStore((s) =>
+    s.activeTaskId ? activeSessionInWindow(s, s.activeTaskId, s.windowId) : undefined
+  )
+  const lastSent = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    if (!windowFocused) {
+      lastSent.current = undefined // re-focusing re-sends: another window may have moved it
+      return
+    }
+    if (!focusedSid || lastSent.current === focusedSid) return
+    lastSent.current = focusedSid
+    window.octopusAPI.sessions.focus({ sessionId: focusedSid })
+  }, [windowFocused, focusedSid])
+}
+
+/** End the focus flash (§5.4) after {@link FOCUS_FLASH_MS}; a newer flash restarts the timer. */
+function useFocusFlashExpiry(): void {
+  const on = useStore((s) => s.focusFlashOn)
+  const seq = useStore((s) => s.focusFlashSeq)
+  const endFocusFlash = useStore((s) => s.endFocusFlash)
+  useEffect(() => {
+    if (!on) return
+    const timer = setTimeout(() => endFocusFlash(seq), FOCUS_FLASH_MS)
+    return () => clearTimeout(timer)
+  }, [on, seq, endFocusFlash])
 }
 
 /** Subscribe to events + hydrate the store once on mount (shared by both roles). */
@@ -115,11 +158,11 @@ function useBoot(): void {
   }, [hydrate, applyEvent])
 }
 
-/** Search the active task's currently-visible session (shared shortcut handler). */
+/** Search the active task's session visible in THIS window (shared shortcut handler). */
 function openSearchForActive(): void {
-  const { activeTaskId, activeSessionByTask } = useStore.getState()
-  if (!activeTaskId) return
-  const sessionId = activeSessionByTask[activeTaskId]
+  const state = useStore.getState()
+  if (!state.activeTaskId) return
+  const sessionId = activeSessionInWindow(state, state.activeTaskId, state.windowId)
   if (sessionId) openSearch(sessionId)
 }
 
@@ -158,6 +201,8 @@ export function App(): React.JSX.Element {
   useBoot()
   useWindowFocus()
   useMarkVisibleSessionSeen()
+  usePersistFocusedSession()
+  useFocusFlashExpiry()
   const windowRole = useStore((s) => s.windowRole)
   return windowRole === 'secondary' ? <SecondaryWindowApp /> : <MainWindowApp />
 }

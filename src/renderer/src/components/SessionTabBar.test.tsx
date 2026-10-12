@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import { SessionTabBar } from './SessionTabBar'
 import { useStore, initialData } from '../store/store'
 import { installStubBridge } from '../test-support/stub-bridge'
@@ -143,6 +143,47 @@ describe('<SessionTabBar>', () => {
     render(<SessionTabBar taskId="t1" />)
     const tab = screen.getByRole('tab', { name: 'sh' })
     expect(tab.querySelector('[role="img"]')?.getAttribute('aria-label')).toBe('Idle')
+  })
+
+  it('keeps THIS window’s tab marked when the focus moves to another window (§3.7)', () => {
+    seed({
+      sessions: [
+        session('s1'),
+        session('s2', { order: 1 }),
+        session('s3', { order: 2, windowId: 'win-2' })
+      ]
+    })
+    useStore.getState().setActiveSession('t1', 's2')
+    render(<SessionTabBar taskId="t1" />)
+    // A cross-window switch to s3 (hosted in win-2) must not unmark s2 here.
+    act(() => {
+      useStore.getState().applyEvent({
+        type: 'activeSessionChanged',
+        taskId: 't1',
+        sessionId: 's3',
+        windowId: 'win-2'
+      })
+    })
+    expect(screen.getByRole('tab', { name: 's2' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('tab', { name: 's3' })).not.toBeInTheDocument()
+  })
+
+  it('flashes only the marked tab of the active task while the focus flash is on (§5.4)', () => {
+    seed({ sessions: [session('s1'), session('s2', { order: 1 })] })
+    useStore.getState().setActiveSession('t1', 's2')
+    useStore.setState({ focusFlashOn: true, focusFlashSeq: 1 })
+    render(<SessionTabBar taskId="t1" />)
+    expect(screen.getByRole('tab', { name: 's2' })).toHaveClass('session-tab--focus-flash')
+    expect(screen.getByRole('tab', { name: 's1' })).not.toHaveClass('session-tab--focus-flash')
+    act(() => useStore.getState().endFocusFlash(1))
+    expect(screen.getByRole('tab', { name: 's2' })).not.toHaveClass('session-tab--focus-flash')
+  })
+
+  it('does not flash a kept-alive task that is not the active one (§5.3)', () => {
+    seed({ sessions: [session('s1')] })
+    useStore.setState({ focusFlashOn: true, focusFlashSeq: 1, activeTaskId: 'other' })
+    render(<SessionTabBar taskId="t1" />)
+    expect(screen.getByRole('tab', { name: 's1' })).not.toHaveClass('session-tab--focus-flash')
   })
 
   it('offers a dropdown menu when more than one session type is available', () => {
