@@ -14,6 +14,13 @@ All notable changes to Octopus are documented here. The format is based on
   which session is now focused. Switching tabs within a window doesn't flash, and neither
   does a window's first appearance or a system with reduced motion enabled.
 
+### Changed
+
+- **New-task branch names use underscores.** The new-branch field is still filled
+  from the task name as you type, but words are now joined with `_` instead of `-`
+  (`Add Feature 1` → `add_feature_1`; `feature/…` namespaces are kept). The field
+  stays editable. Worktree folder names are unchanged.
+
 ### Fixed
 
 - **Claude status went "done" while a background agent was still running.** With two

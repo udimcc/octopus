@@ -1333,7 +1333,7 @@ These were reviewed and decided; recorded here so implementation doesn't re-liti
    agents surviving crashes becomes a priority; tmux is the recommended backend (persistence + re-attach for
    free).
 3. **Task creation collects four inputs via a modal.** Name, repo directory (native OS directory picker),
-   source branch, and new branch (prefilled with a slug from the name, e.g. `feature/add-feature-1`; editable).
+   source branch, and new branch (prefilled with a slug from the name, e.g. `feature/add_feature_1`; editable).
    All are passed to native git / the repo-local create script. This replaces the earlier "name + optional
    branch, script owns everything" decision: making the repo, source, and target explicit is what makes
    provisioning clear and self-service. No branch-naming policy is baked in beyond the editable prefill.

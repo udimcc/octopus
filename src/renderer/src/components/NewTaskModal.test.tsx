@@ -72,7 +72,7 @@ describe('<NewTaskModal>', () => {
   it('prefills the new branch from the task name until edited', () => {
     render(<NewTaskModal onClose={vi.fn()} />)
     fill('task name', 'My Feature')
-    expect(screen.getByLabelText('new branch')).toHaveValue('my-feature')
+    expect(screen.getByLabelText('new branch')).toHaveValue('my_feature')
 
     // Editing the branch freezes it against further name changes.
     fill('new branch', 'custom/branch')

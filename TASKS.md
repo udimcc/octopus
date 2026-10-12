@@ -238,7 +238,7 @@ Goal (PRD §Phases Phase 1): tasks, sessions, progress window, terminal session 
   `pty onData → batched → send('pty:data') → terminal.write` (DESIGN §5.2).
 - [x] **New Task modal** — four fields: **name**, **repo directory** (read-only + "Browse…" calling
   `octopusAPI.dialog.pickDirectory()`), **source branch** (editable, `main` placeholder), **new branch**
-  (prefilled with `taskNameToBranchSlug(name)` until the user edits it, e.g. `feature/add-feature-1`).
+  (prefilled with `taskNameToBranchSlug(name)` until the user edits it, e.g. `feature/add_feature_1`).
   Client-side validation gates "Create Task"; spinner while provisioning; on success task becomes
   active/empty; on failure inline red stderr block + Retry + toast (DESIGN §5.4, §12.3). Replaces the inline
   name input in `App.tsx`.
