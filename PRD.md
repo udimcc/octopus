@@ -29,7 +29,8 @@ A task represents a unit of work the user needs to complete.
   branch and returns the worktree path; otherwise Octopus creates the worktree itself with git under a
   configurable base directory (default `~/octopus_repos/`). **From Existing Repo** collects task name +
   the picked project + one of its worktrees (its main checkout or a linked worktree), chosen from a list;
-  a worktree already used by another task is shown disabled. Octopus adopts the chosen worktree as-is
+  the list shows **Available** worktrees first, then **Used** ones (already used by another task, shown
+  disabled), each under its own label, and an empty section is not shown. Octopus adopts the chosen worktree as-is
   (left on disk when deleted). **No Repo** collects a task name only — a task with *no* repository or
   worktree, for ad-hoc/scratch work (checking mounts, viewing a log, editing a config file); nothing is
   created on disk and its sessions open at the user's home directory.

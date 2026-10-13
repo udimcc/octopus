@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { StrictMode } from 'react'
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { installStubBridge } from '../test-support/stub-bridge'
 import { NewTaskModal } from './NewTaskModal'
 import type { ProjectDTO, ProjectListItemDTO, ProjectWorktreeDTO } from '../../../shared/dto'
@@ -176,6 +176,52 @@ describe('<NewTaskModal>', () => {
     })
     expect(used).toBeDisabled()
     expect(screen.getByRole('radio', { name: '/repos/app (main)' })).toBeEnabled()
+  })
+
+  it('splits worktrees into an Available section first, then Used', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
+    window.octopusAPI.projects.listWorktrees = vi.fn().mockResolvedValue([
+      { path: '/repos/app-wt1', branch: 'feature/x', usedByTaskName: 'Other Task' },
+      { path: '/repos/app', branch: 'main' },
+      { path: '/repos/app-wt2', branch: 'feature/y' }
+    ])
+    render(<NewTaskModal onClose={vi.fn()} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Repo' }))
+    await screen.findByRole('option', { name: 'app' })
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+
+    const available = await screen.findByRole('group', { name: 'Available' })
+    const used = screen.getByRole('group', { name: 'Used' })
+    // Available is rendered before Used, each with its visible label.
+    expect(available.compareDocumentPosition(used) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(within(available).getByText('Available')).toBeInTheDocument()
+    expect(within(used).getByText('Used')).toBeInTheDocument()
+    expect(
+      within(available)
+        .getAllByRole('radio')
+        .map((r) => r.closest('label')?.title)
+    ).toEqual(['/repos/app', '/repos/app-wt2'])
+    expect(within(used).getAllByRole('radio')).toHaveLength(1)
+    expect(within(used).getByRole('radio').closest('label')).toHaveAttribute(
+      'title',
+      '/repos/app-wt1 — in use by Other Task'
+    )
+  })
+
+  it.each([
+    ['Used', [{ path: '/repos/app', branch: 'main' }], 'Available'],
+    ['Available', [{ path: '/repos/app', branch: 'main', usedByTaskName: 'T' }], 'Used']
+  ])('hides the empty %s section (label included)', async (hidden, list, shown) => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
+    window.octopusAPI.projects.listWorktrees = vi.fn().mockResolvedValue(list)
+    render(<NewTaskModal onClose={vi.fn()} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Repo' }))
+    await screen.findByRole('option', { name: 'app' })
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+
+    expect(await screen.findByRole('group', { name: shown })).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: hidden })).not.toBeInTheDocument()
+    expect(screen.queryByText(hidden)).not.toBeInTheDocument()
   })
 
   // ── No Repo hides the sidebar ─────────────────────────────────────────────────

@@ -417,7 +417,9 @@ restore complexity). The serialize-and-replay path is kept available for a futur
   branch** (prefilled with a slug from the name, editable); Octopus provisions a fresh worktree
   (`managed: true`). **From Existing Repo**: **name** + the sidebar's selected project, whose main checkout
   and linked worktrees (`projects.listWorktrees` → `git worktree list`, §6.4) are offered as a radio list;
-  a worktree already used by another task is disabled and labelled "in use by \<task name\>", and the
+  they are split into an **Available** section first, then a **Used** one (a worktree already used by
+  another task, disabled and labelled "in use by \<task name\>"); an empty section is hidden, label
+  included, and the
   picked path (cleared whenever the project changes) becomes `worktreeDir`. Octopus adopts it as-is
   (`managed: false`). **No Repo**: **name** only — a repo-less task (`repoLess: true`, no worktree) for
   ad-hoc/scratch work (checking mounts, `less` on a log, editing a config file); it is created

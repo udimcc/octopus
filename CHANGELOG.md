@@ -16,8 +16,8 @@ All notable changes to Octopus are documented here. The format is based on
   anymore. "From New Worktree" fills in the task's repo path (plus an auto-detected
   default branch) from the picked project. "From Existing Repo" now picks a worktree
   from the project's own `git worktree list` (its main checkout or a linked worktree)
-  instead of browsing to any directory — a worktree already in use by another task is
-  shown disabled — so it can only adopt a worktree that belongs to a configured project.
+  instead of browsing to any directory — listed under "Available", then "Used" (in use by
+  another task, disabled; an empty section is hidden) — so it can only adopt a worktree that belongs to a configured project.
   The first launch after upgrading seeds one project per repository already in use by an
   existing task, so an existing setup starts with a populated list instead of an empty
   one.

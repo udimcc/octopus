@@ -13,7 +13,8 @@
  *     on delete.
  *   - **From Existing Repo**: **name** + the sidebar's selected project, whose
  *     main checkout and linked worktrees (`projects.listWorktrees`) are offered
- *     as a radio list — rows already in use by another task are disabled.
+ *     as a radio list split into an "Available" section, then a "Used" one
+ *     (rows in use by another task, disabled); an empty section is hidden.
  *     Deleting the task leaves the directory on disk (the worktree is
  *     `managed: false`, §6.4).
  *   - **No Repo**: just a **name** — no worktree, nothing touched on disk. Its
@@ -561,45 +562,64 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
                     style={{
                       display: 'flex',
                       flexDirection: 'column',
-                      gap: 4,
+                      gap: 10,
                       maxHeight: 320,
                       overflowY: 'auto'
                     }}
                   >
-                    {worktrees.map((wt) => {
-                      const disabled = !!wt.usedByTaskName || busy
-                      return (
-                        <label
-                          key={wt.path}
-                          title={wt.path}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'baseline',
-                            gap: 6,
-                            color: wt.usedByTaskName ? color.muted : color.textSecondary
-                          }}
+                    {(
+                      [
+                        ['Available', worktrees.filter((wt) => !wt.usedByTaskName)],
+                        ['Used', worktrees.filter((wt) => !!wt.usedByTaskName)]
+                      ] as const
+                    ).map(([label, group]) =>
+                      // An empty section is hidden entirely, label included.
+                      group.length === 0 ? null : (
+                        <div
+                          key={label}
+                          role="group"
+                          aria-label={label}
+                          style={{ display: 'flex', flexDirection: 'column', gap: 4 }}
                         >
-                          <input
-                            type="radio"
-                            name="existing-worktree"
-                            checked={worktreeDir === wt.path}
-                            disabled={disabled}
-                            onChange={() => setWorktreeDir(wt.path)}
-                          />
-                          <span
-                            style={{
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              whiteSpace: 'nowrap'
-                            }}
-                          >
-                            {wt.path}
-                            {wt.branch ? ` (${wt.branch})` : ''}
-                            {wt.usedByTaskName ? ` — in use by ${wt.usedByTaskName}` : ''}
-                          </span>
-                        </label>
+                          <span style={{ color: color.muted, fontSize: fontSize.sm }}>{label}</span>
+                          {group.map((wt) => (
+                            <label
+                              key={wt.path}
+                              title={
+                                wt.usedByTaskName
+                                  ? `${wt.path} — in use by ${wt.usedByTaskName}`
+                                  : wt.path
+                              }
+                              style={{
+                                display: 'flex',
+                                alignItems: 'baseline',
+                                gap: 6,
+                                color: wt.usedByTaskName ? color.muted : color.textSecondary
+                              }}
+                            >
+                              <input
+                                type="radio"
+                                name="existing-worktree"
+                                checked={worktreeDir === wt.path}
+                                disabled={!!wt.usedByTaskName || busy}
+                                onChange={() => setWorktreeDir(wt.path)}
+                              />
+                              <span
+                                style={{
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap'
+                                }}
+                              >
+                                {wt.path}
+                                {wt.branch ? ` (${wt.branch})` : ''}
+                                {wt.usedByTaskName ? ` — in use by ${wt.usedByTaskName}` : ''}
+                              </span>
+                            </label>
+                          ))}
+                        </div>
                       )
-                    })}
+                    )}
                   </div>
                 )}
                 {worktreeError ? (
