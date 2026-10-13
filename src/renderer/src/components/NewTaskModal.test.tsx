@@ -1,59 +1,15 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import type { OctopusAPI } from '../../../shared/ipc'
-import type { EventDTO } from '../../../shared/events'
+import { StrictMode } from 'react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { installStubBridge } from '../test-support/stub-bridge'
 import { NewTaskModal } from './NewTaskModal'
+import type { ProjectDTO, ProjectListItemDTO, ProjectWorktreeDTO } from '../../../shared/dto'
 
-/**
- * Stub the preload bridge with a controllable event stream so a test can drive
- * the create outcome (`activeTaskChanged` = success, `scriptError` = failure)
- * exactly as the backend would.
- */
-function stubOctopusAPI(): { api: OctopusAPI; emit: (event: EventDTO) => void } {
-  const listeners = new Set<(event: EventDTO) => void>()
-  const ack = vi.fn().mockResolvedValue({ ok: true })
-  const api: OctopusAPI = {
-    ping: vi.fn().mockResolvedValue('pong'),
-    tasks: { create: ack, delete: ack, rename: ack, reorder: ack, switch: ack },
-    sessions: {
-      create: ack,
-      close: ack,
-      switch: ack,
-      rename: ack,
-      reorder: ack,
-      move: ack,
-      cwd: vi.fn().mockResolvedValue(null),
-      refreshState: vi.fn(),
-      markSeen: vi.fn(),
-      focus: vi.fn()
-    },
-    windows: {
-      create: ack,
-      close: ack,
-      createWithSession: ack,
-      windowAtPoint: vi.fn().mockResolvedValue(null)
-    },
-    pty: { write: vi.fn(), resize: vi.fn() },
-    app: {
-      getState: vi.fn(),
-      updateSettings: ack,
-      getWindowId: vi.fn(() => 'main'),
-      getVersion: vi.fn().mockResolvedValue('0.0.0-test')
-    },
-    dialog: { pickDirectory: vi.fn().mockResolvedValue(undefined) },
-    clipboard: {
-      read: vi.fn().mockResolvedValue(''),
-      write: vi.fn().mockResolvedValue(undefined)
-    },
-    onEvent: (handler) => {
-      listeners.add(handler)
-      return () => listeners.delete(handler)
-    }
-  }
-  const emit = (event: EventDTO): void => {
-    for (const l of listeners) l(event)
-  }
-  return { api, emit }
+const PROJECT_APP: ProjectListItemDTO = { path: '/repos/app', defaultBranch: 'main', taskCount: 0 }
+const PROJECT_OTHER: ProjectListItemDTO = {
+  path: '/repos/other',
+  defaultBranch: 'develop',
+  taskCount: 2
 }
 
 function fill(label: string, value: string): void {
@@ -61,12 +17,11 @@ function fill(label: string, value: string): void {
 }
 
 describe('<NewTaskModal>', () => {
-  let emit: (event: EventDTO) => void
+  let emit: ReturnType<typeof installStubBridge>['emit']
 
   beforeEach(() => {
-    const stub = stubOctopusAPI()
-    window.octopusAPI = stub.api
-    emit = stub.emit
+    const bridge = installStubBridge()
+    emit = bridge.emit
   })
 
   it('prefills the new branch from the task name until edited', () => {
@@ -80,219 +35,455 @@ describe('<NewTaskModal>', () => {
     expect(screen.getByLabelText('new branch')).toHaveValue('custom/branch')
   })
 
-  it('disables Create until all four fields are filled', () => {
-    render(<NewTaskModal onClose={vi.fn()} />)
-    const create = screen.getByRole('button', { name: 'Create Task' })
-    expect(create).toBeDisabled()
+  // ── Projects sidebar: load, empty state, selection ──────────────────────────
 
-    fill('task name', 'My Feature') // also prefills new branch
-    fill('repo directory', '/repos/app')
-    expect(create).toBeDisabled() // sourceBranch still empty
+  it('preselects nothing and keeps Create disabled on the New Worktree tab', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP, PROJECT_OTHER])
+    render(<NewTaskModal onClose={vi.fn()} />)
+    await screen.findByRole('option', { name: 'app' })
+    expect(screen.queryByRole('option', { selected: true })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create Task' })).toBeDisabled()
+  })
+
+  it('keeps Create disabled with every other field filled until a project is picked', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
+    render(<NewTaskModal onClose={vi.fn()} />)
+    await screen.findByRole('option', { name: 'app' })
+    fill('task name', 'Feature')
     fill('source branch', 'main')
-    expect(create).toBeEnabled()
+    fill('new branch', 'feature/x')
+    expect(screen.getByRole('button', { name: 'Create Task' })).toBeDisabled()
+
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+    expect(screen.getByRole('button', { name: 'Create Task' })).toBeEnabled()
   })
 
-  it('fills the repo directory from the native picker', async () => {
-    window.octopusAPI.dialog.pickDirectory = vi.fn().mockResolvedValue('/picked/repo')
+  it('shows an empty-state hint when there are no configured projects', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([])
     render(<NewTaskModal onClose={vi.fn()} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Browse…' }))
-    await waitFor(() => expect(screen.getByLabelText('repo directory')).toHaveValue('/picked/repo'))
+    await waitFor(() => expect(screen.getByText('No projects yet')).toBeInTheDocument())
+    expect(screen.getByRole('button', { name: 'Create Task' })).toBeDisabled()
   })
 
-  it('leaves the repo directory unchanged when the picker is cancelled', async () => {
+  // ── Add project ──────────────────────────────────────────────────────────────
+
+  it('does nothing when the add-project picker is cancelled', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([])
     window.octopusAPI.dialog.pickDirectory = vi.fn().mockResolvedValue(undefined)
+    const add = vi.fn()
+    window.octopusAPI.projects.add = add
     render(<NewTaskModal onClose={vi.fn()} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Browse…' }))
+    await waitFor(() => expect(screen.getByText('No projects yet')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: '+ Add project' }))
     await waitFor(() => expect(window.octopusAPI.dialog.pickDirectory).toHaveBeenCalled())
-    expect(screen.getByLabelText('repo directory')).toHaveValue('')
+    expect(add).not.toHaveBeenCalled()
   })
 
-  it('dispatches create with the trimmed four-field payload (mode: new)', () => {
+  it('shows an inline error when adding a project fails', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([])
+    window.octopusAPI.dialog.pickDirectory = vi.fn().mockResolvedValue('/not/a/repo')
+    window.octopusAPI.projects.add = vi
+      .fn()
+      .mockResolvedValue({ ok: false, error: 'not a git repository' })
     render(<NewTaskModal onClose={vi.fn()} />)
-    fill('task name', 'My Feature')
-    fill('repo directory', '/repos/app')
-    fill('source branch', ' main ')
-    fill('new branch', ' feature/x ')
+    await waitFor(() => expect(screen.getByText('No projects yet')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: '+ Add project' }))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('not a git repository'))
+  })
+
+  it('selects the returned project after a successful add', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([])
+    window.octopusAPI.dialog.pickDirectory = vi.fn().mockResolvedValue('/repos/new')
+    window.octopusAPI.projects.add = vi.fn().mockResolvedValue({
+      ok: true,
+      project: { path: '/repos/new', defaultBranch: 'trunk' }
+    })
+    render(<NewTaskModal onClose={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('No projects yet')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: '+ Add project' }))
+    await waitFor(() => expect(screen.getByLabelText('source branch')).toHaveValue('trunk'))
+  })
+
+  it('refetches the project list after a successful add, and the new row appears', async () => {
+    const added: ProjectListItemDTO = { path: '/repos/new', defaultBranch: 'trunk', taskCount: 0 }
+    const list = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([added])
+    window.octopusAPI.projects.list = list
+    window.octopusAPI.dialog.pickDirectory = vi.fn().mockResolvedValue('/repos/new')
+    window.octopusAPI.projects.add = vi.fn().mockResolvedValue({
+      ok: true,
+      project: { path: '/repos/new', defaultBranch: 'trunk' }
+    })
+    render(<NewTaskModal onClose={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('No projects yet')).toBeInTheDocument())
+    expect(list).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole('button', { name: '+ Add project' }))
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2))
+    expect(await screen.findByRole('option', { name: 'new' })).toBeInTheDocument()
+  })
+
+  // ── Remove project ───────────────────────────────────────────────────────────
+
+  it('shows the ack error inline and refetches when remove is stale', async () => {
+    const list = vi.fn().mockResolvedValue([PROJECT_APP])
+    window.octopusAPI.projects.list = list
+    render(<NewTaskModal onClose={vi.fn()} />)
+    await screen.findByRole('option', { name: 'app' })
+    expect(list).toHaveBeenCalledTimes(1)
+
+    window.octopusAPI.projects.remove = vi
+      .fn()
+      .mockResolvedValue({ ok: false, error: 'Project has 1 task(s); delete them first' })
+    fireEvent.click(screen.getByRole('button', { name: 'remove project app' }))
+    fireEvent.click(screen.getByRole('button', { name: 'confirm remove project app' }))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('delete them first'))
+    expect(list).toHaveBeenCalledTimes(2)
+  })
+
+  it('removing the selected project clears the selection', async () => {
+    const list = vi.fn().mockResolvedValueOnce([PROJECT_APP]).mockResolvedValueOnce([])
+    window.octopusAPI.projects.list = list
+    window.octopusAPI.projects.remove = vi.fn().mockResolvedValue({ ok: true })
+    render(<NewTaskModal onClose={vi.fn()} />)
+    await screen.findByRole('option', { name: 'app' })
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+    fill('task name', 'Feature')
+    fill('new branch', 'feature/x')
+    expect(screen.getByRole('button', { name: 'Create Task' })).toBeEnabled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'remove project app' }))
+    fireEvent.click(screen.getByRole('button', { name: 'confirm remove project app' }))
+    await waitFor(() => expect(screen.getByText('No projects yet')).toBeInTheDocument())
+    expect(screen.getByText('Select a project in the sidebar.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create Task' })).toBeDisabled()
+  })
+
+  // ── Existing-repo worktrees ───────────────────────────────────────────────────
+
+  it('disables worktrees already in use by another task, with their label', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
+    window.octopusAPI.projects.listWorktrees = vi.fn().mockResolvedValue([
+      { path: '/repos/app', branch: 'main' },
+      { path: '/repos/app-wt1', branch: 'feature/x', usedByTaskName: 'Other Task' }
+    ])
+    render(<NewTaskModal onClose={vi.fn()} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Repo' }))
+    await screen.findByRole('option', { name: 'app' })
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+
+    const used = await screen.findByRole('radio', {
+      name: '/repos/app-wt1 (feature/x) — in use by Other Task'
+    })
+    expect(used).toBeDisabled()
+    expect(screen.getByRole('radio', { name: '/repos/app (main)' })).toBeEnabled()
+  })
+
+  // ── No Repo hides the sidebar ─────────────────────────────────────────────────
+
+  it('hides the sidebar on the No Repo tab', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
+    render(<NewTaskModal onClose={vi.fn()} />)
+    await screen.findByRole('option', { name: 'app' })
+    fireEvent.click(screen.getByRole('tab', { name: 'No Repo' }))
+    expect(screen.queryByRole('listbox', { name: 'Projects' })).not.toBeInTheDocument()
+  })
+
+  // ── Source branch prefill ────────────────────────────────────────────────────
+
+  it('re-prefills the source branch when the selected project changes', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP, PROJECT_OTHER])
+    render(<NewTaskModal onClose={vi.fn()} />)
+    await screen.findByRole('option', { name: 'app' })
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+    expect(screen.getByLabelText('source branch')).toHaveValue('main')
+    fireEvent.click(screen.getByRole('option', { name: 'other' }))
+    expect(screen.getByLabelText('source branch')).toHaveValue('develop')
+  })
+
+  it('switching to a project with no default branch clears the source branch', async () => {
+    const bare: ProjectListItemDTO = { path: '/repos/bare', taskCount: 0 }
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP, bare])
+    render(<NewTaskModal onClose={vi.fn()} />)
+    await screen.findByRole('option', { name: 'app' })
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+    expect(screen.getByLabelText('source branch')).toHaveValue('main')
+    fireEvent.click(screen.getByRole('option', { name: 'bare' }))
+    expect(screen.getByLabelText('source branch')).toHaveValue('')
+  })
+
+  it('editing the source branch never calls setDefaultBranch, even after submitting', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
+    const setDefaultBranch = vi.fn().mockResolvedValue({ ok: true })
+    window.octopusAPI.projects.setDefaultBranch = setDefaultBranch
+    render(<NewTaskModal onClose={vi.fn()} />)
+    await screen.findByRole('option', { name: 'app' })
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+    fill('source branch', 'custom-branch')
+    expect(screen.getByLabelText('source branch')).toHaveValue('custom-branch')
+    expect(setDefaultBranch).not.toHaveBeenCalled()
+
+    fill('task name', 'Feature')
+    fill('new branch', 'feature/x')
+    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
+    await waitFor(() => expect(window.octopusAPI.tasks.create).toHaveBeenCalled())
+    expect(setDefaultBranch).not.toHaveBeenCalled()
+  })
+
+  it('keeps an edited source branch when switching tabs away and back', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
+    render(<NewTaskModal onClose={vi.fn()} />)
+    await screen.findByRole('option', { name: 'app' })
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+    fill('source branch', 'custom')
+    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Repo' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'From New Worktree' }))
+    expect(screen.getByLabelText('source branch')).toHaveValue('custom')
+  })
+
+  it('fetches worktrees when switching to the Existing tab with a project already selected', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
+    const listWorktrees = vi.fn().mockResolvedValue([])
+    window.octopusAPI.projects.listWorktrees = listWorktrees
+    render(<NewTaskModal onClose={vi.fn()} />)
+    await screen.findByRole('option', { name: 'app' })
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+    expect(listWorktrees).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Repo' }))
+    await waitFor(() => expect(listWorktrees).toHaveBeenCalledWith({ projectPath: '/repos/app' }))
+  })
+
+  // ── Re-selection / double-click no-ops (added during review) ────────────────
+
+  it('re-selecting the already-selected project is a no-op', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
+    render(<NewTaskModal onClose={vi.fn()} />)
+    await screen.findByRole('option', { name: 'app' })
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+    fill('source branch', 'custom')
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+    expect(screen.getByLabelText('source branch')).toHaveValue('custom')
+  })
+
+  it('double-clicking the selected project default branch does not reset an edited source branch', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
+    render(<NewTaskModal onClose={vi.fn()} />)
+    await screen.findByRole('option', { name: 'app' })
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+    fill('source branch', 'custom')
+
+    // A real double-click delivers two `click`s (bubbling to the row — a no-op,
+    // since the project is already selected) followed by a `dblclick` (handled
+    // by the EditableLabel itself, which does not bubble into the row).
+    const branchLabel = screen.getByText('main')
+    fireEvent.click(branchLabel)
+    fireEvent.click(branchLabel)
+    fireEvent.doubleClick(branchLabel)
+
+    expect(screen.getByLabelText('source branch')).toHaveValue('custom')
+    expect(screen.getByRole('option', { name: 'app' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByLabelText('edit default branch for app')).toBeInTheDocument()
+  })
+
+  it('double-clicking the selected project default branch does not reset the chosen worktree', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
+    const listWorktrees = vi.fn().mockResolvedValue([
+      { path: '/repos/app', branch: 'main' },
+      { path: '/repos/app-wt1', branch: 'feature/x' }
+    ])
+    window.octopusAPI.projects.listWorktrees = listWorktrees
+    render(<NewTaskModal onClose={vi.fn()} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Repo' }))
+    await screen.findByRole('option', { name: 'app' })
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+    const radio = await screen.findByRole('radio', { name: '/repos/app-wt1 (feature/x)' })
+    fireEvent.click(radio)
+    expect(listWorktrees).toHaveBeenCalledTimes(1)
+
+    const branchLabel = screen.getByText('main')
+    fireEvent.click(branchLabel)
+    fireEvent.click(branchLabel)
+    fireEvent.doubleClick(branchLabel)
+
+    expect(radio).toBeChecked()
+    expect(listWorktrees).toHaveBeenCalledTimes(1)
+  })
+
+  it('editing a project default branch inline calls setDefaultBranch, refetches the list, and surfaces a failed ack as an alert', async () => {
+    const list = vi.fn().mockResolvedValue([PROJECT_APP])
+    window.octopusAPI.projects.list = list
+    const setDefaultBranch = vi.fn().mockResolvedValue({ ok: false, error: 'bad branch name' })
+    window.octopusAPI.projects.setDefaultBranch = setDefaultBranch
+    render(<NewTaskModal onClose={vi.fn()} />)
+    await screen.findByRole('option', { name: 'app' })
+    expect(list).toHaveBeenCalledTimes(1)
+
+    const branchLabel = screen.getByText('main')
+    fireEvent.doubleClick(branchLabel)
+    const input = screen.getByLabelText('edit default branch for app')
+    fireEvent.change(input, { target: { value: 'develop' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(setDefaultBranch).toHaveBeenCalledWith({ path: '/repos/app', defaultBranch: 'develop' })
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('bad branch name'))
+  })
+
+  it('retries listWorktrees when re-clicking the selected project after a failed fetch', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
+    const listWorktrees = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce([{ path: '/repos/app', branch: 'main' }])
+    window.octopusAPI.projects.listWorktrees = listWorktrees
+    render(<NewTaskModal onClose={vi.fn()} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Repo' }))
+    await screen.findByRole('option', { name: 'app' })
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('boom'))
+
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+    await waitFor(() => expect(listWorktrees).toHaveBeenCalledTimes(2))
+    await screen.findByRole('radio', { name: '/repos/app (main)' })
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  // ── Enter handling ────────────────────────────────────────────────────────────
+
+  it('Enter on a focused project row selects it without submitting; Enter in a text input submits', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
+    render(<NewTaskModal onClose={vi.fn()} />)
+    await screen.findByRole('option', { name: 'app' })
+    fill('task name', 'Feature')
+    fill('new branch', 'feature/x')
+
+    const row = screen.getByRole('option', { name: 'app' })
+    fireEvent.keyDown(row, { key: 'Enter' })
+    expect(row).toHaveAttribute('aria-selected', 'true')
+    expect(window.octopusAPI.tasks.create).not.toHaveBeenCalled()
+
+    // Now every required field is filled (sourceBranch was prefilled by the
+    // selection above) — Enter in a text input submits.
+    fireEvent.keyDown(screen.getByLabelText('task name'), { key: 'Enter' })
+    await waitFor(() => expect(window.octopusAPI.tasks.create).toHaveBeenCalled())
+  })
+
+  it('Enter on the sidebar delete button or Cancel never submits, even when the form is submittable', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
+    render(<NewTaskModal onClose={vi.fn()} />)
+    await screen.findByRole('option', { name: 'app' })
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+    fill('task name', 'Feature')
+    fill('new branch', 'feature/x')
+    expect(screen.getByRole('button', { name: 'Create Task' })).toBeEnabled()
+
+    fireEvent.keyDown(screen.getByRole('button', { name: 'remove project app' }), { key: 'Enter' })
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Cancel' }), { key: 'Enter' })
+    expect(window.octopusAPI.tasks.create).not.toHaveBeenCalled()
+
+    // Positive control: Enter in a text input does submit.
+    fireEvent.keyDown(screen.getByLabelText('new branch'), { key: 'Enter' })
+    expect(window.octopusAPI.tasks.create).toHaveBeenCalledTimes(1)
+  })
+
+  // ── Stale worktree response ───────────────────────────────────────────────────
+
+  it('ignores a stale listWorktrees response when the project changes before it resolves', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP, PROJECT_OTHER])
+    const resolvers: Array<(list: ProjectWorktreeDTO[]) => void> = []
+    window.octopusAPI.projects.listWorktrees = vi.fn(
+      () => new Promise<ProjectWorktreeDTO[]>((resolve) => resolvers.push(resolve))
+    )
+    render(<NewTaskModal onClose={vi.fn()} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Repo' }))
+    await screen.findByRole('option', { name: 'app' })
+
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+    fireEvent.click(screen.getByRole('option', { name: 'other' }))
+    expect(resolvers).toHaveLength(2)
+
+    // Resolve A (now stale) last; its response must be dropped.
+    await act(async () => resolvers[0]([{ path: '/repos/app-wt1', branch: 'a' }]))
+    expect(screen.queryByText('/repos/app-wt1 (a)')).not.toBeInTheDocument()
+
+    await act(async () => resolvers[1]([{ path: '/repos/other-wt1', branch: 'b' }]))
+    expect(await screen.findByRole('radio', { name: '/repos/other-wt1 (b)' })).toBeInTheDocument()
+  })
+
+  // ── StrictMode ────────────────────────────────────────────────────────────────
+
+  it('loads the project list and supports the add flow under <StrictMode>', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
+    window.octopusAPI.dialog.pickDirectory = vi.fn().mockResolvedValue('/repos/new')
+    const added: ProjectDTO = { path: '/repos/new', defaultBranch: 'trunk' }
+    window.octopusAPI.projects.add = vi.fn().mockResolvedValue({ ok: true, project: added })
+
+    render(
+      <StrictMode>
+        <NewTaskModal onClose={vi.fn()} />
+      </StrictMode>
+    )
+    expect(await screen.findByRole('option', { name: 'app' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '+ Add project' }))
+    await waitFor(() =>
+      expect(window.octopusAPI.projects.add).toHaveBeenCalledWith({ dir: '/repos/new' })
+    )
+    await waitFor(() => expect(screen.getByLabelText('source branch')).toHaveValue('trunk'))
+  })
+
+  // ── Submitted payload ─────────────────────────────────────────────────────────
+
+  it('submits the new-worktree payload with repoDir from the selected project', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
+    const onClose = vi.fn()
+    render(<NewTaskModal onClose={onClose} />)
+    await screen.findByRole('option', { name: 'app' })
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+    fill('task name', 'Feature')
+    fill('new branch', 'feature/x')
     fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
     expect(window.octopusAPI.tasks.create).toHaveBeenCalledWith({
       mode: 'new',
-      name: 'My Feature',
+      name: 'Feature',
       repoDir: '/repos/app',
       sourceBranch: 'main',
       newBranch: 'feature/x'
     })
+
+    emit({ type: 'activeTaskChanged', taskId: 'task-1' })
+    expect(onClose).toHaveBeenCalled()
   })
 
-  it('defaults to the "From New Worktree" tab and hints master as the source branch', () => {
-    render(<NewTaskModal onClose={vi.fn()} />)
-    expect(screen.getByRole('tab', { name: 'From New Worktree' })).toHaveAttribute(
-      'aria-selected',
-      'true'
-    )
-    expect(screen.getByLabelText('source branch')).toHaveAttribute('placeholder', 'master')
-  })
-
-  it('reveals a per-tab info tooltip on hover, with distinct delete-behavior text', () => {
-    render(<NewTaskModal onClose={vi.fn()} />)
-    const info = screen.getByRole('button', { name: 'about task sources' })
-    // No tooltip until hovered.
-    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
-
-    // New-Worktree tab: removed on delete, and it explains HOW it's provisioned
-    // (repo scripts vs. native git).
-    fireEvent.mouseEnter(info)
-    const newTip = screen.getByRole('tooltip')
-    expect(newTip).toHaveTextContent(/removes it when the task is deleted/)
-    expect(newTip).toHaveTextContent(/create_worktree\.sh/)
-    expect(newTip).toHaveTextContent(/git worktree add/)
-    fireEvent.mouseLeave(info)
-    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
-
-    // Existing-Repo tab: the directory is left on disk and nothing runs on delete.
-    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Repo' }))
-    fireEvent.mouseEnter(info)
-    const existingTip = screen.getByRole('tooltip')
-    expect(existingTip).toHaveTextContent(/leaves the directory on disk/)
-    expect(existingTip).toHaveTextContent(/No delete script or git command runs/)
-  })
-
-  it('the Existing tab shows only task name + existing repo directory', () => {
+  it('submits the existing-repo payload with worktreeDir from the selected worktree', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
+    window.octopusAPI.projects.listWorktrees = vi.fn().mockResolvedValue([
+      { path: '/repos/app', branch: 'main' },
+      { path: '/repos/app-wt1', branch: 'feature/x' }
+    ])
     render(<NewTaskModal onClose={vi.fn()} />)
     fireEvent.click(screen.getByRole('tab', { name: 'From Existing Repo' }))
-    expect(screen.getByLabelText('task name')).toBeInTheDocument()
-    expect(screen.getByLabelText('existing repo directory')).toBeInTheDocument()
-    // New-worktree-only fields are gone.
-    expect(screen.queryByLabelText('repo directory')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('source branch')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('new branch')).not.toBeInTheDocument()
-  })
-
-  it('gates Create on name + repo dir in the Existing tab', () => {
-    render(<NewTaskModal onClose={vi.fn()} />)
-    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Repo' }))
-    const create = screen.getByRole('button', { name: 'Create Task' })
-    expect(create).toBeDisabled()
+    await screen.findByRole('option', { name: 'app' })
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+    const radio = await screen.findByRole('radio', { name: '/repos/app-wt1 (feature/x)' })
+    fireEvent.click(radio)
     fill('task name', 'Adopted')
-    expect(create).toBeDisabled() // repo dir still empty
-    fill('existing repo directory', '/home/u/wt-x')
-    expect(create).toBeEnabled()
-  })
-
-  it('dispatches create with the existing-repo payload (mode: existing)', () => {
-    render(<NewTaskModal onClose={vi.fn()} />)
-    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Repo' }))
-    fill('task name', ' Adopted ')
-    fill('existing repo directory', '/home/u/wt-x')
     fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
     expect(window.octopusAPI.tasks.create).toHaveBeenCalledWith({
       mode: 'existing',
       name: 'Adopted',
-      worktreeDir: '/home/u/wt-x'
+      worktreeDir: '/repos/app-wt1'
     })
   })
 
-  it('the Existing tab closes on success (activeTaskChanged)', async () => {
-    const onClose = vi.fn()
-    render(<NewTaskModal onClose={onClose} />)
-    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Repo' }))
-    fill('task name', 'Adopted')
-    fill('existing repo directory', '/home/u/wt-x')
-    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
-    await waitFor(() => expect(window.octopusAPI.tasks.create).toHaveBeenCalled())
-
-    emit({ type: 'activeTaskChanged', taskId: 'task-1' })
-    expect(onClose).toHaveBeenCalled()
-  })
-
-  it('the Existing tab shows the adopt stderr inline on scriptError', async () => {
-    const onClose = vi.fn()
-    render(<NewTaskModal onClose={onClose} />)
-    fireEvent.click(screen.getByRole('tab', { name: 'From Existing Repo' }))
-    fill('task name', 'Adopted')
-    fill('existing repo directory', '/home/u/wt-x')
-    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
-    await waitFor(() => expect(window.octopusAPI.tasks.create).toHaveBeenCalled())
-
-    emit({
-      type: 'scriptError',
-      taskId: 'task-1',
-      script: 'adopt',
-      exitCode: null,
-      stderr: 'not a git worktree: /home/u/wt-x'
-    })
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('not a git worktree'))
-    expect(onClose).not.toHaveBeenCalled()
-    expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled()
-  })
-
-  it('the No Repo tab shows only the task name — no repo/branch fields', () => {
-    render(<NewTaskModal onClose={vi.fn()} />)
-    fireEvent.click(screen.getByRole('tab', { name: 'No Repo' }))
-    expect(screen.getByLabelText('task name')).toBeInTheDocument()
-    // Every repo/branch field from the other two tabs is absent.
-    expect(screen.queryByLabelText('repo directory')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('existing repo directory')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('source branch')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('new branch')).not.toBeInTheDocument()
-  })
-
-  it('gates Create on the name alone in the No Repo tab', () => {
-    render(<NewTaskModal onClose={vi.fn()} />)
-    fireEvent.click(screen.getByRole('tab', { name: 'No Repo' }))
-    const create = screen.getByRole('button', { name: 'Create Task' })
-    expect(create).toBeDisabled()
-    fill('task name', 'Scratch')
-    expect(create).toBeEnabled()
-  })
-
-  it('dispatches create with the no-repo payload (mode: none)', () => {
-    render(<NewTaskModal onClose={vi.fn()} />)
-    fireEvent.click(screen.getByRole('tab', { name: 'No Repo' }))
-    fill('task name', ' Scratch ')
-    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
-    expect(window.octopusAPI.tasks.create).toHaveBeenCalledWith({ mode: 'none', name: 'Scratch' })
-  })
-
-  it('the No Repo tab explains no worktree + home-dir sessions in its tooltip', () => {
-    render(<NewTaskModal onClose={vi.fn()} />)
-    fireEvent.click(screen.getByRole('tab', { name: 'No Repo' }))
-    fireEvent.mouseEnter(screen.getByRole('button', { name: 'about task sources' }))
-    const tip = screen.getByRole('tooltip')
-    expect(tip).toHaveTextContent(/no repository/i)
-    expect(tip).toHaveTextContent(/home directory/i)
-  })
-
-  it('the No Repo tab closes on success (activeTaskChanged)', async () => {
-    const onClose = vi.fn()
-    render(<NewTaskModal onClose={onClose} />)
-    fireEvent.click(screen.getByRole('tab', { name: 'No Repo' }))
-    fill('task name', 'Scratch')
-    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
-    await waitFor(() => expect(window.octopusAPI.tasks.create).toHaveBeenCalled())
-
-    emit({ type: 'activeTaskChanged', taskId: 'task-1' })
-    expect(onClose).toHaveBeenCalled()
-  })
-
-  it('closes on success (activeTaskChanged for the created task)', async () => {
-    const onClose = vi.fn()
-    render(<NewTaskModal onClose={onClose} />)
-    fill('task name', 'My Feature')
-    fill('repo directory', '/repos/app')
-    fill('source branch', 'main')
-    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
-    await waitFor(() => expect(window.octopusAPI.tasks.create).toHaveBeenCalled())
-
-    emit({ type: 'activeTaskChanged', taskId: 'task-1' })
-    expect(onClose).toHaveBeenCalled()
-  })
+  // ── Provisioning outcome via the event stream (unchanged by this feature) ────
 
   it('shows the stderr inline and offers Retry on scriptError', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
     const onClose = vi.fn()
     render(<NewTaskModal onClose={onClose} />)
-    fill('task name', 'My Feature')
-    fill('repo directory', '/repos/app')
-    fill('source branch', 'main')
+    await screen.findByRole('option', { name: 'app' })
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+    fill('task name', 'Feature')
     fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
     await waitFor(() => expect(window.octopusAPI.tasks.create).toHaveBeenCalled())
 
@@ -312,10 +503,11 @@ describe('<NewTaskModal>', () => {
   })
 
   it('surfaces live scriptProgress while provisioning', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
     render(<NewTaskModal onClose={vi.fn()} />)
-    fill('task name', 'My Feature')
-    fill('repo directory', '/repos/app')
-    fill('source branch', 'main')
+    await screen.findByRole('option', { name: 'app' })
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+    fill('task name', 'Feature')
     fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
     await waitFor(() => expect(window.octopusAPI.tasks.create).toHaveBeenCalled())
 

@@ -200,3 +200,21 @@ describe('ScriptWorktreeProvider.isDirty (§6.4)', () => {
     expect(await provider(runner).isDirty('/wt')).toBe(false)
   })
 })
+
+describe('ScriptWorktreeProvider.inspectRepo / listWorktrees (§6.4 — never routed here)', () => {
+  it('inspectRepo always rejects: SelectingWorktreeProvider routes it to native', async () => {
+    const runner = new FakeRunner()
+    await expect(provider(runner).inspectRepo()).rejects.toThrow(
+      /ScriptWorktreeProvider.inspectRepo should never be called/
+    )
+    expect(runner.calls).toEqual([])
+  })
+
+  it('listWorktrees always rejects: SelectingWorktreeProvider routes it to native', async () => {
+    const runner = new FakeRunner()
+    await expect(provider(runner).listWorktrees()).rejects.toThrow(
+      /ScriptWorktreeProvider.listWorktrees should never be called/
+    )
+    expect(runner.calls).toEqual([])
+  })
+})

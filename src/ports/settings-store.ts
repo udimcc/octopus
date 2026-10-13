@@ -52,11 +52,30 @@ export interface TerminalSettings {
   readonly statusChangeNotifications?: boolean
 }
 
+/**
+ * A one-time config entry for a repository (§5.4, §6.3): `path` is the repo's main
+ * record — its main checkout, or the bare directory; never a linked worktree — and `defaultBranch` prefills "Source branch" on
+ * the New-Task "From New Worktree" tab — editable per-task, never written back.
+ */
+export interface ProjectSettings {
+  readonly path: string
+  readonly defaultBranch?: string
+}
+
 export interface Settings {
   readonly worktree: WorktreeSettings
   readonly terminal: TerminalSettings
   /** Default session type for the New-Session dropdown (§5.4). */
   readonly defaultSessionTypeId: string
+  /**
+   * Configured repos shown in the New-Task sidebar (§5.4, §6.3). Absence has a
+   * distinct meaning from an empty list: `undefined` means "never seeded" — the
+   * one-shot boot seed (one project per distinct existing task repoRoot) still
+   * runs; `[]` means the user removed every project, which the seed must never
+   * re-populate. Always read `settings.load().projects` directly to distinguish
+   * the two — never default this to `[]` upstream of the seed check.
+   */
+  readonly projects?: readonly ProjectSettings[]
   /** Worktree create timeout override (ms); default 30 000 — script AND git (§6.4). */
   readonly worktreeCreateTimeoutMs?: number
   /** Group the task list by owning repo in the Progress panel (default true). */
@@ -91,6 +110,8 @@ export interface SettingsPatch {
   readonly worktree?: Partial<WorktreeSettings>
   readonly terminal?: Partial<TerminalSettings>
   readonly defaultSessionTypeId?: string
+  /** See `Settings.projects` for the `undefined` (never seeded) vs. `[]` (user emptied it) rule. */
+  readonly projects?: readonly ProjectSettings[]
   readonly worktreeCreateTimeoutMs?: number
   readonly groupTasksByRepo?: boolean
   readonly sessionNextKey?: string
@@ -108,6 +129,19 @@ export interface SettingsPatch {
 export interface SettingsStore {
   /** Load settings, filling defaults for any missing keys. */
   load(): Settings
+  /**
+   * True iff the MOST RECENT `load()` found settings.json present on disk but
+   * could not read or parse it (I/O error, invalid JSON, or a non-object) — as
+   * opposed to the file simply not existing yet (first run / unconfigured
+   * install), which is NOT a failure (DESIGN §6.3). Additive, read-only member
+   * (same `undefined`-free style as `load`/`save`): both the missing-file case
+   * and the unreadable/malformed case fall back to the same `DEFAULT_SETTINGS`
+   * (no `projects` key either way), so `seedProjects` cannot tell "genuinely
+   * never seeded" from "I don't actually know what's in the real file" without
+   * this. It must check `loadFailed()` and skip its one-shot write when true,
+   * rather than seeding over a file it couldn't actually read.
+   */
+  loadFailed(): boolean
   /** Merge `patch` into the stored settings and persist; returns the result. */
   save(patch: SettingsPatch): Settings
 }

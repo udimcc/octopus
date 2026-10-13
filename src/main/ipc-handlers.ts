@@ -9,8 +9,12 @@
  *
  * This is the inbound boundary: `main` is the only layer that may import both the
  * application/domain and `shared`, so the DTO→command rebranding happens here and
- * nowhere else. Handlers never throw to the renderer — the loop turns every domain
- * error into `{ ok: false, error }` (§7).
+ * nowhere else. Handlers that go through the command loop never throw to the
+ * renderer — the loop turns every domain error into `{ ok: false, error }` (§7).
+ * The one deliberate exception is `projectListWorktrees` (§6.4): it bypasses the
+ * loop (a pure read, like `getState`) and lets an `inspectRepo`/`listWorktrees`
+ * rejection propagate, so `ipcRenderer.invoke` rejects and the modal shows the
+ * real error instead of an empty list that would look like "no worktrees".
  *
  * `pty:write`/`pty:resize` use `on` (no reply): high-frequency keystrokes/resizes
  * must never head-of-line-block a command reply (§6.5). They still route THROUGH
@@ -41,7 +45,13 @@ import type {
   CreateWindowWithSessionInput,
   WindowAtPointInput,
   SettingsPatchDTO,
-  WindowedWorkspaceStateDTO
+  WindowedWorkspaceStateDTO,
+  AddProjectInput,
+  RemoveProjectInput,
+  SetProjectDefaultBranchInput,
+  ListProjectWorktreesInput,
+  ProjectListItemDTO,
+  ProjectWorktreeDTO
 } from '../shared/dto'
 import type { CommandLoop } from '../application/command-loop'
 import type { Clipboard } from '../ports/clipboard'
@@ -50,6 +60,8 @@ import type { CommandResult } from '../application/commands'
 import type { SettingsPatch } from '../application/commands'
 import { getState } from '../application/queries/get-state'
 import { getSessionCwd } from '../application/queries/get-session-cwd'
+import { listProjects } from '../application/queries/list-projects'
+import { listProjectWorktrees } from '../application/queries/list-project-worktrees'
 import {
   asTaskId,
   asSessionId,
@@ -65,7 +77,14 @@ function ack(result: CommandResult): CommandAck {
     ok: result.ok,
     needsDirtyConfirm: result.needsDirtyConfirm,
     error: result.error,
-    windowId: result.windowId
+    windowId: result.windowId,
+    // Resolved project returned by `addProject` (§5.4, §6.3). `ProjectSettings` and
+    // `ProjectDTO` are structurally identical ({path, defaultBranch?}); copy the
+    // fields explicitly rather than forwarding the application type over the wire.
+    project: result.project && {
+      path: result.project.path,
+      defaultBranch: result.project.defaultBranch
+    }
   }
 }
 
@@ -296,6 +315,42 @@ export function registerIpcHandlers(
     }
     return null
   })
+
+  // ── Project commands (§5.4, §6.3) ───────────────────────────────────────────
+  ipcMain.handle(CHANNELS.projectAdd, async (_e, input: AddProjectInput): Promise<CommandAck> => {
+    const result = await loop.dispatch({ kind: 'addProject', input })
+    return ack(result)
+  })
+
+  ipcMain.handle(
+    CHANNELS.projectRemove,
+    async (_e, input: RemoveProjectInput): Promise<CommandAck> => {
+      const result = await loop.dispatch({ kind: 'removeProject', input })
+      return ack(result)
+    }
+  )
+
+  ipcMain.handle(
+    CHANNELS.projectSetDefaultBranch,
+    async (_e, input: SetProjectDefaultBranchInput): Promise<CommandAck> => {
+      const result = await loop.dispatch({ kind: 'setProjectDefaultBranch', input })
+      return ack(result)
+    }
+  )
+
+  // Pure read, bypasses the loop like getSessionCwd (§6.3).
+  ipcMain.handle(CHANNELS.projectList, (): readonly ProjectListItemDTO[] => listProjects(deps))
+
+  // Pure read, bypasses the loop (§6.4). `listWorktrees` shells out to git and can
+  // reject (non-git dir, git missing, etc.); we deliberately let that rejection
+  // propagate so `ipcRenderer.invoke` rejects and the modal surfaces an inline
+  // error, rather than swallowing it into an empty `[]` that would look like "this
+  // project has no worktrees" and hide the real failure.
+  ipcMain.handle(
+    CHANNELS.projectListWorktrees,
+    async (_e, input: ListProjectWorktreesInput): Promise<readonly ProjectWorktreeDTO[]> =>
+      listProjectWorktrees(deps, input.projectPath)
+  )
 
   // ── App-level ─────────────────────────────────────────────────────────────
   ipcMain.handle(CHANNELS.appGetState, (e): WindowedWorkspaceStateDTO => {

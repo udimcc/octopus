@@ -7,7 +7,9 @@ import type {
   CreateWorktreeResult,
   AdoptWorktreeRequest,
   AdoptWorktreeResult,
-  RemoveWorktreeRequest
+  RemoveWorktreeRequest,
+  InspectRepoResult,
+  RepoWorktree
 } from '../../ports/worktree-provider'
 import { asTaskId } from '../../domain/ids'
 
@@ -16,14 +18,20 @@ function stubProvider(tag: string): WorktreeProvider & {
   creates: CreateWorktreeRequest[]
   removes: RemoveWorktreeRequest[]
   adopts: AdoptWorktreeRequest[]
+  inspects: string[]
+  listWorktreesCalls: string[]
 } {
   const creates: CreateWorktreeRequest[] = []
   const removes: RemoveWorktreeRequest[] = []
   const adopts: AdoptWorktreeRequest[] = []
+  const inspects: string[] = []
+  const listWorktreesCalls: string[] = []
   return {
     creates,
     removes,
     adopts,
+    inspects,
+    listWorktreesCalls,
     async create(req: CreateWorktreeRequest): Promise<CreateWorktreeResult> {
       creates.push(req)
       return { path: `/wt/${tag}`, script: tag, args: [] }
@@ -37,6 +45,14 @@ function stubProvider(tag: string): WorktreeProvider & {
     },
     async isDirty(): Promise<boolean> {
       return false
+    },
+    async inspectRepo(dir: string): Promise<InspectRepoResult> {
+      inspects.push(dir)
+      return { root: `/repo/${tag}`, defaultBranch: tag }
+    },
+    async listWorktrees(root: string): Promise<readonly RepoWorktree[]> {
+      listWorktreesCalls.push(root)
+      return [{ path: `/wt/${tag}`, branch: tag }]
     }
   }
 }
@@ -166,5 +182,37 @@ describe('SelectingWorktreeProvider.isDirty (§6.4)', () => {
 
     expect(hasScript).not.toHaveBeenCalled()
     expect(isDirtySpy).toHaveBeenCalledWith('/wt')
+  })
+})
+
+describe('SelectingWorktreeProvider.inspectRepo (§6.4)', () => {
+  it('is provider-neutral: never probes for a script, always delegates to native (even if the repo has scripts)', async () => {
+    const hasScript = vi.fn().mockReturnValue(true)
+    const script = stubProvider('script')
+    const native = stubProvider('native')
+    const sel = new SelectingWorktreeProvider({ script, native, hasScript })
+
+    const res = await sel.inspectRepo('/picked')
+
+    expect(hasScript).not.toHaveBeenCalled()
+    expect(native.inspects).toEqual(['/picked'])
+    expect(script.inspects).toEqual([])
+    expect(res).toEqual({ root: '/repo/native', defaultBranch: 'native' })
+  })
+})
+
+describe('SelectingWorktreeProvider.listWorktrees (§6.4)', () => {
+  it('is provider-neutral: never probes for a script, always delegates to native (even if the repo has scripts)', async () => {
+    const hasScript = vi.fn().mockReturnValue(true)
+    const script = stubProvider('script')
+    const native = stubProvider('native')
+    const sel = new SelectingWorktreeProvider({ script, native, hasScript })
+
+    const res = await sel.listWorktrees('/repo/native')
+
+    expect(hasScript).not.toHaveBeenCalled()
+    expect(native.listWorktreesCalls).toEqual(['/repo/native'])
+    expect(script.listWorktreesCalls).toEqual([])
+    expect(res).toEqual([{ path: '/wt/native', branch: 'native' }])
   })
 })

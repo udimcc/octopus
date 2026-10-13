@@ -35,7 +35,13 @@ import type {
   MoveSessionInput,
   CreateWindowWithSessionInput,
   WindowAtPointInput,
-  SettingsPatchDTO
+  SettingsPatchDTO,
+  ProjectListItemDTO,
+  ProjectWorktreeDTO,
+  AddProjectInput,
+  RemoveProjectInput,
+  SetProjectDefaultBranchInput,
+  ListProjectWorktreesInput
 } from './dto'
 import type { EventDTO } from './events'
 
@@ -95,6 +101,13 @@ export const CHANNELS = {
   windowCreate: 'window:create',
   windowClose: 'window:close',
   windowCreateWithSession: 'window:createWithSession',
+
+  // Project commands (UI → backend, request/reply) (defined projects, §5.4, §6.3).
+  projectList: 'project:list',
+  projectAdd: 'project:add',
+  projectRemove: 'project:remove',
+  projectSetDefaultBranch: 'project:setDefaultBranch',
+  projectListWorktrees: 'project:listWorktrees',
 
   // PTY I/O (UI → backend, fire-and-forget: high-frequency, no reply).
   ptyWrite: 'pty:write',
@@ -262,6 +275,32 @@ export interface OctopusAPI {
      * chosen absolute directory path, or `undefined` if the user cancelled.
      */
     pickDirectory(): Promise<string | undefined>
+  }
+
+  /**
+   * Configured projects (DESIGN §5.4, §6.3): repo roots kept in `settings.json`,
+   * surfaced in the New-Task modal's sidebar. There is no store slice and no
+   * `app:event` push — the modal fetches `list()` itself on open and after each
+   * mutation.
+   */
+  projects: {
+    /** All configured projects, each with its live task count. */
+    list(): Promise<readonly ProjectListItemDTO[]>
+    /**
+     * Validate and add a project from a picked directory; a linked worktree
+     * resolves to its main record (main checkout or bare dir) and an existing project is returned instead
+     * of duplicated. The ack carries the resolved `project` on success.
+     */
+    add(input: AddProjectInput): Promise<CommandAck>
+    /**
+     * Remove a project. Rejected (`ok: false` + `error`) while any task still
+     * belongs to it — the UI disables this ahead of time, but main re-checks.
+     */
+    remove(input: RemoveProjectInput): Promise<CommandAck>
+    /** Set, or with an empty value clear, a project's default branch. */
+    setDefaultBranch(input: SetProjectDefaultBranchInput): Promise<CommandAck>
+    /** A project's main checkout + linked worktrees ("From Existing Repo" tab). */
+    listWorktrees(input: ListProjectWorktreesInput): Promise<readonly ProjectWorktreeDTO[]>
   }
 
   /** OS clipboard access for terminal copy/paste (§5.4). */

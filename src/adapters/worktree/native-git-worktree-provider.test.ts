@@ -296,3 +296,247 @@ describe('NativeGitWorktreeProvider.isDirty (§6.4)', () => {
     expect(runner.calls[0].args).toEqual(['-C', '/wt', 'status', '--porcelain'])
   })
 })
+
+/**
+ * `inspectRepo`/`listWorktrees` each issue up to three git calls (`worktree
+ * list`, `symbolic-ref`, `rev-parse`) — this runner dispatches by subcommand so
+ * each can be scripted independently, mirroring `AdoptRunner` above.
+ */
+class InspectRunner implements ScriptRunner {
+  calls: RunCall[] = []
+  list: ScriptResult = { exitCode: 0, signal: null, stdout: '', stderr: '', timedOut: false }
+  symbolicRef: ScriptResult = {
+    exitCode: 1,
+    signal: null,
+    stdout: '',
+    stderr: 'fatal: no such ref',
+    timedOut: false
+  }
+  revParse: ScriptResult = {
+    exitCode: 0,
+    signal: null,
+    stdout: 'main\n',
+    stderr: '',
+    timedOut: false
+  }
+
+  async run(
+    command: string,
+    args: readonly string[],
+    opts: ScriptRunOptions
+  ): Promise<ScriptResult> {
+    this.calls.push({ command, args, opts })
+    if (args.includes('symbolic-ref')) return this.symbolicRef
+    if (args.includes('rev-parse')) return this.revParse
+    return this.list
+  }
+}
+
+/** Always-present probe (dir exists); override `.isDirectory` per test. */
+function dirProbe(isDirectory: boolean): PathProbe {
+  return { isDirectory: () => isDirectory, looksLikeGitWorktree: () => true }
+}
+
+describe('NativeGitWorktreeProvider.inspectRepo (§6.4)', () => {
+  const MAIN_AND_LINKED =
+    'worktree /home/u/project\nHEAD abc\nbranch refs/heads/main\n\n' +
+    'worktree /home/u/project/.wt/linked\nHEAD def\nbranch refs/heads/feature/x\n'
+
+  it('resolves a linked worktree dir to the main repo root (first porcelain record)', async () => {
+    const runner = new InspectRunner()
+    runner.list = { ...runner.list, stdout: MAIN_AND_LINKED }
+
+    const res = await provider(runner, dirProbe(true)).inspectRepo('/home/u/project/.wt/linked')
+    expect(res.root).toBe('/home/u/project')
+  })
+
+  it('gives the branch from origin/HEAD with the origin/ prefix stripped', async () => {
+    const runner = new InspectRunner()
+    runner.list = { ...runner.list, stdout: MAIN_AND_LINKED }
+    runner.symbolicRef = {
+      exitCode: 0,
+      signal: null,
+      stdout: 'refs/remotes/origin/develop\n',
+      stderr: '',
+      timedOut: false
+    }
+
+    const res = await provider(runner, dirProbe(true)).inspectRepo('/home/u/project')
+    expect(res.defaultBranch).toBe('develop')
+    // rev-parse is never consulted once origin/HEAD resolved.
+    expect(runner.calls.some((c) => c.args.includes('rev-parse'))).toBe(false)
+    // No --short: stripping the literal refs/remotes/origin/ prefix must not be
+    // fooled by a local branch literally named origin/<b> (--short would print
+    // remotes/origin/<b> for that case).
+    const symbolicRefCall = runner.calls.find((c) => c.args.includes('symbolic-ref'))
+    expect(symbolicRefCall?.args).toEqual([
+      '-C',
+      '/home/u/project',
+      'symbolic-ref',
+      'refs/remotes/origin/HEAD'
+    ])
+  })
+
+  it('strips the origin/ prefix even when the branch name itself contains a slash', async () => {
+    const runner = new InspectRunner()
+    runner.list = { ...runner.list, stdout: MAIN_AND_LINKED }
+    runner.symbolicRef = {
+      exitCode: 0,
+      signal: null,
+      stdout: 'refs/remotes/origin/feature/login\n',
+      stderr: '',
+      timedOut: false
+    }
+
+    const res = await provider(runner, dirProbe(true)).inspectRepo('/home/u/project')
+    expect(res.defaultBranch).toBe('feature/login')
+  })
+
+  it('falls back to the current branch when origin/HEAD is absent', async () => {
+    const runner = new InspectRunner()
+    runner.list = { ...runner.list, stdout: MAIN_AND_LINKED }
+    // symbolicRef defaults to exitCode 1 (no origin/HEAD).
+    runner.revParse = { ...runner.revParse, stdout: 'develop\n' }
+
+    const res = await provider(runner, dirProbe(true)).inspectRepo('/home/u/project')
+    expect(res.defaultBranch).toBe('develop')
+  })
+
+  it('gives undefined when detached and there is no origin/HEAD', async () => {
+    const runner = new InspectRunner()
+    runner.list = { ...runner.list, stdout: MAIN_AND_LINKED }
+    runner.revParse = { ...runner.revParse, stdout: 'HEAD\n' }
+
+    const res = await provider(runner, dirProbe(true)).inspectRepo('/home/u/project')
+    expect(res.defaultBranch).toBeUndefined()
+  })
+
+  it('rejects a non-git directory ("not a git repository")', async () => {
+    const runner = new InspectRunner()
+    runner.list = {
+      exitCode: 128,
+      signal: null,
+      stdout: '',
+      stderr: 'fatal: not a repo',
+      timedOut: false
+    }
+
+    await expect(provider(runner, dirProbe(true)).inspectRepo('/not/a/repo')).rejects.toThrow(
+      /not a git repository/
+    )
+  })
+
+  it('rejects when the directory does not exist, without ever spawning git', async () => {
+    const runner = new InspectRunner()
+
+    await expect(provider(runner, dirProbe(false)).inspectRepo('/missing')).rejects.toThrow(
+      /project directory not found: \/missing/
+    )
+    expect(runner.calls).toEqual([])
+  })
+
+  it('rejects on a worktree-list timeout', async () => {
+    const runner = new InspectRunner()
+    runner.list = { ...runner.list, timedOut: true }
+
+    await expect(provider(runner, dirProbe(true)).inspectRepo('/home/u/project')).rejects.toThrow(
+      /timed out/
+    )
+  })
+
+  it('resolves to the bare directory itself for a bare repo (first record, unconditionally)', async () => {
+    const runner = new InspectRunner()
+    runner.list = {
+      ...runner.list,
+      stdout:
+        'worktree /home/u/bare.git\nbare\n\nworktree /home/u/bare-wt\nHEAD abc\nbranch refs/heads/main\n'
+    }
+
+    const res = await provider(runner, dirProbe(true)).inspectRepo('/home/u/bare.git')
+    expect(res.root).toBe('/home/u/bare.git')
+  })
+})
+
+describe('NativeGitWorktreeProvider.listWorktrees (§6.4)', () => {
+  it('lists main + linked records with branches, refs/heads/ stripped, detached as undefined', async () => {
+    const runner = new InspectRunner()
+    runner.list = {
+      ...runner.list,
+      stdout:
+        'worktree /home/u/project\nHEAD abc\nbranch refs/heads/main\n\n' +
+        'worktree /home/u/project/.wt/feature\nHEAD def\nbranch refs/heads/feature/login\n\n' +
+        'worktree /home/u/project/.wt/detached\nHEAD ghi\ndetached\n'
+    }
+
+    const res = await provider(runner, dirProbe(true)).listWorktrees('/home/u/project')
+    expect(res).toEqual([
+      { path: '/home/u/project', branch: 'main' },
+      { path: '/home/u/project/.wt/feature', branch: 'feature/login' },
+      { path: '/home/u/project/.wt/detached', branch: undefined }
+    ])
+  })
+
+  it('filters out bare and prunable records', async () => {
+    const runner = new InspectRunner()
+    runner.list = {
+      ...runner.list,
+      stdout:
+        'worktree /home/u/bare.git\nbare\n\n' +
+        'worktree /home/u/project\nHEAD abc\nbranch refs/heads/main\n\n' +
+        'worktree /home/u/project/.wt/gone\nHEAD def\nbranch refs/heads/old\nprunable gitdir file points to non-existent location\n'
+    }
+
+    const res = await provider(runner, dirProbe(true)).listWorktrees('/home/u/project')
+    expect(res).toEqual([{ path: '/home/u/project', branch: 'main' }])
+  })
+
+  it('lists linked worktrees of a bare repo (main record is bare, skipped from the list)', async () => {
+    const runner = new InspectRunner()
+    runner.list = {
+      ...runner.list,
+      stdout:
+        'worktree /home/u/bare.git\nbare\n\n' +
+        'worktree /home/u/bare-wt-1\nHEAD abc\nbranch refs/heads/main\n\n' +
+        'worktree /home/u/bare-wt-2\nHEAD def\nbranch refs/heads/dev\n'
+    }
+
+    const res = await provider(runner, dirProbe(true)).listWorktrees('/home/u/bare.git')
+    expect(res).toEqual([
+      { path: '/home/u/bare-wt-1', branch: 'main' },
+      { path: '/home/u/bare-wt-2', branch: 'dev' }
+    ])
+  })
+
+  it('rejects on a non-zero git exit', async () => {
+    const runner = new InspectRunner()
+    runner.list = {
+      exitCode: 128,
+      signal: null,
+      stdout: '',
+      stderr: 'fatal: boom',
+      timedOut: false
+    }
+
+    await expect(provider(runner, dirProbe(true)).listWorktrees('/home/u/project')).rejects.toThrow(
+      /git worktree list failed/
+    )
+  })
+
+  it('rejects when the directory does not exist, without ever spawning git', async () => {
+    const runner = new InspectRunner()
+
+    await expect(provider(runner, dirProbe(false)).listWorktrees('/missing')).rejects.toThrow(
+      /project directory not found: \/missing/
+    )
+    expect(runner.calls).toEqual([])
+  })
+
+  it('rejects on a timeout', async () => {
+    const runner = new InspectRunner()
+    runner.list = { ...runner.list, timedOut: true }
+
+    await expect(provider(runner, dirProbe(true)).listWorktrees('/home/u/project')).rejects.toThrow(
+      /timed out/
+    )
+  })
+})

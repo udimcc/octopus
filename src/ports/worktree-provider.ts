@@ -10,6 +10,10 @@
  * `adopt` was added additively during V1 development (the modal grew a "From
  * Existing Repo" mode) — the freeze protects the not-yet-built V2 daemon
  * protocol, so widening the port before that binding exists is safe.
+ *
+ * `inspectRepo`/`listWorktrees` were added the same way, additively, for the
+ * "defined projects" feature: a project is validated/resolved via `inspectRepo`
+ * and its "From Existing Repo" picker is populated via `listWorktrees`.
  */
 
 import type { TaskId } from '../domain/ids'
@@ -56,6 +60,23 @@ export interface AdoptWorktreeResult {
   readonly branch?: string
 }
 
+export interface InspectRepoResult {
+  /**
+   * Canonical path of the repo's main record: its main checkout, or the bare
+   * directory for a bare repo (a linked worktree resolves here too).
+   */
+  readonly root: string
+  /** Auto-detected default branch (`origin/HEAD`, else the current branch); `undefined` if neither resolves. */
+  readonly defaultBranch?: string
+}
+
+export interface RepoWorktree {
+  /** Canonical path of this worktree (main checkout or a linked one). */
+  readonly path: string
+  /** Branch checked out there; `undefined` on detached HEAD. */
+  readonly branch?: string
+}
+
 export interface RemoveWorktreeRequest {
   readonly taskId: TaskId
   readonly taskName: string
@@ -97,4 +118,19 @@ export interface WorktreeProvider {
 
   /** True iff the worktree has uncommitted changes (`git status --porcelain`, §6.4). */
   isDirty(worktreePath: string): Promise<boolean>
+
+  /**
+   * Validate `dir` as a git repository and resolve it to its main record — its
+   * main checkout, or the bare directory for a bare repo — plus an auto-detected
+   * default branch, for "add project" (§6.4). Accepts a working tree, a linked
+   * worktree or a bare directory; rejects anything else.
+   */
+  inspectRepo(dir: string): Promise<InspectRepoResult>
+
+  /**
+   * The repo's worktrees (main checkout + linked ones), for the "From Existing
+   * Repo" picker once a project is chosen (§6.4). `root` is expected to already be
+   * a main record (as returned by `inspectRepo`). Rejects on a non-zero git exit.
+   */
+  listWorktrees(root: string): Promise<readonly RepoWorktree[]>
 }

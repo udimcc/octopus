@@ -315,4 +315,68 @@ d('worktree providers (integration, §6.4)', () => {
       expect(existsSync(res.path)).toBe(true)
     })
   })
+
+  describe('NativeGitWorktreeProvider.inspectRepo / listWorktrees (§6.4, real git)', () => {
+    it('resolves the repo root and falls back to the current branch (no origin/HEAD)', async () => {
+      const res = await nativeProvider().inspectRepo(repoDir)
+      expect(res.root).toBe(repoDir)
+      expect(res.defaultBranch).toBe('main')
+    })
+
+    it('resolves a real linked worktree dir back to the main repo root', async () => {
+      const taskId = asTaskId('abcdef0123456789')
+      const created = await nativeProvider().create({
+        taskId,
+        taskName: 'linked',
+        repoDir,
+        sourceBranch: 'main',
+        newBranch: 'linked'
+      })
+
+      const res = await nativeProvider().inspectRepo(created.path)
+      expect(res.root).toBe(repoDir)
+    })
+
+    it('rejects a non-git directory', async () => {
+      const plainDir = join(root, 'not-a-repo')
+      mkdirSync(plainDir)
+      await expect(nativeProvider().inspectRepo(plainDir)).rejects.toThrow(/not a git repository/)
+    })
+
+    it('lists the main checkout and a real linked worktree with their branches', async () => {
+      const taskId = asTaskId('abcdef0123456789')
+      const created = await nativeProvider().create({
+        taskId,
+        taskName: 'list-me',
+        repoDir,
+        sourceBranch: 'main',
+        newBranch: 'list/me'
+      })
+
+      const res = await nativeProvider().listWorktrees(repoDir)
+      expect(res).toEqual([
+        { path: repoDir, branch: 'main' },
+        { path: created.path, branch: 'list/me' }
+      ])
+    })
+
+    it('resolves the default branch from origin/HEAD, stripped of the origin/ prefix', async () => {
+      const bareDir = join(root, 'origin.git')
+      git(['init', '--bare', '-q', bareDir], root)
+      // Same hooks neutralization as initRepo (~line 55) — a bare repo can still
+      // trigger server-side hooks (e.g. pre-receive) on push.
+      git(['config', 'core.hooksPath', join(root, 'nohooks')], bareDir)
+      git(['remote', 'add', 'origin', bareDir], repoDir)
+      git(['push', '-q', 'origin', 'main'], repoDir)
+      // Sets refs/remotes/origin/HEAD locally without needing the remote to push back.
+      git(['remote', 'set-head', 'origin', 'main'], repoDir)
+      // Move the checked-out branch away from origin/HEAD so a fallback to the
+      // current branch can't accidentally produce the same answer ('main') and
+      // mask a broken symbolic-ref path.
+      git(['checkout', '-q', '-b', 'feature/wip'], repoDir)
+
+      const res = await nativeProvider().inspectRepo(repoDir)
+      expect(res.defaultBranch).toBe('main')
+    })
+  })
 })

@@ -41,6 +41,10 @@ import { createWindow } from './use-cases/create-window'
 import { closeWindow } from './use-cases/close-window'
 import { moveSessionToWindow } from './use-cases/move-session-to-window'
 import { createWindowWithSession } from './use-cases/create-window-with-session'
+import { addProject } from './use-cases/add-project'
+import { removeProject } from './use-cases/remove-project'
+import { setProjectDefaultBranch } from './use-cases/set-project-default-branch'
+import { seedProjects } from './use-cases/seed-projects'
 
 const OK: CommandResult = { ok: true }
 
@@ -156,6 +160,18 @@ export class CommandLoop {
         return OK
       case 'createWindowWithSession':
         return { ok: true, windowId: createWindowWithSession(this.deps, command.input) }
+      case 'addProject':
+        return addProject(this.deps, command.input)
+      case 'removeProject':
+        return removeProject(this.deps, command.input)
+      case 'setProjectDefaultBranch':
+        return setProjectDefaultBranch(this.deps, command.input)
+      case 'seedProjects':
+        // Fire-and-forget from the composition root's perspective, but still
+        // serialized through this loop (§6.3) so it can't race `addProject`/
+        // `removeProject` mutating the same `settings.json` key.
+        await seedProjects(this.deps)
+        return OK
       default: {
         // Exhaustiveness: a new command kind must be handled here.
         const _never: never = command

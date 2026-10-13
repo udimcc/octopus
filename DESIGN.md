@@ -41,7 +41,7 @@ sessions while **all sessions keep running in the background**.
 | Worktree provisioning | **Repo-local script if present, else native git.** If `<repoDir>/create_worktree.sh` (resp. `delete_worktree.sh`) exists, Octopus runs it (script owns the location); otherwise Octopus provisions the worktree itself via `git worktree`. Detected **per task** on each create/delete. | §6.4, §12.4 |
 | Worktree location | **Octopus-owned by default**, under a configurable base dir `worktree.location` (default `~/octopus_repos/`). A repo-local create script may return any location instead; Octopus stores the path verbatim. `repo_root` stored per task, so multi-repo works with no special support. | §6.3, §6.4, §12.4 |
 | State-signal injection (Claude hooks + statusline) | **Opt-out auto-injection on startup** (`~/.claude/settings.json` merged, never clobbered — `#octopus-state`-tagged hook entries + a statusline that chains to the user's original). Lands in phase 2. | §9.2, §12.1 |
-| Task-creation inputs | **Modal collects name, repo directory (native picker), source branch, new branch** (new-branch prefilled with a slug). All are passed to native git / the repo-local create script. | §5.4, §12.3 |
+| Task-creation inputs | **Modal collects name + a configured project (left Projects sidebar, `settings.json#projects`), source branch, new branch** (new-branch prefilled with a slug; source branch prefilled from the project's default branch). There is no per-tab native directory picker; a repo directory only enters a project via "+ Add project". All are passed to native git / the repo-local create script. | §5.4, §6.3, §12.3 |
 | Single vs multiple windows | **Multi-window, phase 1.5.** The **main** window owns the progress panel; **secondary** windows are session-only. All windows sync on the single `activeTaskId` (switch a task → sessions switch everywhere). Session→window is an opaque `windowId` on `Session` (default `MAIN_WINDOW_ID`); pixel bounds live in persistence only, never the domain. Windows + session assignments are restored on relaunch. | §3.7, §5.6, §6.7, §10 |
 
 ---
@@ -407,19 +407,40 @@ restore complexity). The serialize-and-replay path is kept available for a futur
   normal active-tab background) to show which session is now focused. It is a store flag (`focusFlashOn`,
   ended by a `FOCUS_FLASH_MS` timer in `App`), not a status indicator. It does not play on a same-window
   switch, on a window's first appearance, or under `prefers-reduced-motion`.
-- **New Task:** modal with three tabs and an info button (top-right) whose hover/focus tooltip explains the
-  active tab's delete behavior. **From New Worktree** (default): four fields — **name**, **repo directory**
-  (a native OS directory picker via a `dialog:pickDirectory` IPC), **source branch**, **new branch**
-  (prefilled with a slug from the name, editable); Octopus provisions a fresh worktree (`managed: true`).
-  **From Existing Repo**: **name** + an existing **repository directory** Octopus adopts as-is (git detects
-  its owning repo + branch; the repo's main checkout is allowed), stored `managed: false`. **No Repo**:
-  **name** only — a repo-less task (`repoLess: true`, no worktree) for ad-hoc/scratch work (checking mounts,
-  `less` on a log, editing a config file); it is created **synchronously** (no script, no git, nothing on
-  disk) and becomes `Ready` at once, and its sessions open at the **home directory** with no `cd` (§6.1,
-  §6.2). "Create Task" → for the two repo tabs, a spinner while the worktree is provisioned/adopted
-  (repo-local script or native git, §6.4) → on success new task becomes active with empty state; on failure
-  show stderr in a red block + Retry + toast. In the progress panel's grouped view, repo-less tasks form
-  their own **"No Repository"** group (ordered after all repo groups).
+- **New Task:** modal (~640px wide) with three tabs and an info button (top-right) whose hover/focus tooltip
+  explains the active tab's delete behavior. A left **Projects** sidebar (configured repos, kept in
+  `settings.json#projects`, §6.3) appears on **From New Worktree** and **From Existing Repo** and is hidden
+  on **No Repo**; nothing is preselected when the modal opens, so Create stays disabled on the repo tabs
+  until a project is picked. **From New Worktree** (default): **name** + the sidebar's selected project
+  (its path becomes `repoDir`) + **source branch** (prefilled from the project's `defaultBranch` — for THIS
+  task only; editing it never writes back, and switching to a different project re-prefills it; re-clicking the selected one keeps the draft) + **new
+  branch** (prefilled with a slug from the name, editable); Octopus provisions a fresh worktree
+  (`managed: true`). **From Existing Repo**: **name** + the sidebar's selected project, whose main checkout
+  and linked worktrees (`projects.listWorktrees` → `git worktree list`, §6.4) are offered as a radio list;
+  a worktree already used by another task is disabled and labelled "in use by \<task name\>", and the
+  picked path (cleared whenever the project changes) becomes `worktreeDir`. Octopus adopts it as-is
+  (`managed: false`). **No Repo**: **name** only — a repo-less task (`repoLess: true`, no worktree) for
+  ad-hoc/scratch work (checking mounts, `less` on a log, editing a config file); it is created
+  **synchronously** (no script, no git, nothing on disk) and becomes `Ready` at once, and its sessions open
+  at the **home directory** with no `cd` (§6.1, §6.2). "Create Task" → for the two repo tabs, a spinner
+  while the worktree is provisioned/adopted (repo-local script or native git, §6.4) → on success new task
+  becomes active with empty state; on failure show stderr in a red block + Retry + toast. In the progress
+  panel's grouped view, repo-less tasks form their own **"No Repository"** group (ordered after all repo
+  groups).
+- **Projects sidebar:** "+ Add project" opens the native OS folder picker directly (`dialog:pickDirectory`;
+  cancel is a no-op) and resolves the pick through `inspectRepo` (§6.4) — the folder must be inside a git
+  repository (otherwise an inline error); a picked **linked worktree** resolves to its **main checkout**;
+  picking a folder that already matches a configured project just **selects it** instead of duplicating.
+  The default branch is edited inline on the row (double-click, reusing `EditableLabel`) and saved to
+  `settings.json` without touching any task's in-progress "Source branch" draft. Removing a project turns
+  the row's 🗑 into an in-row "Remove? ✓ ✗" confirm and is **blocked while any task belongs to the
+  project**: the control is disabled with an "in use by N task(s)" tooltip, and main re-checks and rejects a
+  stale click with an inline error (the sidebar refetches either way). A task belongs to a project
+  **implicitly** — its canonical `provisionedBy.repoRoot` equals the project's path (§6.4); tasks store no
+  project id, so `CreateTaskInput`/`createTask` are unchanged. Known edge: an older "From New Worktree" task
+  whose stored `repoRoot` was itself a linked worktree (not the main checkout) is invisible to this match —
+  removing its project is never blocked by it — but removing a project never touches tasks either way, so
+  the impact is cosmetic.
 - **New Session:** dropdown populated from the session-type registry (filtered by `availableFromVersion ≤
   currentVersion`). Terminal creates immediately; Jenkins (phase 3) opens a small config modal.
 - **Delete Task:** confirm dialog whose body reflects ownership (§6.4) — a managed worktree "closes all
@@ -606,6 +627,57 @@ back-fill `UPDATE tasks SET managed = 0 WHERE base_ref IS NULL` — historically
 `base_ref` null, so this marks them unmanaged (left on disk on delete, §6.4) while every provisioned row
 keeps the `DEFAULT 1`.
 
+**Configured projects (`settings.json#projects`, §5.4).** Beside `worktree.location`, `settings.json` gains
+a `projects` array of `{ path, defaultBranch? }`: `path` is always a repo's **main record** — its main
+checkout, or the bare directory for a bare repo — never a linked worktree. The key's *absence* is distinct
+from `[]` — `undefined` means "never seeded", `[]` means
+the user removed every project on purpose — so the store never defaults it to `[]` upstream of the seed
+check below. The tolerant parser (`pickProjects`) validates each entry independently rather than discarding
+the whole list over one typo: an entry survives only if `path` is a string that, once trimmed, is a
+non-empty **absolute** path (`node:path`'s `isAbsolute`, which also covers a Windows drive/UNC path); a
+`defaultBranch` that isn't a non-empty string is dropped from just that field, not the whole entry — a bad
+`defaultBranch` never disqualifies an otherwise-valid project. `updateSettings` strips any `projects` key
+from a generic patch before saving, so the only way to change the list is the dedicated `addProject` /
+`removeProject` / `setProjectDefaultBranch` commands (§5.4) — a stray key riding along the renderer's raw
+patch object can never bypass that validation.
+
+**Seeding.** A one-shot, best-effort `seedProjects` command is dispatched through the single-writer command
+loop right after boot (composition root, once the `CommandLoop` is built), fire-and-forget — it never blocks
+boot and only logs a warning on failure. It runs **only** while `projects` is still absent AND the settings
+file loaded cleanly: `SettingsStore.loadFailed()` is `true` when settings.json exists but could not be read
+or parsed — distinct from `ENOENT`, which means "never configured" and is not a failure — and seeding is
+skipped whenever it's `true`, because seeding over a genuinely corrupt file would silently replace it with
+defaults-plus-seed instead of leaving it for the user to recover by hand. Otherwise it collects the distinct
+repo roots of existing non-repo-less tasks, resolves each with `inspectRepo` (silently skipping any that
+reject — a moved or deleted repo), and dedupes on the **canonical** resolved root so a task whose stored
+`repoRoot` was a linked worktree collapses into its main checkout. It saves **nothing** when there are no
+candidates (no tasks yet, every `inspectRepo` call rejected, or the load failed), so a fresh, unconfigured
+install still never creates `settings.json` — the key stays absent and a later boot gets another chance to
+seed. None of this needs a DB migration: projects live entirely in `settings.json`.
+
+**Corrupt-file backup.** `JsonSettingsStore.save()` re-reads settings.json from disk right before writing
+(not the cached in-memory settings, which could be stale relative to a hand edit made since the last
+`load()`) and merges the patch over whatever that fresh read yields, by case: if the file still parses as a
+plain object (including a user's hand repair of a previously-corrupt file made since the last `load()`),
+the patch merges over that fresh parse; if what's on disk isn't valid JSON / isn't a plain object — a
+top-level array counts as corrupt too — it's copied to `settings.json.corrupt-<epoch-ms>` with a warning
+logged, *then* the patch merges over `DEFAULT_SETTINGS` and the new settings overwrite the corrupt file; if
+the file is simply absent (`ENOENT`), the patch merges over the in-memory cache, since there's nothing fresh
+on disk to prefer; any other read error (e.g. `EACCES`) means the file exists but couldn't be read to back
+up before the impending overwrite, which is itself logged with a warning, and the patch merges over the
+in-memory cache. This runs ahead of every write path — the boot seed, `addProject`/`removeProject`/
+`setProjectDefaultBranch`, and a plain settings-pane save — so none of them can silently destroy a user's
+broken-but-recoverable hand edit, or clobber a hand repair with defaults-plus-patch. A failed backup attempt
+is itself only logged, not fatal: refusing to save would leave the broken file broken AND block the user's
+current edit.
+
+**`terminal.stateDetection`/`terminal.injectClaudeHooks` round-trip (bug fix).** `mergeSettings` previously
+read every other `terminal` key but not these two, so a hand-set value in settings.json was silently
+discarded on every parse and any save deleted the keys from the file outright — both read sites (§9, §9.2)
+treat an unset value as "on" via the `!== false` convention, so a user's opt-out of hooks/state-detection
+never actually took effect. Fixed by parsing both with the same tolerant per-field idiom as the rest of
+`terminal`.
+
 **Windows persistence (phase 1.5, §3.7, §6.7).** `WorkspacePersistence` gains `loadWindows/upsertWindow/
 deleteWindow`. Window **bounds** are saved (debounced) on OS move/resize; the session's `window_id` is
 saved via the normal `upsertSession`. **Restore:** at boot, main creates a `BrowserWindow` for every
@@ -670,6 +742,32 @@ worktree is `managed: false`, `deleteTask` **skips the `remove` call entirely** 
 worktree is `managed: true` and deletes exactly as before. The dirty gate (step 2) still runs for adopted
 repos so the user is warned about uncommitted changes, even though nothing is removed.
 
+**Project inspection (`inspectRepo`/`listWorktrees`) — defined projects (§5.4, §6.3).** Added to the port
+additively, the same way `adopt` was: adding methods is additive, and the freeze (§10) that matters is the
+not-yet-built V2 daemon protocol binding — since that binding doesn't exist yet, widening the port now is
+safe (`src/ports/worktree-provider.ts`). `inspectRepo(dir)` backs "+ Add project": it runs the same `git
+worktree list --porcelain` as `adopt` and rejects if `dir` isn't a git repository (working tree, linked
+worktree, or bare directory), otherwise resolving to the **main record** — the first porcelain record
+(`parseMainWorktree`), unconditionally and deliberately NOT filtered through `parseWorktreeList`, because
+git always lists the repo's main record first, and for a **bare** repo that record IS the bare directory
+itself regardless of whether the bare repo additionally has any linked worktrees of its own; `adopt`
+resolves its `repoRoot` the same way, so adopting a bare repo's bare directory itself also works correctly
+— plus an auto-detected default branch: `origin/HEAD`
+(`symbolic-ref refs/remotes/origin/HEAD`, the full ref name so a local branch literally named `origin/<b>`
+can't be mistaken for the prefix, with `refs/remotes/origin/` stripped) if that remote-tracking ref exists,
+else the current branch (`rev-parse --abbrev-ref HEAD`, ignoring a detached `HEAD`), else `undefined` if
+neither resolves. Both git calls get a fixed 10 s timeout (`INSPECT_TIMEOUT_MS`) — unlike `create`'s
+user-configurable `worktreeCreateTimeoutMs`, these run inside the single-writer command loop (boot-time
+`seedProjects`, on-demand `addProject`), so a hung `git` must not stall it. A missing directory is checked
+upfront and rejected as `project directory not found: <dir>` rather than surfacing as a confusing `spawn git
+ENOENT`. `listWorktrees(root)` reuses `parseWorktreeList`, which — unlike `parseMainWorktree` — filters out
+**bare** records (no checkout to adopt) and **prunable** ones (the linked worktree's directory is already
+gone from disk), to list the main checkout plus every usable linked worktree for the "From Existing Repo"
+picker once a project is chosen; it rejects on a non-zero git exit or a missing directory. Both are
+provider-neutral git detection, like `adopt`/`isDirty`: `SelectingWorktreeProvider` always delegates them to
+its native delegate regardless of whether the repo ships scripts, and `ScriptWorktreeProvider` rejects both
+("should never be called") since it is never routed to for these.
+
 ### 6.5 IPC protocol
 
 **Phase 1 transport:** Electron `contextBridge` + `ipcMain`/`ipcRenderer`, all behind the typed `octopusAPI`.
@@ -680,9 +778,11 @@ carry it over a Unix socket unchanged.
 ```
 Commands (UI→backend): createTask{name,repoDir,sourceBranch,newBranch}, deleteTask{force?},
   renameTask, reorderTask, createSession, closeSession, switchSession, focusSession (persist-only, §3.7),
-  renameSession, reorderSession,
-  writeToPty, resizePty, getState, updateSettings
-Queries (UI→backend, no domain mutation): pickDirectory (native OS folder picker for the New-Task modal)
+  renameSession, reorderSession, addProject{dir}, removeProject{path},
+  setProjectDefaultBranch{path,defaultBranch?}, writeToPty, resizePty, getState, updateSettings
+Queries (UI→backend, no domain mutation): pickDirectory (native OS folder picker for the New-Task modal),
+  listProjects, listProjectWorktrees{projectPath} (§6.4, propagates a rejection instead of the command-loop's
+  `{ ok: false }`)
 Events (backend→UI):  ptyData, sessionCreated, sessionExited, sessionClosed,
   taskCreated, taskDeleted, taskRenamed, taskStale, scriptProgress, scriptError,
   sessionStateChanged (phase 2), taskStateChanged (phase 2), error
@@ -1332,10 +1432,11 @@ These were reviewed and decided; recorded here so implementation doesn't re-liti
    kept clean enough that swapping in a tmux/daemon backend is drop-in. Pull it earlier only if long-running
    agents surviving crashes becomes a priority; tmux is the recommended backend (persistence + re-attach for
    free).
-3. **Task creation collects four inputs via a modal.** Name, repo directory (native OS directory picker),
-   source branch, and new branch (prefilled with a slug from the name, e.g. `feature/add_feature_1`; editable).
-   All are passed to native git / the repo-local create script. This replaces the earlier "name + optional
-   branch, script owns everything" decision: making the repo, source, and target explicit is what makes
+3. **Task creation collects four inputs via a modal.** Name, repo directory, source branch, and new branch
+   (prefilled with a slug from the name, e.g. `feature/add_feature_1`; editable). The repo directory now
+   comes from a configured project rather than a per-task native directory picker (§5.4, §6.3). All are
+   passed to native git / the repo-local create script. This replaces the earlier "name + optional branch,
+   script owns everything" decision: making the repo, source, and target explicit is what makes
    provisioning clear and self-service. No branch-naming policy is baked in beyond the editable prefill.
 4. **Octopus owns worktree provisioning by default, with a repo-local script escape hatch.** When a repo has
    no `create_worktree.sh`/`delete_worktree.sh`, Octopus creates/removes the worktree natively via `git`,

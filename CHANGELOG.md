@@ -8,6 +8,19 @@ All notable changes to Octopus are documented here. The format is based on
 
 ### Added
 
+- **Defined projects in the New-Task modal.** A left Projects sidebar on the "From New
+  Worktree" and "From Existing Repo" tabs replaces the per-task directory picker. "+ Add
+  project" opens the folder picker once per repo — a linked worktree resolves to its
+  main checkout, and picking a repo you've already added just selects it; default
+  branches are editable inline, and a project can be removed once no task uses it
+  anymore. "From New Worktree" fills in the task's repo path (plus an auto-detected
+  default branch) from the picked project. "From Existing Repo" now picks a worktree
+  from the project's own `git worktree list` (its main checkout or a linked worktree)
+  instead of browsing to any directory — a worktree already in use by another task is
+  shown disabled — so it can only adopt a worktree that belongs to a configured project.
+  The first launch after upgrading seeds one project per repository already in use by an
+  existing task, so an existing setup starts with a populated list instead of an empty
+  one.
 - **Focus flash on the session tab.** When a window gains focus (the session shortcut
   walking into another window, a mouse click into it, or Alt+Tab), its marked tab fades
   from a strong accent tint to the normal active-tab background over 1 second, to show
@@ -70,6 +83,23 @@ All notable changes to Octopus are documented here. The format is based on
   `XAUTHORITY`, `DBUS_SESSION_BUS_ADDRESS` and `SSH_AUTH_SOCK`. Those vars are now
   overridden per spawn from the app's (current) environment. Already-running shells keep
   the env they were forked with — a process's environment cannot be rewritten.
+- **A broken settings.json could be silently destroyed by the next save.**
+  `JsonSettingsStore.save()` now re-reads the file on disk right before writing: if
+  what's there isn't valid JSON or isn't an object, it's copied to
+  `settings.json.corrupt-<epoch-ms>` and a warning is logged before the new settings
+  overwrite it. This runs ahead of every write path — the boot project seed, add/remove
+  project, a default-branch edit, and a plain settings-pane save — so a hand edit broken
+  by a typo is never destroyed outright.
+- **`terminal.stateDetection`/`terminal.injectClaudeHooks` settings were silently
+  dropped, so neither opt-out ever took effect.** A hand-set value for either in
+  `settings.json` was discarded on every parse, and any save deleted both keys from the
+  file outright — `mergeSettings` read every other `terminal` setting but not these two.
+  Unchecking "Detect session status" in Settings now actually takes effect: newly
+  created bash/zsh sessions launch as a plain login shell (no OSC 133 rcfile). Claude-session
+  status is unaffected by it — that is controlled by `terminal.injectClaudeHooks`. `terminal.injectClaudeHooks` (hand-set in
+  `settings.json`; there's no Settings-pane toggle for it) now likewise takes effect
+  when set to `false`: Octopus's hook config is no longer merged into Claude's own
+  settings at boot, and the Claude-state watcher doesn't start.
 
 ### Changed
 

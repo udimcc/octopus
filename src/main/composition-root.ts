@@ -14,7 +14,11 @@
  *      worktree → Stale, I14).
  *   5. `new CommandLoop(deps)`; late-bind `deps.onRuntimeExit` to route a runtime's
  *      spontaneous exit back through the loop as `handleRuntimeExit` (single-writer,
- *      §6.6).
+ *      §6.6). Also dispatch the one-shot `seedProjects` command here, fire-and-forget
+ *      (§6.3): it is enqueued right after the loop is built and the late-bound sinks
+ *      above are wired, so it runs after hydrate/reconcile (step 4) and before IPC
+ *      registration (step 6) — a UI-triggered `addProject`/`removeProject` can only
+ *      reach the loop once IPC handlers exist, so it always waits behind this seed.
  *   6. Create the window registry (event router) + register IPC handlers.
  *
  * Returns an `AppContext` the entry point (`index.ts`/`window.ts`) uses to open a
@@ -335,6 +339,25 @@ export function bootstrap(): AppContext {
       input: { sessionId, state, meta }
     })
   }
+
+  // One-shot project seed (§6.3): best-effort, non-blocking, fire-and-forget.
+  // Dispatched here — after hydrate/reconcile and the late-bound sinks above
+  // (steps 4-5), before IPC registration (step 6) and before `warmupSessions()`
+  // runs — so a UI-triggered `addProject`/`removeProject` necessarily queues
+  // behind it (its IPC handler doesn't exist yet to even enqueue one earlier).
+  // It reads `deps.workspace.tasks()` as populated by `Workspace.hydrate` +
+  // `reconcileOnStartup`; reconciliation only flips a missing-worktree task's
+  // lifecycle to `Stale`, it doesn't remove it from `tasks()`, so this does NOT
+  // see a filtered-down "reconciled task set" — just the hydrated one.
+  // `CommandLoop.dispatch` never rejects (every error inside a use case, or
+  // thrown directly, becomes a `{ ok: false, error }` result — see
+  // `command-loop.ts`'s `execute()`), so only that branch is reachable; no
+  // `.catch` is needed here.
+  void commandLoop.dispatch({ kind: 'seedProjects', input: {} }).then((result) => {
+    if (!result.ok) {
+      console.warn(`[octopus] project seed failed: ${result.error}`)
+    }
+  })
 
   // Claude state watcher (§9.3, §9.6): the SOLE source of session-state. The python
   // recorder (wired into settings.json above) appends every Claude hook to

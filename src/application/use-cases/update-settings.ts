@@ -8,13 +8,23 @@
  *
  * The application `SettingsPatch` is structurally the port's `SettingsPatch`, so
  * it is forwarded directly (both are transport-agnostic, application-layer types).
+ *
+ * The application `SettingsPatch` (`commands.ts`) deliberately has no `projects`
+ * field — projects change only through the dedicated, validated `addProject` /
+ * `removeProject` / `setProjectDefaultBranch` commands (§6.3). But `main`'s
+ * `updateSettings` IPC handler forwards the renderer's raw patch object as-is, so
+ * at RUNTIME a stray `projects` key could still ride along despite the type.
+ * Strip it defensively before saving, so the generic settings path can never be
+ * used to bypass that validation.
  */
 
 import type { AppDependencies } from '../dependencies'
 import type { SettingsPatch } from '../commands'
 
 export function updateSettings(deps: AppDependencies, patch: SettingsPatch): void {
-  const next = deps.settings.save(patch)
+  const safePatch = { ...patch } as SettingsPatch & { projects?: unknown }
+  delete safePatch.projects
+  const next = deps.settings.save(safePatch as SettingsPatch)
   // Mirror the default session type into the workspace config so subsequent
   // `openSession` calls pick it up without reloading the store (§5.4).
   deps.workspace.updateConfig({ defaultSessionTypeId: next.defaultSessionTypeId })

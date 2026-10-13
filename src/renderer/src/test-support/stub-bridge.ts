@@ -53,6 +53,12 @@ export function makeStubBridge(options?: {
   // Always resolve to a Promise so callers can `.then(...)` even when a test's
   // custom ack returns a plain object.
   const ack = vi.fn(() => Promise.resolve(ackImpl()))
+  // Separate mocks (not the shared `ack` tasks.create/etc. use) so a test can
+  // assert on one project mutation's call count/args without it being muddied
+  // by other command dispatches that happen to share the same default ack.
+  const projectAdd = vi.fn(() => Promise.resolve(ackImpl()))
+  const projectRemove = vi.fn(() => Promise.resolve(ackImpl()))
+  const projectSetDefaultBranch = vi.fn(() => Promise.resolve(ackImpl()))
   const state = options?.state ?? EMPTY_STATE
   const windowId = options?.windowId ?? state.thisWindowId
 
@@ -85,6 +91,13 @@ export function makeStubBridge(options?: {
       getVersion: vi.fn().mockResolvedValue('0.0.0-test')
     },
     dialog: { pickDirectory: vi.fn().mockResolvedValue(undefined) },
+    projects: {
+      list: vi.fn().mockResolvedValue([]),
+      add: projectAdd,
+      remove: projectRemove,
+      setDefaultBranch: projectSetDefaultBranch,
+      listWorktrees: vi.fn().mockResolvedValue([])
+    },
     clipboard: {
       read: vi.fn().mockResolvedValue(''),
       write: vi.fn().mockResolvedValue(undefined)

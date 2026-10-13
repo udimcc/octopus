@@ -35,7 +35,9 @@ import type {
   CreateWorktreeRequest,
   CreateWorktreeResult,
   AdoptWorktreeResult,
-  RemoveWorktreeRequest
+  RemoveWorktreeRequest,
+  InspectRepoResult,
+  RepoWorktree
 } from '../../ports/worktree-provider'
 import { validateWorktreePath, assertSafeToDelete, type PathProbe } from './path-safety'
 import { fsPathProbe } from './fs-path-probe'
@@ -133,5 +135,22 @@ export class ScriptWorktreeProvider implements WorktreeProvider {
 
   isDirty(worktreePath: string): Promise<boolean> {
     return gitIsDirty(this.runner, worktreePath)
+  }
+
+  /**
+   * Repo inspection is git detection, independent of any repo-local script —
+   * `SelectingWorktreeProvider` always routes it to the native provider (like
+   * `adopt`/`isDirty`), so this is never reached. Present only to satisfy the port.
+   */
+  inspectRepo(): Promise<InspectRepoResult> {
+    return Promise.reject(new Error('ScriptWorktreeProvider.inspectRepo should never be called'))
+  }
+
+  /**
+   * Same rationale as `inspectRepo` — always routed to native. Present only to
+   * satisfy the port.
+   */
+  listWorktrees(): Promise<readonly RepoWorktree[]> {
+    return Promise.reject(new Error('ScriptWorktreeProvider.listWorktrees should never be called'))
   }
 }

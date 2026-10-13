@@ -24,7 +24,9 @@ import type {
   CreateWorktreeResult,
   AdoptWorktreeRequest,
   AdoptWorktreeResult,
-  RemoveWorktreeRequest
+  RemoveWorktreeRequest,
+  InspectRepoResult,
+  RepoWorktree
 } from '../../ports/worktree-provider'
 import { CREATE_SCRIPT_NAME, DELETE_SCRIPT_NAME } from './script-worktree-provider'
 
@@ -77,5 +79,15 @@ export class SelectingWorktreeProvider implements WorktreeProvider {
   isDirty(worktreePath: string): Promise<boolean> {
     // Provider-neutral (`git status --porcelain`); either delegate is equivalent.
     return this.native.isDirty(worktreePath)
+  }
+
+  inspectRepo(dir: string): Promise<InspectRepoResult> {
+    // Provider-neutral git detection (like `adopt`/`isDirty`): native always owns it.
+    return this.native.inspectRepo(dir)
+  }
+
+  listWorktrees(root: string): Promise<readonly RepoWorktree[]> {
+    // Provider-neutral git detection (like `adopt`/`isDirty`): native always owns it.
+    return this.native.listWorktrees(root)
   }
 }

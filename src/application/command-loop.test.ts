@@ -5,7 +5,9 @@ import type {
   WorktreeProvider,
   CreateWorktreeRequest,
   CreateWorktreeResult,
-  AdoptWorktreeResult
+  AdoptWorktreeResult,
+  InspectRepoResult,
+  RepoWorktree
 } from '../ports/worktree-provider'
 import { makeDeps, taskInput } from './use-cases/test-fakes'
 import { asTaskId, asSessionId, asTypeId } from '../domain/ids'
@@ -45,6 +47,12 @@ class GatedWorktreeProvider implements WorktreeProvider {
   async remove(): Promise<void> {}
   async isDirty(): Promise<boolean> {
     return false
+  }
+  async inspectRepo(dir: string): Promise<InspectRepoResult> {
+    return { root: dir }
+  }
+  async listWorktrees(): Promise<readonly RepoWorktree[]> {
+    return []
   }
 
   /** Release the i-th started create (0-based). */
@@ -198,5 +206,107 @@ describe('startTaskSessions command (Bug: status only shows on focus — §6.2, 
     // The active pointer did NOT move (unlike switchTask) — no activeTaskChanged.
     expect(workspace.activeTaskId).toBe(asTaskId('task-1'))
     expect(bus.ofType('activeTaskChanged')).toEqual([])
+  })
+})
+
+describe('project commands dispatch (§5.4, §6.3)', () => {
+  it('addProject resolves via inspectRepo, saves, and returns { ok: true, project }', async () => {
+    const fd = makeDeps()
+    const loop = new CommandLoop(fd.deps)
+    fd.worktrees.inspectResults.set('/picked', { root: '/picked', defaultBranch: 'main' })
+
+    const res = await loop.dispatch({ kind: 'addProject', input: { dir: '/picked' } })
+
+    expect(res).toEqual({ ok: true, project: { path: '/picked', defaultBranch: 'main' } })
+    expect(fd.settings.load().projects).toEqual([{ path: '/picked', defaultBranch: 'main' }])
+  })
+
+  it('removeProject returns the use case’s own CommandResult (blocked by a matching task)', async () => {
+    const fd = makeDeps({ snapshot: twoTaskSnapshot() })
+    const loop = new CommandLoop(fd.deps)
+    fd.settings.save({ projects: [{ path: '/repo' }] })
+
+    const res = await loop.dispatch({ kind: 'removeProject', input: { path: '/repo' } })
+
+    expect(res.ok).toBe(false)
+    expect(res.error).toMatch(/2 tasks; delete them first/)
+  })
+
+  it('removeProject succeeds and persists the filtered list when no task matches', async () => {
+    const fd = makeDeps()
+    const loop = new CommandLoop(fd.deps)
+    fd.settings.save({ projects: [{ path: '/repo' }] })
+
+    const res = await loop.dispatch({ kind: 'removeProject', input: { path: '/repo' } })
+
+    expect(res).toEqual({ ok: true })
+    expect(fd.settings.load().projects).toEqual([])
+  })
+
+  it('setProjectDefaultBranch dispatches and persists the new branch', async () => {
+    const fd = makeDeps()
+    const loop = new CommandLoop(fd.deps)
+    fd.settings.save({ projects: [{ path: '/repo' }] })
+
+    const res = await loop.dispatch({
+      kind: 'setProjectDefaultBranch',
+      input: { path: '/repo', defaultBranch: 'develop' }
+    })
+
+    expect(res).toEqual({ ok: true })
+    expect(fd.settings.load().projects).toEqual([{ path: '/repo', defaultBranch: 'develop' }])
+  })
+
+  it('seedProjects dispatches and resolves ok even when there is nothing to seed', async () => {
+    const fd = makeDeps()
+    const loop = new CommandLoop(fd.deps)
+
+    const res = await loop.dispatch({ kind: 'seedProjects', input: {} })
+
+    expect(res).toEqual({ ok: true })
+    expect(fd.settings.load().projects).toBeUndefined()
+  })
+
+  it('addProject: an inspectRepo rejection (non-domain error) resolves { ok: false }, never rejects', async () => {
+    const fd = makeDeps()
+    const loop = new CommandLoop(fd.deps)
+    fd.worktrees.inspectRejects.add('/nope')
+
+    const res = await loop.dispatch({ kind: 'addProject', input: { dir: '/nope' } })
+
+    expect(res.ok).toBe(false)
+    expect(res.error).toMatch(/not a git repository/)
+    expect(fd.settings.load().projects).toBeUndefined()
+    expect(fd.settings.saveCalls).toEqual([])
+  })
+
+  it('a seedProjects dispatch fully completes before a subsequently dispatched addProject starts (single-writer FIFO)', async () => {
+    const fd = makeDeps({ snapshot: twoTaskSnapshot() })
+    const loop = new CommandLoop(fd.deps)
+    const taskRepoRoot = fd.deps.workspace.tasks()[0].worktree?.provisionedBy.repoRoot
+    if (taskRepoRoot) {
+      fd.worktrees.inspectResults.set(taskRepoRoot, { root: taskRepoRoot })
+    }
+    const release = fd.worktrees.pauseInspect()
+
+    const seedPromise = loop.dispatch({ kind: 'seedProjects', input: {} })
+    const addPromise = loop.dispatch({ kind: 'addProject', input: { dir: '/picked' } })
+
+    // Let any synchronous/microtask work from both dispatches settle. addProject's
+    // inspectRepo('/picked') must NOT have run yet: it is queued behind seedProjects,
+    // which is itself still blocked on the gated inspectRepo(taskRepoRoot). If
+    // command-loop.ts ever stopped awaiting a dispatch before chaining the next one,
+    // this would already include '/picked'.
+    await tick()
+    expect(fd.worktrees.inspectCalls).not.toContain('/picked')
+
+    release()
+    await Promise.all([seedPromise, addPromise])
+
+    const paths = (fd.settings.load().projects ?? []).map((p) => p.path)
+    expect(paths).toContain('/picked')
+    if (taskRepoRoot) {
+      expect(paths).toContain(taskRepoRoot)
+    }
   })
 })

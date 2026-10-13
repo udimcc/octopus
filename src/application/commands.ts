@@ -13,6 +13,7 @@ import type { TaskId, SessionId, TypeId, WindowId } from '../domain/ids'
 import type { SessionConfig } from '../domain/session-config'
 import type { SessionState } from '../domain/state'
 import type { StateChangeMeta } from '../ports/session-runtime'
+import type { ProjectSettings } from '../ports/settings-store'
 
 /** Provision a brand-new worktree (New-Task modal "From New Worktree", §5.4). */
 export interface CreateTaskFromNewInput {
@@ -219,6 +220,38 @@ export interface CreateWindowWithSessionInput {
   readonly bounds?: WindowBounds
 }
 
+// ── Projects (§5.4, §6.3, §6.4) ───────────────────────────────────────────────
+
+/** Validate and add a project from a picked directory ("+ Add project", §5.4). */
+export interface AddProjectInput {
+  readonly dir: string
+}
+
+/**
+ * Remove a project (project row's 🗑). Rejected (`ok: false`, not thrown) while
+ * any task still belongs to it (§6.3) — the UI disables the control, but this is
+ * the authoritative re-check for a stale modal.
+ */
+export interface RemoveProjectInput {
+  readonly path: string
+}
+
+/**
+ * Set, or with a trimmed-empty value clear, a project's auto-detected default
+ * branch (inline edit on the project row, §5.4).
+ */
+export interface SetProjectDefaultBranchInput {
+  readonly path: string
+  readonly defaultBranch?: string
+}
+
+/**
+ * No parameters — kept as a named type (rather than inlining `{}` in the
+ * `Command` union below) for symmetry with every other command's `{ kind, input }`
+ * shape. Dispatched once at boot by the composition root (§6.3).
+ */
+export type SeedProjectsInput = Record<string, never>
+
 /**
  * The command union. Discriminated on `kind`; the loop's `switch` is exhaustive.
  * `ingestSessionState` is present but never dispatched in V1 (§10).
@@ -246,6 +279,10 @@ export type Command =
   | { readonly kind: 'closeWindow'; readonly input: CloseWindowInput }
   | { readonly kind: 'moveSessionToWindow'; readonly input: MoveSessionToWindowInput }
   | { readonly kind: 'createWindowWithSession'; readonly input: CreateWindowWithSessionInput }
+  | { readonly kind: 'addProject'; readonly input: AddProjectInput }
+  | { readonly kind: 'removeProject'; readonly input: RemoveProjectInput }
+  | { readonly kind: 'setProjectDefaultBranch'; readonly input: SetProjectDefaultBranchInput }
+  | { readonly kind: 'seedProjects'; readonly input: SeedProjectsInput }
 
 /**
  * Result of a command. `ok=false` + `needsDirtyConfirm` is the delete-task dirty
@@ -261,4 +298,6 @@ export interface CommandResult {
    * (V1.5, §6.7). `main` needs it to open the OS `BrowserWindow` for the new id.
    */
   readonly windowId?: WindowId
+  /** The resolved project, returned by `addProject` (§5.4, §6.3). */
+  readonly project?: ProjectSettings
 }

@@ -33,7 +33,13 @@ import type {
   CreateWindowWithSessionInput,
   WindowAtPointInput,
   SettingsPatchDTO,
-  WindowedWorkspaceStateDTO
+  WindowedWorkspaceStateDTO,
+  ProjectListItemDTO,
+  ProjectWorktreeDTO,
+  AddProjectInput,
+  RemoveProjectInput,
+  SetProjectDefaultBranchInput,
+  ListProjectWorktreesInput
 } from '../shared/dto'
 import type { EventDTO } from '../shared/events'
 
@@ -108,6 +114,18 @@ const octopusAPI: OctopusAPI = {
   dialog: {
     pickDirectory: (): Promise<string | undefined> =>
       ipcRenderer.invoke(CHANNELS.dialogPickDirectory)
+  },
+
+  projects: {
+    list: (): Promise<readonly ProjectListItemDTO[]> => ipcRenderer.invoke(CHANNELS.projectList),
+    add: (input: AddProjectInput): Promise<CommandAck> =>
+      ipcRenderer.invoke(CHANNELS.projectAdd, input),
+    remove: (input: RemoveProjectInput): Promise<CommandAck> =>
+      ipcRenderer.invoke(CHANNELS.projectRemove, input),
+    setDefaultBranch: (input: SetProjectDefaultBranchInput): Promise<CommandAck> =>
+      ipcRenderer.invoke(CHANNELS.projectSetDefaultBranch, input),
+    listWorktrees: (input: ListProjectWorktreesInput): Promise<readonly ProjectWorktreeDTO[]> =>
+      ipcRenderer.invoke(CHANNELS.projectListWorktrees, input)
   },
 
   clipboard: {

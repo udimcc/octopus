@@ -1,5 +1,15 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import {
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  readFileSync,
+  readdirSync,
+  existsSync,
+  statSync,
+  mkdirSync,
+  chmodSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -162,6 +172,106 @@ describe('mergeSettings (deep-merge, §6.4)', () => {
       }).groupTasksByRepo
     ).toBe(true)
   })
+
+  it('stateDetection and injectClaudeHooks round-trip (previously dropped on every save, §9/§9.2)', () => {
+    expect(parseSettings('{}').terminal.stateDetection).toBeUndefined()
+    expect(parseSettings('{}').terminal.injectClaudeHooks).toBeUndefined()
+
+    const off = mergeSettings(DEFAULT_SETTINGS, {
+      terminal: { stateDetection: false, injectClaudeHooks: false }
+    })
+    expect(off.terminal.stateDetection).toBe(false)
+    expect(off.terminal.injectClaudeHooks).toBe(false)
+
+    const on = mergeSettings(off, {
+      terminal: { stateDetection: true, injectClaudeHooks: true }
+    })
+    expect(on.terminal.stateDetection).toBe(true)
+    expect(on.terminal.injectClaudeHooks).toBe(true)
+
+    // A full serialize → parse round trip preserves both (the regression this
+    // guards against: they used to be silently dropped on every save).
+    const text = serializeSettings(off)
+    const reparsed = parseSettings(text)
+    expect(reparsed.terminal.stateDetection).toBe(false)
+    expect(reparsed.terminal.injectClaudeHooks).toBe(false)
+  })
+})
+
+describe('pickProjects / Settings.projects (§5.4, §6.3)', () => {
+  it('round-trips a populated projects list through serialize → parse', () => {
+    const withProjects = mergeSettings(DEFAULT_SETTINGS, {
+      projects: [{ path: '/repo/a', defaultBranch: 'main' }, { path: '/repo/b' }]
+    })
+    const reparsed = parseSettings(serializeSettings(withProjects))
+    expect(reparsed.projects).toEqual([
+      { path: '/repo/a', defaultBranch: 'main' },
+      { path: '/repo/b' }
+    ])
+  })
+
+  it('a file without the key loads with projects === undefined ("never seeded")', () => {
+    expect(parseSettings('{}').projects).toBeUndefined()
+    expect(
+      parseSettings(JSON.stringify({ worktree: { location: '/wt' } })).projects
+    ).toBeUndefined()
+  })
+
+  it('an empty array is kept, distinct from undefined ("user removed every project")', () => {
+    const empty = mergeSettings(DEFAULT_SETTINGS, { projects: [] })
+    expect(empty.projects).toEqual([])
+    expect(parseSettings(serializeSettings(empty)).projects).toEqual([])
+  })
+
+  it('a non-array value falls back to the base (preserving undefined vs. [])', () => {
+    expect(parseSettings(JSON.stringify({ projects: 'not an array' })).projects).toBeUndefined()
+    const base = mergeSettings(DEFAULT_SETTINGS, { projects: [] })
+    expect(mergeSettings(base, { projects: 'nope' as unknown as never }).projects).toEqual([])
+  })
+
+  it('drops entries with a missing, non-string, empty, or non-absolute path', () => {
+    const parsed = parseSettings(
+      JSON.stringify({
+        projects: [
+          { path: '/ok' },
+          { defaultBranch: 'main' }, // missing path
+          { path: 42 }, // non-string path
+          { path: '   ' }, // blank after trim
+          { path: 'relative/dir' }, // not absolute
+          'not an object',
+          null
+        ]
+      })
+    )
+    expect(parsed.projects).toEqual([{ path: '/ok' }])
+  })
+
+  it('trims the path', () => {
+    const parsed = parseSettings(JSON.stringify({ projects: [{ path: '  /repo/a  ' }] }))
+    expect(parsed.projects).toEqual([{ path: '/repo/a' }])
+  })
+
+  it('drops a bad defaultBranch without dropping the entry', () => {
+    const parsed = parseSettings(
+      JSON.stringify({
+        projects: [
+          { path: '/repo/a', defaultBranch: 123 },
+          { path: '/repo/b', defaultBranch: '' },
+          { path: '/repo/c', defaultBranch: 'main' }
+        ]
+      })
+    )
+    expect(parsed.projects).toEqual([
+      { path: '/repo/a' },
+      { path: '/repo/b' },
+      { path: '/repo/c', defaultBranch: 'main' }
+    ])
+  })
+
+  it('DEFAULT_SETTINGS has no projects key and is a serialize → parse fixed point', () => {
+    expect('projects' in DEFAULT_SETTINGS).toBe(false)
+    expect(parseSettings(serializeSettings(DEFAULT_SETTINGS))).toEqual(DEFAULT_SETTINGS)
+  })
 })
 
 describe('JsonSettingsStore (I16 — no secrets, atomic write)', () => {
@@ -214,4 +324,183 @@ describe('JsonSettingsStore (I16 — no secrets, atomic write)', () => {
     expect(text.endsWith('\n')).toBe(true)
     expect(parseSettings(text)).toEqual(DEFAULT_SETTINGS)
   })
+
+  it('save({}) keeps the existing projects untouched', () => {
+    const store = new JsonSettingsStore(path)
+    store.load()
+    store.save({ projects: [{ path: '/repo/a' }] })
+    const saved = store.save({})
+    expect(saved.projects).toEqual([{ path: '/repo/a' }])
+  })
+})
+
+describe('JsonSettingsStore.loadFailed (§6.3)', () => {
+  let dir: string
+  let path: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'octopus-settings-'))
+    path = join(dir, 'settings.json')
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('is false before any load() (nothing attempted yet)', () => {
+    const store = new JsonSettingsStore(path)
+    expect(store.loadFailed()).toBe(false)
+  })
+
+  it('is false for ENOENT (first run / unconfigured install)', () => {
+    const store = new JsonSettingsStore(path)
+    store.load()
+    expect(store.loadFailed()).toBe(false)
+  })
+
+  it('is false for a valid file', () => {
+    writeFileSync(path, serializeSettings(DEFAULT_SETTINGS), 'utf8')
+    const store = new JsonSettingsStore(path)
+    store.load()
+    expect(store.loadFailed()).toBe(false)
+  })
+
+  it('is true for an unparseable file', () => {
+    writeFileSync(path, '{ not json', 'utf8')
+    const store = new JsonSettingsStore(path)
+    store.load()
+    expect(store.loadFailed()).toBe(true)
+  })
+
+  it('is true for a top-level JSON array', () => {
+    writeFileSync(path, '[1, 2, 3]', 'utf8')
+    const store = new JsonSettingsStore(path)
+    store.load()
+    expect(store.loadFailed()).toBe(true)
+  })
+
+  it('is true when settings.json is a directory (EISDIR, a non-ENOENT read error)', () => {
+    mkdirSync(path)
+    const store = new JsonSettingsStore(path)
+    store.load()
+    expect(store.loadFailed()).toBe(true)
+  })
+
+  it('reflects only the MOST RECENT load() — recovers once the file is fixed', () => {
+    writeFileSync(path, '{ not json', 'utf8')
+    const store = new JsonSettingsStore(path)
+    store.load()
+    expect(store.loadFailed()).toBe(true)
+
+    writeFileSync(path, serializeSettings(DEFAULT_SETTINGS), 'utf8')
+    store.load()
+    expect(store.loadFailed()).toBe(false)
+  })
+})
+
+describe('JsonSettingsStore.save re-reads disk before merging (§6.3)', () => {
+  let dir: string
+  let path: string
+  let warnSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'octopus-settings-'))
+    path = join(dir, 'settings.json')
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+  })
+
+  afterEach(() => {
+    warnSpy.mockRestore()
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('merges over a fresh parse when the on-disk file still parses, surviving a hand repair', () => {
+    const store = new JsonSettingsStore(path)
+    store.load() // ENOENT; cache = DEFAULT_SETTINGS
+
+    // The user hand-repairs the file (adds a field `save` has never seen in its
+    // in-memory cache) after `load()`, between load and the next save.
+    writeFileSync(
+      path,
+      serializeSettings(mergeSettings(DEFAULT_SETTINGS, { worktree: { location: '/repaired' } })),
+      'utf8'
+    )
+
+    const saved = store.save({ terminal: { shell: '/bin/zsh' } })
+    // The hand-repaired value survives — it was merged over the FRESH parse, not
+    // the stale in-memory cache.
+    expect(saved.worktree.location).toBe('/repaired')
+    expect(saved.terminal.shell).toBe('/bin/zsh')
+  })
+
+  it('backs up a corrupt file (mode 0o600) and merges the patch over defaults', () => {
+    const store = new JsonSettingsStore(path)
+    // Seed a non-default in-memory cache first, so "merged over DEFAULT_SETTINGS"
+    // below can be told apart from "merged over the stale cache" (both would
+    // otherwise look identical, since a fresh store's cache IS DEFAULT_SETTINGS).
+    writeFileSync(
+      path,
+      serializeSettings(mergeSettings(DEFAULT_SETTINGS, { worktree: { location: '/cached' } })),
+      'utf8'
+    )
+    store.load()
+    writeFileSync(path, '{ this is corrupt', 'utf8')
+
+    const saved = store.save({ terminal: { shell: '/bin/zsh' } })
+    expect(saved.terminal.shell).toBe('/bin/zsh')
+    // No stray fields from the corrupt file leaked through — merged over defaults,
+    // NOT the in-memory cache (which still holds '/cached' from the load above).
+    expect(saved.worktree.location).toBe(DEFAULT_SETTINGS.worktree.location)
+
+    const liveText = readFileSync(path, 'utf8') // sanity: the live file is now valid JSON
+    expect(() => JSON.parse(liveText)).not.toThrow()
+
+    const dirEntries = readdirSync(dir)
+    const backupName = dirEntries.find((f) => f.includes('.corrupt-'))
+    expect(backupName).toBeDefined()
+    const backupPath = join(dir, backupName!)
+    expect(readFileSync(backupPath, 'utf8')).toBe('{ this is corrupt')
+    expect(statSync(backupPath).mode & 0o777).toBe(0o600)
+    expect(warnSpy).toHaveBeenCalled()
+  })
+
+  it('merges over the in-memory cache on ENOENT (nothing fresh on disk to prefer)', () => {
+    const store = new JsonSettingsStore(path)
+    store.load()
+    store.save({ worktree: { location: '/cached' } }) // writes the file once
+
+    // Remove the file out from under the store between saves.
+    rmSync(path)
+
+    const saved = store.save({ terminal: { shell: '/bin/zsh' } })
+    expect(saved.worktree.location).toBe('/cached')
+    expect(saved.terminal.shell).toBe('/bin/zsh')
+    // A missing file is the normal fresh-install case — no "couldn't read" warning.
+    expect(warnSpy).not.toHaveBeenCalled()
+  })
+
+  it.skipIf(process.getuid?.() === 0)(
+    'warns and merges over the in-memory cache when settings.json is unreadable (EACCES, a non-ENOENT read error)',
+    () => {
+      writeFileSync(
+        path,
+        serializeSettings(mergeSettings(DEFAULT_SETTINGS, { worktree: { location: '/cached' } })),
+        'utf8'
+      )
+      const store = new JsonSettingsStore(path)
+      store.load()
+      chmodSync(path, 0o000)
+      try {
+        const saved = store.save({ terminal: { shell: '/bin/zsh' } })
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringMatching(/could not be read before saving/)
+        )
+        // Merged over the cache (from the successful load above), not defaults.
+        expect(saved.worktree.location).toBe('/cached')
+        expect(saved.terminal.shell).toBe('/bin/zsh')
+      } finally {
+        chmodSync(path, 0o600)
+      }
+    }
+  )
 })

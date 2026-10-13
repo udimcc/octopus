@@ -21,13 +21,41 @@ A task represents a unit of work the user needs to complete.
 
 ### Lifecycle
 
-- **Creation:** Opening a new task shows a modal with three tabs. **From New Worktree** collects four inputs — task name, repository directory (chosen via a native folder picker), source branch, and new branch — and on confirm Octopus creates the worktree: if the chosen repository contains a `create_worktree.sh`, it is run with the source and new branch and returns the worktree path; otherwise Octopus creates the worktree itself with git under a configurable base directory (default `~/octopus_repos/`). **From Existing Repo** collects task name + an existing repository directory Octopus adopts as-is (left on disk when deleted). **No Repo** collects a task name only — a task with *no* repository or worktree, for ad-hoc/scratch work (checking mounts, viewing a log, editing a config file); nothing is created on disk and its sessions open at the user's home directory.
+- **Creation:** Opening a new task shows a modal with three tabs. **From New Worktree** and **From
+  Existing Repo** show a Projects sidebar to pick a configured repository (see Projects below); **No
+  Repo** does not need one. **From New Worktree** collects task name, the picked project, source branch
+  (prefilled from the project's default branch), and new branch — and on confirm Octopus creates the
+  worktree: if the project's repository contains a `create_worktree.sh`, it is run with the source and new
+  branch and returns the worktree path; otherwise Octopus creates the worktree itself with git under a
+  configurable base directory (default `~/octopus_repos/`). **From Existing Repo** collects task name +
+  the picked project + one of its worktrees (its main checkout or a linked worktree), chosen from a list;
+  a worktree already used by another task is shown disabled. Octopus adopts the chosen worktree as-is
+  (left on disk when deleted). **No Repo** collects a task name only — a task with *no* repository or
+  worktree, for ad-hoc/scratch work (checking mounts, viewing a log, editing a config file); nothing is
+  created on disk and its sessions open at the user's home directory.
 - **Deletion:** When a task is deleted, a managed worktree is removed symmetrically — via the repository's `delete_worktree.sh` if present, otherwise by Octopus with git. An adopted (existing-repo) directory and a No Repo task leave nothing on disk (a No Repo task has no worktree to remove).
 
 ### Behavior
 
 - Each task contains multiple sessions.
 - When switching tasks, all session windows switch to the selected task's sessions.
+
+## Projects
+
+A project is a one-time configuration entry for a repository, so a user working in a small, stable
+set of repositories doesn't have to re-pick the same directory for every new task.
+
+- Projects are configured from the Projects sidebar in the task-creation modal: "+ Add project" opens
+  a native folder picker; picking a repository that's already configured just selects the existing
+  entry instead of adding a duplicate.
+- Each project has a default branch that's auto-detected when it's added — and may be absent, if
+  detection finds none — editable at any time from its row; editing it never changes the source
+  branch of a task that already used the project.
+- A project can be removed once no task belongs to it; removing a project that still has tasks is
+  blocked.
+- The first time Octopus starts after an upgrade that adds this feature, it seeds one project per
+  repository already in use by an existing task, so a user with existing tasks starts with a populated
+  list instead of an empty one.
 
 ## Sessions
 
@@ -108,7 +136,7 @@ A window listing all task names. Located on the left side of the screen.
 
 ### Controls
 
-- **New Task** button at the top of the window — opens the task-creation modal (name, repository directory picker, source branch, new branch).
+- **New Task** button at the top of the window — opens the task-creation modal (name, a configured project, source branch, new branch).
 - **Delete Task** button at the top of the window.
 
 ## UI Layout

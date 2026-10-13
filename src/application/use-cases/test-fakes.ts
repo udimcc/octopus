@@ -37,7 +37,9 @@ import type {
   CreateWorktreeResult,
   AdoptWorktreeRequest,
   AdoptWorktreeResult,
-  RemoveWorktreeRequest
+  RemoveWorktreeRequest,
+  InspectRepoResult,
+  RepoWorktree
 } from '../../ports/worktree-provider'
 import type {
   SessionManager,
@@ -259,18 +261,33 @@ const DEFAULT_SETTINGS: Settings = {
 /** Fake settings store with a deep-merging `save`. */
 export class FakeSettingsStore implements SettingsStore {
   private current: Settings
+  /** Settable flag backing `loadFailed()` (mirrors `JsonSettingsStore`); default false. */
+  simulateLoadFailed = false
+  /** Every patch passed to `save`, in call order — lets a test assert "never saved". */
+  readonly saveCalls: SettingsPatch[] = []
   constructor(initial: Settings = DEFAULT_SETTINGS) {
     this.current = initial
   }
   load(): Settings {
     return this.current
   }
+  loadFailed(): boolean {
+    return this.simulateLoadFailed
+  }
   save(patch: SettingsPatch): Settings {
+    this.saveCalls.push(patch)
     this.current = {
       ...this.current,
       worktree: { ...this.current.worktree, ...patch.worktree },
       terminal: { ...this.current.terminal, ...patch.terminal },
       defaultSessionTypeId: patch.defaultSessionTypeId ?? this.current.defaultSessionTypeId,
+      // Mirrors the real `pickProjects(patch.projects, base.projects)`: an array
+      // in the patch (even `[]`) replaces the current value; an absent/undefined
+      // `patch.projects` falls back to whatever the current value is — including
+      // `undefined`, i.e. "never seeded". `??` is correct here (not an `'in'`
+      // check) because the real `pickProjects` only ever branches on
+      // `Array.isArray(value)`, never on key presence.
+      projects: patch.projects ?? this.current.projects,
       worktreeCreateTimeoutMs:
         patch.worktreeCreateTimeoutMs ?? this.current.worktreeCreateTimeoutMs,
       groupTasksByRepo: patch.groupTasksByRepo ?? this.current.groupTasksByRepo
@@ -284,6 +301,8 @@ export class FakeWorktreeProvider implements WorktreeProvider {
   readonly createCalls: CreateWorktreeRequest[] = []
   readonly adoptCalls: AdoptWorktreeRequest[] = []
   readonly removeCalls: RemoveWorktreeRequest[] = []
+  readonly inspectCalls: string[] = []
+  readonly listWorktreesCalls: string[] = []
   dirty = false
   /** When set, `create` rejects (script failure). */
   createRejectsWith?: Error
@@ -297,6 +316,37 @@ export class FakeWorktreeProvider implements WorktreeProvider {
   adoptedPath = '/repo/../wt-existing'
   adoptedRepoRoot = '/repo'
   adoptedBranch: string | undefined = 'existing-branch'
+  /**
+   * Per-dir `inspectRepo` result, keyed by the exact `dir` passed in. An
+   * unconfigured dir resolves to `{ root: dir }` (already the main checkout, no
+   * default branch) — a sensible default so most tests need no setup.
+   */
+  readonly inspectResults = new Map<string, InspectRepoResult>()
+  /** Dirs whose `inspectRepo` call rejects (not a git repository). */
+  readonly inspectRejects = new Set<string>()
+  /** Per-root `listWorktrees` result, keyed by `root`. Unconfigured roots resolve to `[]`. */
+  readonly worktreeLists = new Map<string, RepoWorktree[]>()
+  /** Roots whose `listWorktrees` call rejects (e.g. deleted/moved repo). */
+  readonly listWorktreesRejects = new Set<string>()
+  /** When set, every `inspectRepo` call awaits this before resolving/rejecting — see `pauseInspect`. */
+  private inspectGate: Promise<void> | null = null
+
+  /**
+   * Blocks every subsequent `inspectRepo` call right before it would otherwise
+   * resolve, until the returned function is called. Lets a test pin down ordering
+   * across a `CommandLoop`'s single-writer FIFO (e.g. that a later-dispatched
+   * command never starts executing until an earlier, still-in-flight one settles).
+   */
+  pauseInspect(): () => void {
+    let release = (): void => {}
+    this.inspectGate = new Promise((resolve) => {
+      release = resolve
+    })
+    return () => {
+      release()
+      this.inspectGate = null
+    }
+  }
 
   async create(
     req: CreateWorktreeRequest,
@@ -328,6 +378,23 @@ export class FakeWorktreeProvider implements WorktreeProvider {
   }
   async isDirty(): Promise<boolean> {
     return this.dirty
+  }
+  async inspectRepo(dir: string): Promise<InspectRepoResult> {
+    this.inspectCalls.push(dir)
+    if (this.inspectGate) {
+      await this.inspectGate
+    }
+    if (this.inspectRejects.has(dir)) {
+      throw new Error(`not a git repository: ${dir}`)
+    }
+    return this.inspectResults.get(dir) ?? { root: dir }
+  }
+  async listWorktrees(root: string): Promise<readonly RepoWorktree[]> {
+    this.listWorktreesCalls.push(root)
+    if (this.listWorktreesRejects.has(root)) {
+      throw new Error(`not a git repository: ${root}`)
+    }
+    return this.worktreeLists.get(root) ?? []
   }
 }
 

@@ -189,6 +189,32 @@ export interface WindowedWorkspaceStateDTO extends WorkspaceStateDTO {
   readonly windows: readonly WindowDTO[]
 }
 
+// ── Projects (§5.4, §6.3) ──────────────────────────────────────────────────────
+
+/**
+ * A configured project: a repo root the user picked once, kept in `settings.json`
+ * (DESIGN §6.3). `path` is always the repo's main record — its main checkout, or
+ * the bare directory for a bare repo — `projects.add` resolves a linked worktree
+ * to that main record before this is created.
+ */
+export interface ProjectDTO {
+  readonly path: string
+  readonly defaultBranch?: string
+}
+
+/** A project as listed in the New-Task modal sidebar, with its task count. */
+export interface ProjectListItemDTO extends ProjectDTO {
+  readonly taskCount: number
+}
+
+/** One entry of a project's `git worktree list` (main checkout or a linked worktree). */
+export interface ProjectWorktreeDTO {
+  readonly path: string
+  readonly branch?: string
+  /** Name of the task currently using this worktree, if any; drives the disabled row. */
+  readonly usedByTaskName?: string
+}
+
 // ── Command inputs (UI → backend) ─────────────────────────────────────────────
 
 /**
@@ -198,7 +224,7 @@ export interface WindowedWorkspaceStateDTO extends WorkspaceStateDTO {
 export interface CreateTaskFromNewInput {
   readonly mode: 'new'
   readonly name: string
-  /** The chosen repository directory (from the native folder picker, §5.4). */
+  /** The chosen repository directory — the path of the selected project (§5.4). */
   readonly repoDir: string
   /** Branch to create the worktree FROM (editable; `master` placeholder). */
   readonly sourceBranch: string
@@ -215,7 +241,7 @@ export interface CreateTaskFromNewInput {
 export interface CreateTaskFromExistingInput {
   readonly mode: 'existing'
   readonly name: string
-  /** The existing worktree directory the user picked (native folder picker). */
+  /** The existing worktree directory, picked from the selected project's worktree list (§5.4). */
   readonly worktreeDir: string
 }
 
@@ -363,6 +389,29 @@ export interface WindowAtPointInput {
   readonly y: number
 }
 
+// ── Project command inputs (UI → backend) ─────────────────────────────────────
+
+/** Add a project from a picked directory (New-Task modal, "+ Add project"). */
+export interface AddProjectInput {
+  readonly dir: string
+}
+
+/** Remove a project; rejected (`ok: false`) while any task still belongs to it. */
+export interface RemoveProjectInput {
+  readonly path: string
+}
+
+/** Set (or, with an empty value, clear) a project's auto-detected default branch. */
+export interface SetProjectDefaultBranchInput {
+  readonly path: string
+  readonly defaultBranch?: string
+}
+
+/** List a project's main checkout + linked worktrees (New-Task modal, "Existing Repo"). */
+export interface ListProjectWorktreesInput {
+  readonly projectPath: string
+}
+
 /**
  * Result of a command (mirror of the application's `CommandResult`). `ok=false`
  * with `needsDirtyConfirm` is the delete-task dirty gate: the UI shows the
@@ -374,4 +423,6 @@ export interface CommandAck {
   readonly error?: string
   /** Id of a window created by `windows.create`/`windows.createWithSession` (V1.5). */
   readonly windowId?: string
+  /** Resolved project returned by `projects.add`. */
+  readonly project?: ProjectDTO
 }
