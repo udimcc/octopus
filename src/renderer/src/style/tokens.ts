@@ -94,12 +94,17 @@ export const fontSize = {
   title: 'var(--font-size-title)'
 } as const
 
-/** A full-viewport centered modal backdrop (shared by the modals/dialogs). */
+/**
+ * A full-viewport centered modal backdrop (shared by the modals/dialogs). A plain
+ * translucent dim, no `backdrop-filter`: on the GPU-less VDI (SwiftShader) a backdrop
+ * blur is re-rendered in software over the whole window on every frame that changes
+ * inside or beneath the modal (a tab switch, a button transition, a pulsing status
+ * icon behind it), which made the New-Task modal visibly lag.
+ */
 export const overlayStyle: React.CSSProperties = {
   position: 'fixed',
   inset: 0,
   background: color.overlay,
-  backdropFilter: 'blur(2px)',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
