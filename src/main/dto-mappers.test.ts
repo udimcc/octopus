@@ -3,19 +3,26 @@ import {
   toWorktreeRefDTO,
   toSessionDTO,
   toTaskDTO,
+  toIssueDTO,
   toSettingsDTO,
   toWorkspaceStateDTO,
   toEventDTO,
   toSessionConfig
 } from './dto-mappers'
-import type { TaskSnapshot, SessionSnapshot, WorktreeRefSnapshot } from '../domain/snapshots'
+import type {
+  TaskSnapshot,
+  SessionSnapshot,
+  WorktreeRefSnapshot,
+  IssueSnapshot
+} from '../domain/snapshots'
 import type { AppStateView } from '../application/queries/get-state'
 import type { DomainEvent } from '../ports/event-bus'
 import type { Settings } from '../ports/settings-store'
 import type { SessionConfigDTO } from '../shared/dto'
 import { SessionLifecycle, TaskLifecycle } from '../domain/lifecycle'
 import { SessionState, TaskState } from '../domain/state'
-import { asTaskId, asSessionId, asTypeId, asWindowId } from '../domain/ids'
+import { IssueStatus } from '../domain/issue'
+import { asTaskId, asSessionId, asTypeId, asWindowId, asIssueId } from '../domain/ids'
 
 const worktree: WorktreeRefSnapshot = {
   path: '/wt/t1',
@@ -55,6 +62,17 @@ const task: TaskSnapshot = {
   createdAt: 100
 }
 
+const issue: IssueSnapshot = {
+  id: asIssueId('i1'),
+  name: 'Fix the thing',
+  description: 'Some *markdown*',
+  projectPath: '/repo/a',
+  status: IssueStatus.InProgress,
+  taskId: asTaskId('t1'),
+  createdAt: 300,
+  updatedAt: 400
+}
+
 describe('snapshot → DTO mappers (§5.2)', () => {
   it('maps a worktree ref, copying the args array (no shared reference)', () => {
     const dto = toWorktreeRefDTO(worktree)
@@ -85,7 +103,27 @@ describe('snapshot → DTO mappers (§5.2)', () => {
     expect(dto.worktree).toBeUndefined()
   })
 
-  it('maps settings', () => {
+  it('maps an issue, carrying its status as the wire string ("Issues", §13.4)', () => {
+    const dto = toIssueDTO(issue)
+    expect(dto).toEqual({
+      id: 'i1',
+      name: 'Fix the thing',
+      description: 'Some *markdown*',
+      projectPath: '/repo/a',
+      status: 'in_progress',
+      taskId: 't1',
+      createdAt: 300,
+      updatedAt: 400
+    })
+  })
+
+  it('maps an unbound, project-less issue, leaving projectPath/taskId undefined', () => {
+    const dto = toIssueDTO({ ...issue, projectPath: undefined, taskId: undefined })
+    expect(dto.projectPath).toBeUndefined()
+    expect(dto.taskId).toBeUndefined()
+  })
+
+  it('maps settings, including issuesKey', () => {
     const settings: Settings = {
       worktree: { location: '/home/u/octopus_repos' },
       terminal: { shell: '/bin/zsh', stateDetection: false, statusChangeNotifications: false },
@@ -95,7 +133,8 @@ describe('snapshot → DTO mappers (§5.2)', () => {
       sessionNextKey: 'ArrowUp',
       sessionPrevKey: 'ArrowDown',
       copyKey: 'Ctrl+Shift+KeyC',
-      pasteKey: 'Ctrl+Shift+KeyV'
+      pasteKey: 'Ctrl+Shift+KeyV',
+      issuesKey: 'Alt+Shift+KeyI'
     }
     expect(toSettingsDTO(settings)).toEqual({
       worktree: { location: '/home/u/octopus_repos' },
@@ -106,13 +145,14 @@ describe('snapshot → DTO mappers (§5.2)', () => {
       sessionNextKey: 'ArrowUp',
       sessionPrevKey: 'ArrowDown',
       copyKey: 'Ctrl+Shift+KeyC',
-      pasteKey: 'Ctrl+Shift+KeyV'
+      pasteKey: 'Ctrl+Shift+KeyV',
+      issuesKey: 'Alt+Shift+KeyI'
     })
   })
 
-  it('assembles the full workspace state DTO', () => {
+  it('assembles the full workspace state DTO, including issues', () => {
     const view: AppStateView = {
-      workspace: { tasks: [task], activeTaskId: asTaskId('t1') },
+      workspace: { tasks: [task], activeTaskId: asTaskId('t1'), issues: [issue] },
       sessionTypes: [
         {
           typeId: 'terminal',
@@ -136,6 +176,33 @@ describe('snapshot → DTO mappers (§5.2)', () => {
     expect(dto.activeTaskId).toBe('t1')
     expect(dto.sessionTypes[0].typeId).toBe('terminal')
     expect(dto.version).toBe(1)
+    expect(dto.issues).toHaveLength(1)
+    expect(dto.issues[0]).toEqual({
+      id: 'i1',
+      name: 'Fix the thing',
+      description: 'Some *markdown*',
+      projectPath: '/repo/a',
+      status: 'in_progress',
+      taskId: 't1',
+      createdAt: 300,
+      updatedAt: 400
+    })
+  })
+
+  it('defaults issues to an empty array when the workspace snapshot omits it', () => {
+    const view: AppStateView = {
+      workspace: { tasks: [task], activeTaskId: asTaskId('t1') },
+      sessionTypes: [],
+      settings: {
+        worktree: { location: '/home/u/octopus_repos' },
+        terminal: {},
+        defaultSessionTypeId: 'terminal',
+        groupTasksByRepo: true
+      },
+      version: 1,
+      windows: []
+    }
+    expect(toWorkspaceStateDTO(view).issues).toEqual([])
   })
 })
 
@@ -319,6 +386,28 @@ describe('toEventDTO (§6.5) — total over the DomainEvent union', () => {
         event: { type: 'taskStateChanged', taskId: asTaskId('t1'), state: TaskState.NeedsInput },
         expect: (d) =>
           expect(d).toEqual({ type: 'taskStateChanged', taskId: 't1', state: 'blocked' })
+      },
+      {
+        event: { type: 'issueUpserted', issue },
+        expect: (d) => {
+          expect(d.type).toBe('issueUpserted')
+          if (d.type === 'issueUpserted') {
+            expect(d.issue).toEqual({
+              id: 'i1',
+              name: 'Fix the thing',
+              description: 'Some *markdown*',
+              projectPath: '/repo/a',
+              status: 'in_progress',
+              taskId: 't1',
+              createdAt: 300,
+              updatedAt: 400
+            })
+          }
+        }
+      },
+      {
+        event: { type: 'issueDeleted', issueId: asIssueId('i1') },
+        expect: (d) => expect(d).toEqual({ type: 'issueDeleted', issueId: 'i1' })
       }
     ]
 
@@ -328,8 +417,8 @@ describe('toEventDTO (§6.5) — total over the DomainEvent union', () => {
     }
   })
 
-  it('covers 18 DomainEvent variants (guards against an unmapped addition)', () => {
+  it('covers 20 DomainEvent variants (guards against an unmapped addition)', () => {
     const distinct = new Set(cases.map((c) => c.event.type))
-    expect(distinct.size).toBe(18)
+    expect(distinct.size).toBe(20)
   })
 })

@@ -3,7 +3,7 @@
  * `worktree.location` (base dir for native worktrees; blank → the backend's
  * home-based default), `terminal.shell` (blank → the backend default), and the
  * free-form configurable chords (next/prev session, next/prev task, new session, new
- * task, close session, terminal search, copy, paste) — and saves them via
+ * task, close session, terminal search, copy, paste, toggle issues) — and saves them via
  * `app.updateSettings(patch)`.
  *
  * The settings are grouped into categories shown as a left sidebar; clicking a
@@ -53,6 +53,7 @@ type ChordKey =
   | 'searchKey'
   | 'copyKey'
   | 'pasteKey'
+  | 'issuesKey'
 
 interface ChordFieldDef {
   readonly key: ChordKey
@@ -70,7 +71,8 @@ const CHORD_FIELDS: ReadonlyArray<ChordFieldDef> = [
   { key: 'closeSessionKey', label: 'Close session', default: 'Ctrl+Shift+KeyW' },
   { key: 'searchKey', label: 'Terminal search', default: 'Ctrl+Shift+KeyF' },
   { key: 'copyKey', label: 'Copy', default: 'Ctrl+Shift+KeyC' },
-  { key: 'pasteKey', label: 'Paste', default: 'Ctrl+Shift+KeyV' }
+  { key: 'pasteKey', label: 'Paste', default: 'Ctrl+Shift+KeyV' },
+  { key: 'issuesKey', label: 'Toggle Issues', default: 'Alt+Shift+KeyI' }
 ]
 
 /** The settings categories, shown in the left sidebar in this order. */
@@ -202,7 +204,8 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
       closeSessionKey: chords.closeSessionKey,
       searchKey: chords.searchKey,
       copyKey: chords.copyKey,
-      pasteKey: chords.pasteKey
+      pasteKey: chords.pasteKey,
+      issuesKey: chords.issuesKey
     }
     void window.octopusAPI.app.updateSettings(patch).then((ack) => {
       if (!ack.ok) {
@@ -253,6 +256,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
         role="dialog"
         aria-label="Settings"
         aria-modal="true"
+        tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
           e.stopPropagation()

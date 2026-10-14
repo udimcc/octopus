@@ -8,9 +8,11 @@ import {
   isSessionFocused,
   sessionDisplayState,
   taskDisplayState,
+  issueForTask,
+  isIssueBoundElsewhere,
   type StoreData
 } from './store'
-import type { TaskDTO, SessionDTO, WindowedWorkspaceStateDTO } from '../../../shared/dto'
+import type { TaskDTO, SessionDTO, WindowedWorkspaceStateDTO, IssueDTO } from '../../../shared/dto'
 
 function session(id: string, taskId: string, over: Partial<SessionDTO> = {}): SessionDTO {
   return {
@@ -37,6 +39,18 @@ function task(id: string, over: Partial<TaskDTO> = {}): TaskDTO {
     sessions: [],
     position: 0,
     createdAt: 1000,
+    ...over
+  }
+}
+
+function issue(id: string, over: Partial<IssueDTO> = {}): IssueDTO {
+  return {
+    id,
+    name: id,
+    description: '',
+    status: 'todo',
+    createdAt: 1000,
+    updatedAt: 1000,
     ...over
   }
 }
@@ -513,6 +527,7 @@ describe('useStore hydrate + actions', () => {
         configSchema: {}
       }
     ],
+    issues: [],
     settings: {
       worktree: { location: '/home/u/octopus_repos' },
       terminal: {},
@@ -557,6 +572,428 @@ describe('useStore hydrate + actions', () => {
 })
 
 /**
+ * Issues store logic ("Issues"): the `issues` projection, the drawer's renderer-local
+ * view-state (never persisted), and the two reverse-lookup selectors.
+ */
+describe('Issues store (drawer view-state + issues projection)', () => {
+  beforeEach(() => {
+    useStore.setState(initialData())
+  })
+
+  const issuesState: WindowedWorkspaceStateDTO = {
+    tasks: [],
+    activeTaskId: undefined,
+    sessionTypes: [],
+    issues: [issue('i1'), issue('i2', { status: 'in_review' })],
+    settings: initialData().settings,
+    version: 1,
+    thisWindowId: 'main',
+    thisWindowRole: 'main',
+    windows: []
+  }
+
+  describe('hydrate', () => {
+    it('projects WindowedWorkspaceStateDTO.issues into a keyed record', () => {
+      useStore.getState().hydrate(issuesState)
+      const s = useStore.getState()
+      expect(Object.keys(s.issues).sort()).toEqual(['i1', 'i2'])
+      expect(s.issues.i2.status).toBe('in_review')
+    })
+
+    it('keeps a still-valid selection and other drawer view-state across re-hydration', () => {
+      useStore.getState().hydrate(issuesState)
+      useStore.getState().openIssuesDrawer('i1')
+      const sessionBefore = useStore.getState().issueEditSession
+      useStore.getState().hydrate(issuesState)
+      const s = useStore.getState()
+      expect(s.issuesDrawerOpen).toBe(true)
+      expect(s.selectedIssueId).toBe('i1')
+      expect(s.issueEditSession).toBe(sessionBefore)
+    })
+
+    it('also preserves issueEditDirty and a pending discardPrompt across re-hydration when the selection stays valid', () => {
+      useStore.getState().hydrate(issuesState)
+      useStore.getState().openIssuesDrawer('i1')
+      useStore.getState().setIssueEditDirty(true)
+      useStore.getState().selectIssue('i2') // dirty -> raises discardPrompt {kind:'select', issueId:'i2'}
+      expect(useStore.getState().discardPrompt).toEqual({ kind: 'select', issueId: 'i2' })
+
+      useStore.getState().hydrate(issuesState) // same issues: selection (i1) is still valid
+      const s = useStore.getState()
+      expect(s.selectedIssueId).toBe('i1')
+      expect(s.issueEditDirty).toBe(true)
+      expect(s.discardPrompt).toEqual({ kind: 'select', issueId: 'i2' })
+    })
+
+    it('preserves an in-progress issueDraft across re-hydration', () => {
+      useStore.getState().hydrate(issuesState)
+      useStore.getState().startNewIssue()
+      useStore.getState().setIssueEditDirty(true)
+      useStore.getState().hydrate(issuesState)
+      const s = useStore.getState()
+      expect(s.issueDraft).toBe(true)
+      expect(s.issueEditDirty).toBe(true)
+    })
+
+    it('drops a selection whose issue no longer exists in the hydrated snapshot, bumping the session', () => {
+      useStore.getState().hydrate(issuesState)
+      useStore.getState().openIssuesDrawer('i1')
+      const sessionBefore = useStore.getState().issueEditSession
+      const withoutI1: WindowedWorkspaceStateDTO = { ...issuesState, issues: [issue('i2')] }
+      useStore.getState().hydrate(withoutI1)
+      const s = useStore.getState()
+      expect(s.selectedIssueId).toBeUndefined()
+      expect(s.issueEditSession).toBeGreaterThan(sessionBefore)
+      // The dropped selection also discards any dirty edit tied to it.
+      expect(s.issueEditDirty).toBe(false)
+    })
+
+    it('clears a pending select-discardPrompt whose target issue is dropped by the hydration', () => {
+      useStore.getState().hydrate(issuesState)
+      useStore.getState().openIssuesDrawer('i1')
+      useStore.getState().setIssueEditDirty(true)
+      useStore.getState().selectIssue('i2') // dirty → raises discardPrompt {kind:'select', issueId:'i2'}
+      expect(useStore.getState().discardPrompt).toEqual({ kind: 'select', issueId: 'i2' })
+      const withoutI2: WindowedWorkspaceStateDTO = { ...issuesState, issues: [issue('i1')] }
+      useStore.getState().hydrate(withoutI2)
+      expect(useStore.getState().discardPrompt).toBeNull()
+    })
+  })
+
+  describe('reduceEvent: issueUpserted / issueDeleted / issuesDrawerToggle', () => {
+    it('issueUpserted adds a new issue', () => {
+      const next = reduceEvent(initialData(), { type: 'issueUpserted', issue: issue('i1') })
+      expect(next.issues.i1).toEqual(issue('i1'))
+    })
+
+    it('issueUpserted overwrites an existing issue by id', () => {
+      const seeded = { ...initialData(), issues: { i1: issue('i1') } }
+      const next = reduceEvent(seeded, {
+        type: 'issueUpserted',
+        issue: issue('i1', { name: 'Renamed', status: 'done' })
+      })
+      expect(next.issues.i1.name).toBe('Renamed')
+      expect(next.issues.i1.status).toBe('done')
+      expect(Object.keys(next.issues)).toEqual(['i1'])
+    })
+
+    it('issueDeleted removes the issue and leaves an unrelated selection untouched', () => {
+      const seeded = {
+        ...initialData(),
+        issues: { i1: issue('i1'), i2: issue('i2') },
+        selectedIssueId: 'i2'
+      }
+      const next = reduceEvent(seeded, { type: 'issueDeleted', issueId: 'i1' })
+      expect(next.issues.i1).toBeUndefined()
+      expect(next.issues.i2).toBeDefined()
+      expect(next.selectedIssueId).toBe('i2')
+      expect(next.issueEditSession).toBe(seeded.issueEditSession)
+    })
+
+    it('issueDeleted clears the selection, draft, dirty flag and discardPrompt when the SELECTED issue is deleted, and bumps the session', () => {
+      const seeded = {
+        ...initialData(),
+        issues: { i1: issue('i1') },
+        selectedIssueId: 'i1',
+        issueDraft: false,
+        issueEditDirty: true,
+        discardPrompt: { kind: 'close' as const }
+      }
+      const next = reduceEvent(seeded, { type: 'issueDeleted', issueId: 'i1' })
+      expect(next.selectedIssueId).toBeUndefined()
+      expect(next.issueDraft).toBe(false)
+      expect(next.issueEditDirty).toBe(false)
+      expect(next.discardPrompt).toBeNull()
+      expect(next.issueEditSession).toBeGreaterThan(seeded.issueEditSession)
+    })
+
+    it('issueDeleted clears a pending select-discardPrompt that targets the deleted issue, even when it is not the current selection', () => {
+      const seeded = {
+        ...initialData(),
+        issues: { i1: issue('i1'), i2: issue('i2') },
+        selectedIssueId: 'i2',
+        discardPrompt: { kind: 'select' as const, issueId: 'i1' }
+      }
+      const next = reduceEvent(seeded, { type: 'issueDeleted', issueId: 'i1' })
+      expect(next.discardPrompt).toBeNull()
+      // Not the selected issue, so the selection itself is untouched.
+      expect(next.selectedIssueId).toBe('i2')
+    })
+
+    it('issuesDrawerToggle opens a closed drawer', () => {
+      const next = reduceEvent(initialData(), { type: 'issuesDrawerToggle' })
+      expect(next.issuesDrawerOpen).toBe(true)
+    })
+
+    it('issuesDrawerToggle closes an open, clean drawer and clears any draft', () => {
+      const seeded = { ...initialData(), issuesDrawerOpen: true, issueDraft: true }
+      const next = reduceEvent(seeded, { type: 'issuesDrawerToggle' })
+      expect(next.issuesDrawerOpen).toBe(false)
+      expect(next.issueDraft).toBe(false)
+    })
+
+    it('issuesDrawerToggle on a dirty open drawer raises discardPrompt instead of closing — same as the toggleIssuesDrawer action', () => {
+      const seeded = { ...initialData(), issuesDrawerOpen: true, issueEditDirty: true }
+      const viaEvent = reduceEvent(seeded, { type: 'issuesDrawerToggle' })
+      expect(viaEvent.issuesDrawerOpen).toBe(true)
+      expect(viaEvent.discardPrompt).toEqual({ kind: 'close' })
+
+      useStore.setState(seeded)
+      useStore.getState().toggleIssuesDrawer()
+      const viaAction = useStore.getState()
+      expect(viaAction.issuesDrawerOpen).toBe(true)
+      expect(viaAction.discardPrompt).toEqual({ kind: 'close' })
+    })
+  })
+
+  describe('toggleIssuesDrawer action', () => {
+    it('opens a closed drawer', () => {
+      useStore.getState().toggleIssuesDrawer()
+      expect(useStore.getState().issuesDrawerOpen).toBe(true)
+    })
+
+    it('closes an open, clean drawer and clears a draft', () => {
+      useStore.setState({ issuesDrawerOpen: true, issueDraft: true })
+      const sessionBefore = useStore.getState().issueEditSession
+      useStore.getState().toggleIssuesDrawer()
+      const s = useStore.getState()
+      expect(s.issuesDrawerOpen).toBe(false)
+      expect(s.issueDraft).toBe(false)
+      expect(s.issueEditSession).toBeGreaterThan(sessionBefore)
+    })
+
+    it('raises discardPrompt {kind:"close"} instead of closing while dirty', () => {
+      useStore.setState({ issuesDrawerOpen: true, issueEditDirty: true })
+      useStore.getState().toggleIssuesDrawer()
+      const s = useStore.getState()
+      expect(s.issuesDrawerOpen).toBe(true)
+      expect(s.discardPrompt).toEqual({ kind: 'close' })
+    })
+  })
+
+  describe('openIssuesDrawer', () => {
+    it('opens a closed drawer with no id, keeping the previous selection', () => {
+      useStore.setState({ selectedIssueId: 'i9' })
+      const sessionBefore = useStore.getState().issueEditSession
+      useStore.getState().openIssuesDrawer()
+      const s = useStore.getState()
+      expect(s.issuesDrawerOpen).toBe(true)
+      expect(s.selectedIssueId).toBe('i9')
+      expect(s.issueEditSession).toBeGreaterThan(sessionBefore)
+    })
+
+    it('opens a closed drawer directly onto the given issue', () => {
+      const sessionBefore = useStore.getState().issueEditSession
+      useStore.getState().openIssuesDrawer('i1')
+      const s = useStore.getState()
+      expect(s.issuesDrawerOpen).toBe(true)
+      expect(s.selectedIssueId).toBe('i1')
+      expect(s.issueEditSession).toBeGreaterThan(sessionBefore)
+    })
+
+    it('reselecting the already-shown clean issue on an open drawer is a no-op (no session bump)', () => {
+      useStore.setState({ issuesDrawerOpen: true, selectedIssueId: 'i1', issueDraft: false })
+      const sessionBefore = useStore.getState().issueEditSession
+      useStore.getState().openIssuesDrawer('i1')
+      const s = useStore.getState()
+      expect(s.selectedIssueId).toBe('i1')
+      expect(s.issueEditSession).toBe(sessionBefore)
+    })
+
+    it('selecting a different issue on an open, dirty drawer raises discardPrompt', () => {
+      useStore.setState({ issuesDrawerOpen: true, selectedIssueId: 'i1', issueEditDirty: true })
+      useStore.getState().openIssuesDrawer('i2')
+      const s = useStore.getState()
+      expect(s.selectedIssueId).toBe('i1')
+      expect(s.discardPrompt).toEqual({ kind: 'select', issueId: 'i2' })
+    })
+
+    it('selecting a different issue on an open, clean drawer switches directly and bumps the session', () => {
+      useStore.setState({ issuesDrawerOpen: true, selectedIssueId: 'i1', issueDraft: false })
+      const sessionBefore = useStore.getState().issueEditSession
+      useStore.getState().openIssuesDrawer('i2')
+      const s = useStore.getState()
+      expect(s.selectedIssueId).toBe('i2')
+      expect(s.issueEditSession).toBeGreaterThan(sessionBefore)
+    })
+  })
+
+  describe('selectIssue', () => {
+    it('dirty-guards: raises discardPrompt instead of switching', () => {
+      useStore.setState({ issuesDrawerOpen: true, selectedIssueId: 'i1', issueEditDirty: true })
+      useStore.getState().selectIssue('i2')
+      const s = useStore.getState()
+      expect(s.selectedIssueId).toBe('i1')
+      expect(s.discardPrompt).toEqual({ kind: 'select', issueId: 'i2' })
+    })
+
+    it('clean select switches and clears draft/dirty', () => {
+      useStore.setState({
+        issuesDrawerOpen: true,
+        selectedIssueId: 'i1',
+        issueDraft: true,
+        issueEditDirty: false
+      })
+      useStore.getState().selectIssue('i2')
+      const s = useStore.getState()
+      expect(s.selectedIssueId).toBe('i2')
+      expect(s.issueDraft).toBe(false)
+      expect(s.issueEditDirty).toBe(false)
+    })
+  })
+
+  describe('startNewIssue', () => {
+    it('dirty-guards: raises discardPrompt {kind:"new"}', () => {
+      useStore.setState({ issuesDrawerOpen: true, selectedIssueId: 'i1', issueEditDirty: true })
+      useStore.getState().startNewIssue()
+      const s = useStore.getState()
+      expect(s.issueDraft).toBe(false)
+      expect(s.discardPrompt).toEqual({ kind: 'new' })
+    })
+
+    it('clean call starts a draft: clears the selection and the dirty flag, and bumps the session', () => {
+      useStore.setState({ issuesDrawerOpen: true, selectedIssueId: 'i1', issueEditDirty: false })
+      const sessionBefore = useStore.getState().issueEditSession
+      useStore.getState().startNewIssue()
+      const s = useStore.getState()
+      expect(s.issueDraft).toBe(true)
+      expect(s.selectedIssueId).toBeUndefined()
+      expect(s.issueEditDirty).toBe(false)
+      expect(s.issueEditSession).toBeGreaterThan(sessionBefore)
+    })
+  })
+
+  it('setIssueEditDirty round-trips the flag', () => {
+    useStore.getState().setIssueEditDirty(true)
+    expect(useStore.getState().issueEditDirty).toBe(true)
+    useStore.getState().setIssueEditDirty(false)
+    expect(useStore.getState().issueEditDirty).toBe(false)
+  })
+
+  describe('confirmDiscard', () => {
+    it('performs a pending close: closes the drawer and clears the dirty/draft/prompt state', () => {
+      useStore.setState({
+        issuesDrawerOpen: true,
+        issueEditDirty: true,
+        discardPrompt: { kind: 'close' }
+      })
+      useStore.getState().confirmDiscard()
+      const s = useStore.getState()
+      expect(s.issuesDrawerOpen).toBe(false)
+      expect(s.issueEditDirty).toBe(false)
+      expect(s.discardPrompt).toBeNull()
+    })
+
+    it('performs a pending select: switches to the target issue', () => {
+      useStore.setState({
+        issuesDrawerOpen: true,
+        selectedIssueId: 'i1',
+        issueEditDirty: true,
+        discardPrompt: { kind: 'select', issueId: 'i2' }
+      })
+      useStore.getState().confirmDiscard()
+      const s = useStore.getState()
+      expect(s.selectedIssueId).toBe('i2')
+      expect(s.issueEditDirty).toBe(false)
+      expect(s.discardPrompt).toBeNull()
+    })
+
+    it('performs a pending new: starts a fresh draft', () => {
+      useStore.setState({
+        issuesDrawerOpen: true,
+        selectedIssueId: 'i1',
+        issueEditDirty: true,
+        discardPrompt: { kind: 'new' }
+      })
+      useStore.getState().confirmDiscard()
+      const s = useStore.getState()
+      expect(s.issueDraft).toBe(true)
+      expect(s.selectedIssueId).toBeUndefined()
+      expect(s.discardPrompt).toBeNull()
+    })
+
+    it('is a no-op without a pending discardPrompt', () => {
+      const before = useStore.getState()
+      useStore.getState().confirmDiscard()
+      expect(useStore.getState()).toBe(before)
+    })
+
+    it('bumps issueEditSession even when discarding a draft lands back on another fresh draft (kind:"new")', () => {
+      useStore.setState({
+        issuesDrawerOpen: true,
+        issueDraft: true,
+        issueEditDirty: true,
+        discardPrompt: { kind: 'new' }
+      })
+      const sessionBefore = useStore.getState().issueEditSession
+      useStore.getState().confirmDiscard()
+      const s = useStore.getState()
+      // The visible issueDraft/selectedIssueId pair is unchanged (draft → draft), but
+      // the session must still bump so IssueDetail's reset effect clears stale text.
+      expect(s.issueDraft).toBe(true)
+      expect(s.selectedIssueId).toBeUndefined()
+      expect(s.issueEditSession).toBeGreaterThan(sessionBefore)
+    })
+  })
+
+  it('cancelDiscard clears only the discardPrompt, leaving the dirty edit and selection untouched', () => {
+    useStore.setState({
+      issuesDrawerOpen: true,
+      selectedIssueId: 'i1',
+      issueEditDirty: true,
+      discardPrompt: { kind: 'select', issueId: 'i2' }
+    })
+    useStore.getState().cancelDiscard()
+    const s = useStore.getState()
+    expect(s.discardPrompt).toBeNull()
+    expect(s.selectedIssueId).toBe('i1')
+    expect(s.issueEditDirty).toBe(true)
+  })
+
+  it('cancelNewIssue discards a draft directly, without touching issuesDrawerOpen/selectedIssueId or raising a discardPrompt', () => {
+    useStore.setState({
+      issuesDrawerOpen: true,
+      selectedIssueId: 'i1',
+      issueDraft: true,
+      issueEditDirty: true
+    })
+    const sessionBefore = useStore.getState().issueEditSession
+    useStore.getState().cancelNewIssue()
+    const s = useStore.getState()
+    expect(s.issueDraft).toBe(false)
+    expect(s.issueEditDirty).toBe(false)
+    expect(s.issuesDrawerOpen).toBe(true)
+    expect(s.issueEditSession).toBeGreaterThan(sessionBefore)
+    expect(s.selectedIssueId).toBe('i1')
+    expect(s.discardPrompt).toBeNull()
+  })
+
+  describe('issueForTask / isIssueBoundElsewhere selectors', () => {
+    it('issueForTask finds the issue bound to a task via the reverse lookup', () => {
+      const data = { ...initialData(), issues: { i1: issue('i1', { taskId: 't1' }) } }
+      expect(issueForTask(data, 't1')?.id).toBe('i1')
+    })
+
+    it('issueForTask returns undefined when no issue is bound to the task', () => {
+      const data = { ...initialData(), issues: { i1: issue('i1') } }
+      expect(issueForTask(data, 't1')).toBeUndefined()
+    })
+
+    it('isIssueBoundElsewhere is true only when bound to a DIFFERENT task', () => {
+      expect(isIssueBoundElsewhere(issue('i1', { taskId: 't2' }), 't1')).toBe(true)
+    })
+
+    it('isIssueBoundElsewhere is false when unbound', () => {
+      expect(isIssueBoundElsewhere(issue('i1'), 't1')).toBe(false)
+    })
+
+    it('isIssueBoundElsewhere is false when bound to the same task', () => {
+      expect(isIssueBoundElsewhere(issue('i1', { taskId: 't1' }), 't1')).toBe(false)
+    })
+  })
+})
+
+/**
  * Per-window marks (§3.7): each window keeps its OWN marked tab per task — a session it
  * hosts, or none. The window left by a cross-window switch keeps showing what it had.
  */
@@ -581,6 +1018,7 @@ describe('per-window marks (§3.7)', () => {
       ],
       activeTaskId: 't1',
       sessionTypes: [],
+      issues: [],
       settings: initialData().settings,
       version: 1,
       thisWindowId,

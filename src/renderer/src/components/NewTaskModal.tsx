@@ -24,23 +24,50 @@
  * An info button (top-right) reveals a per-tab tooltip on hover/focus explaining
  * what each mode does — in particular the differing delete behavior.
  *
- * Outcome is driven by the EVENT stream, not the command ack: `createTask`
- * catches a provisioning/adoption failure and emits `scriptError` while the ack
- * still resolves `ok:true` (§6.4). So we watch the stream for the terminal signal
- * of the in-flight create — `activeTaskChanged` (success → close) or `scriptError`
- * (failure → inline red block, stay open for Retry) — and surface `scriptProgress`
- * lines live under the spinner. Both tabs emit the same events, so this handling
- * is shared. A `busyRef` gates the handler so only events for OUR create are acted
- * on (the modal is modal, so nothing else changes the active task while it is open).
+ * Outcome is mostly driven by the EVENT stream, not the command ack: a
+ * provisioning/adoption failure (the script/git step itself) emits `scriptError`
+ * (§6.4) — the task record is kept around as `ProvisionFailed` for Retry — and its
+ * ack also resolves `{ ok: false }`; whichever lands first shows the error once. So
+ * we watch the stream for the terminal signal of the in-flight create — `activeTaskChanged` (success → close) or `scriptError` (failure
+ * → inline red block, stay open for Retry) — and surface `scriptProgress` lines live
+ * under the spinner. Both tabs emit the same events, so this handling is shared. A
+ * `busyRef` gates the handler so only events for OUR create are acted on (the modal
+ * is modal, so nothing else changes the active task while it is open). A LATER
+ * failure — the post-provisioning persist step — resolves `{ ok: false, error }` on
+ * the ack with NO `scriptError` (`createTask`'s header comment, step 5), so `submit`
+ * below also checks `ack.ok` directly rather than relying on the event stream alone.
  *
  * `newBranch` is prefilled with `taskNameToBranchSlug(name)` until the user edits
  * it (DESIGN §5.4); `sourceBranch` is required with a `master` placeholder hint (no
  * hardcoded branch policy — the user chooses).
+ *
+ * **Associated issue** ("Issues"): an "Associated issue" dropdown (`IssuePicker`) —
+ * common to all three tabs, rendered once below the task name — lets the user bind a
+ * not-Done issue from the store. It is a custom listbox, not a native `<select>`, so
+ * each entry shows the same `IssueStatusIcon` as the issue window. Issues already bound to a
+ * task are disabled with "(already linked)" (`isIssueBoundElsewhere`, no task
+ * yet exists for this draft so every bound issue counts). Picking one fills an
+ * empty name (and, through the same
+ * `taskNameToBranchSlug` path as typing, the branch — unless the user already edited
+ * it) and, if no project is picked yet, selects the issue's project by exact path
+ * match. Every `tasks.create` call includes `issueId` when one is picked.
+ *
+ * `fromIssueId` drives "Create task" from the Issues drawer: the picker locks to that
+ * issue, the name is prefilled from it, and the tab is forced to "From New Worktree".
+ * The project (if the issue has one AND it is still in the loaded project list) is
+ * selected and the branch is derived from the name; otherwise the project is left
+ * unselected. This can only run once `projects.list()` has resolved — selecting a
+ * project before the list exists would silently no-op — so it is applied in an effect
+ * gated on `projectsLoading` turning false, guarded by a ref so it fires once. An
+ * issue id that isn't in the store's `issues` is treated as no prefill at all.
  */
 
 import { useEffect, useRef, useState } from 'react'
 import { taskNameToBranchSlug } from '../util/slug'
 import { ProjectSidebar } from './ProjectSidebar'
+import { useStore, isIssueBoundElsewhere } from '../store/store'
+import { IssuePicker } from './IssuePicker'
+import { cleanIpcError } from '../util/ipc-error'
 import {
   overlayStyle,
   modalCardStyle,
@@ -55,19 +82,16 @@ import type { ProjectListItemDTO, ProjectWorktreeDTO } from '../../../shared/dto
 export interface NewTaskModalProps {
   /** Close the modal (success or user cancel). */
   readonly onClose: () => void
+  /**
+   * "Create task" from the Issues drawer ("Issues"): prefill and lock the issue
+   * picker to this issue, prefill the name, force the "From New Worktree" tab, and
+   * (if the issue has a project still in the loaded list) select it and derive the
+   * branch. An id not found in the store's `issues` behaves as no prefill.
+   */
+  readonly fromIssueId?: string
 }
 
 type Tab = 'new' | 'existing' | 'none'
-
-/**
- * Electron wraps a rejected IPC handler's error as
- * `Error invoking remote method '<channel>': Error: <message>` — strip that
- * boilerplate so the renderer only shows the original message.
- */
-function cleanIpcError(err: unknown): string {
-  const message = err instanceof Error ? err.message : String(err)
-  return message.replace(/^Error invoking remote method '[^']*':\s*(Error:\s*)?/, '')
-}
 
 /**
  * Per-tab explanation shown in the info tooltip. Each entry is a pair of
@@ -89,7 +113,8 @@ const TAB_INFO: Record<Tab, readonly [string, string]> = {
   ]
 }
 
-export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element {
+export function NewTaskModal({ onClose, fromIssueId }: NewTaskModalProps): React.JSX.Element {
+  const issues = useStore((s) => s.issues)
   const [tab, setTab] = useState<Tab>('new')
   // Info tooltip visibility (hover or keyboard focus of the ⓘ button).
   const [infoOpen, setInfoOpen] = useState(false)
@@ -100,6 +125,10 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
   const [worktreeDir, setWorktreeDir] = useState('')
   // Once the user edits the branch, stop overwriting it from the name.
   const [branchEdited, setBranchEdited] = useState(false)
+  // "Associated issue" picker ("Issues"), shared across all three tabs. Set once a
+  // confirmed `fromIssueId` prefill applies (see `prefillAppliedRef` below) or by
+  // picking the `<select>` directly.
+  const [selectedIssueId, setSelectedIssueId] = useState<string | undefined>(undefined)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [progress, setProgress] = useState('')
@@ -129,6 +158,8 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
   const [projectsLoading, setProjectsLoading] = useState(true)
   // True while `fetchWorktrees` has an in-flight request.
   const [worktreesLoading, setWorktreesLoading] = useState(false)
+  // Guards the `fromIssueId` prefill effect to apply at most once.
+  const prefillAppliedRef = useRef(false)
 
   useEffect(() => {
     // StrictMode (dev) mounts, cleans up, and mounts again; re-arm the guard
@@ -222,6 +253,61 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
     setSourceBranch(defaultBranch ?? '')
     if (tab === 'existing') fetchWorktrees(path)
   }
+
+  // The issue `fromIssueId` prefills from, once it exists in the store — `undefined`
+  // means either no prefill was requested, or the id isn't (yet, or ever) a known
+  // issue, in which case the picker stays unlocked and the effect below never fires.
+  const prefillIssue = fromIssueId ? issues[fromIssueId] : undefined
+
+  // "Associated issue" options ("Issues"): not-Done issues, newest first, plus the
+  // currently selected one even if it since became Done (so the picker can always
+  // show its own `value`).
+  const issueOptions = Object.values(issues)
+    .filter((issue) => issue.status !== 'done' || issue.id === selectedIssueId)
+    .sort((a, b) => b.createdAt - a.createdAt)
+
+  const onSelectIssue = (issueId: string): void => {
+    if (issueId === '') {
+      // Clearing the picker does not clear the name/branch/project it may have filled.
+      setSelectedIssueId(undefined)
+      return
+    }
+    setSelectedIssueId(issueId)
+    const issue = issues[issueId]
+    if (!issue) return
+    if (name.trim() === '') onNameChange(issue.name)
+    if (!selectedPath && issue.projectPath) {
+      const project = projects.find((p) => p.path === issue.projectPath)
+      if (project) applyProjectSelection(project.path, project.defaultBranch)
+    }
+  }
+
+  // `fromIssueId` prefill ("Issues", "Create task" from the drawer): locks the
+  // picker, fills the name, forces the "From New Worktree" tab, and — only once
+  // `projects.list()` has resolved, so the path lookup isn't done against an empty
+  // list — selects the issue's project (if still configured) and derives the branch.
+  // Applies at most once; an id that never resolves to a known issue just never runs.
+  useEffect(() => {
+    if (!fromIssueId || prefillAppliedRef.current || projectsLoading) return
+    const issue = issues[fromIssueId]
+    if (!issue) return
+    prefillAppliedRef.current = true
+    setTab('new')
+    setSelectedIssueId(fromIssueId)
+    // Via `onNameChange`, not a bare `setName`: that's the only path
+    // that also derives `newBranch` from the name when there's no project match
+    // below to re-derive it explicitly (and matches every other name-setting path
+    // in this component, keeping the "haven't edited the branch yet" invariant
+    // consistent regardless of where the name came from).
+    onNameChange(issue.name)
+    const project = issue.projectPath
+      ? projects.find((p) => p.path === issue.projectPath)
+      : undefined
+    if (project) {
+      applyProjectSelection(project.path, project.defaultBranch)
+      setNewBranch(taskNameToBranchSlug(issue.name))
+    }
+  }, [fromIssueId, projectsLoading, issues, projects])
 
   const onSelectProject = (path: string): void => {
     // Re-selecting the selected project keeps the draft: both clicks of a
@@ -329,6 +415,7 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
     busyRef.current = true
     setError(null)
     setProgress('')
+    const issueId = selectedIssueId
     const input =
       tab === 'new'
         ? {
@@ -336,23 +423,44 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
             name: name.trim(),
             repoDir: (selectedPath ?? '').trim(),
             sourceBranch: sourceBranch.trim(),
-            newBranch: newBranch.trim()
+            newBranch: newBranch.trim(),
+            ...(issueId ? { issueId } : {})
           }
         : tab === 'existing'
-          ? { mode: 'existing' as const, name: name.trim(), worktreeDir: worktreeDir.trim() }
-          : { mode: 'none' as const, name: name.trim() }
-    void window.octopusAPI.tasks.create(input).then((ack) => {
-      // Provisioning failures arrive via `scriptError` (handled above); this only
-      // catches a dispatch-level rejection (e.g. a future validation ack).
-      if (!ack.ok && busyRef.current) {
+          ? {
+              mode: 'existing' as const,
+              name: name.trim(),
+              worktreeDir: worktreeDir.trim(),
+              ...(issueId ? { issueId } : {})
+            }
+          : { mode: 'none' as const, name: name.trim(), ...(issueId ? { issueId } : {}) }
+    void window.octopusAPI.tasks.create(input).then(
+      (ack) => {
+        // Any `{ ok: false }` ack: a provisioning/adoption failure (which also
+        // emits `scriptError`, handled above — `busyRef` makes whichever lands
+        // first win) or a persist-step failure (no `scriptError`).
+        if (!ack.ok && busyRef.current) {
+          busyRef.current = false
+          setBusy(false)
+          setError(ack.error ?? 'Failed to create task')
+        }
+      },
+      (err: unknown) => {
+        // The IPC call itself rejected (e.g. a dropped main-process dispatch) —
+        // no ack, so nothing above would otherwise clear `busy`.
+        if (!busyRef.current) return
         busyRef.current = false
         setBusy(false)
-        setError(ack.error ?? 'Failed to create task')
+        setError(cleanIpcError(err))
       }
-    })
+    )
   }
 
   const onKeyDown = (e: React.KeyboardEvent): void => {
+    // Stop every key here from reaching the window-level shortcut listener, like
+    // every other modal: otherwise keys typed here (e.g. while naming the task)
+    // would also fire app-level shortcuts.
+    e.stopPropagation()
     if (e.key === 'Escape' && !busy) onClose()
     // Only a plain text input (name / source branch / new branch) submits on
     // Enter — not a button (Cancel, Create, the sidebar's 🗑/✓/✗) and not the
@@ -388,6 +496,7 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
         role="dialog"
         aria-label="New Task"
         aria-modal="true"
+        tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={onKeyDown}
         style={{ ...modalCardStyle, width: 640 }}
@@ -511,6 +620,18 @@ export function NewTaskModal({ onClose }: NewTaskModalProps): React.JSX.Element 
                 onChange={(e) => onNameChange(e.target.value)}
               />
             </label>
+
+            <div style={labelStyle}>
+              <span>Associated issue</span>
+              <IssuePicker
+                issues={issueOptions}
+                value={selectedIssueId}
+                disabled={busy || !!prefillIssue}
+                onChange={onSelectIssue}
+                isUnavailable={isIssueBoundElsewhere}
+                unavailableNote="(already linked)"
+              />
+            </div>
 
             {tab === 'new' ? (
               <>

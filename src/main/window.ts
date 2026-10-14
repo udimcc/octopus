@@ -23,11 +23,13 @@
  */
 
 import { join } from 'node:path'
-import { app, BrowserWindow, dialog } from 'electron'
+import { pathToFileURL } from 'node:url'
+import { app, BrowserWindow, dialog, shell } from 'electron'
 import type { WindowId } from '../domain/ids'
 import { asWindowId, MAIN_WINDOW_ID } from '../domain/ids'
 import type { WindowRecord } from '../ports/workspace-persistence'
 import type { AppContext } from './composition-root'
+import { toSafeExternalUrl } from '../shared/external-url'
 import {
   busySessions,
   isBusy,
@@ -80,10 +82,102 @@ export function createWindow(ctx: AppContext, opts: CreateWindowOptions): Browse
   wireBoundsPersistence(ctx, window, opts.windowId, opts.role)
   wireCloseSemantics(ctx, window, opts.windowId, opts.role)
   wireCrashRecovery(ctx, window, opts.windowId, opts.role)
+  wireNavigationSafety(window)
 
   loadRenderer(window, opts.windowId)
 
   return window
+}
+
+/**
+ * True for the app's own renderer URL — the ONLY navigation `will-navigate` lets
+ * through (§13.4). Dev reload/HMR repeatedly (re)loads the Vite dev server at
+ * various paths, always under the SAME origin as `ELECTRON_RENDERER_URL`, so dev
+ * compares origin. In production the renderer is always the one built
+ * `index.html`, loaded via `file://`; prod compares the exact file path, ignoring
+ * the `?windowId=` query (which legitimately differs per window/reload).
+ *
+ * The dev-origin branch is gated on `ELECTRON_RENDERER_URL` being set, not on
+ * `!app.isPackaged`: `loadRenderer` below picks its branch the same way, so the
+ * two stay consistent by construction without a second, independent flag to
+ * keep in sync.
+ */
+export function isOwnRendererUrl(url: string): boolean {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return false
+  }
+  if (process.env.ELECTRON_RENDERER_URL) {
+    try {
+      return parsed.origin === new URL(process.env.ELECTRON_RENDERER_URL).origin
+    } catch {
+      return false
+    }
+  }
+  if (parsed.protocol !== 'file:') {
+    return false
+  }
+  // `host` must also be empty: a `file://some-host/...` URL parses with a
+  // non-empty host (and a different, host-relative `pathname`) that could
+  // coincidentally match `indexUrl.pathname` on some platforms.
+  if (parsed.host !== '') {
+    return false
+  }
+  const indexUrl = pathToFileURL(join(__dirname, '../renderer/index.html'))
+  return parsed.pathname === indexUrl.pathname
+}
+
+/**
+ * Open a URL in the system browser — the one place that calls Electron's
+ * `shell.openExternal` from a renderer-triggered path (§13.4): validates/
+ * normalizes via `toSafeExternalUrl` and opens exactly that normalized href,
+ * never the raw input a caller already checked-then-discarded, so there's no
+ * gap between "checked" and "used" for the URL to be re-parsed differently.
+ * Shared with the `shell:openExternal` IPC handler (`ipc-handlers.ts`) so the
+ * warn-on-failure logging and the check-then-use discipline live in one place.
+ */
+export async function openExternalSafely(url: string): Promise<boolean> {
+  const safe = toSafeExternalUrl(url)
+  if (!safe) {
+    return false
+  }
+  try {
+    await shell.openExternal(safe)
+    return true
+  } catch (err) {
+    console.warn('[octopus] shell.openExternal failed:', safe, err)
+    return false
+  }
+}
+
+/**
+ * Navigation safety (§13.4). The renderer's CSP (`default-src 'self'`) governs
+ * what the renderer can FETCH/load as a subresource — it says nothing about a
+ * top-level navigation of the `BrowserWindow` itself, which CSP doesn't cover.
+ * `will-navigate` is the actual control for that: it denies anything but the
+ * app's own renderer URL (dev reload/HMR keeps working — see
+ * `isOwnRendererUrl`), logging the blocked URL. `setWindowOpenHandler` always
+ * denies opening a NEW Electron window, but opens a safe `http`/`https` target
+ * in the system browser first via `openExternalSafely` (defense in depth beyond
+ * the per-call `shell:openExternal` check, §13.4). xterm's `WebLinksAddon`
+ * default handler is exactly the `window.open` path this denies, so the
+ * terminal gets an explicit handler wired to the same `toSafeExternalUrl` +
+ * `shell.openExternal` path instead (renderer-side, Subject 15).
+ */
+export function wireNavigationSafety(window: BrowserWindow): void {
+  window.webContents.on('will-navigate', (e, url) => {
+    if (!isOwnRendererUrl(url)) {
+      console.warn('[octopus] blocked navigation to:', url)
+      e.preventDefault()
+    }
+  })
+
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    void openExternalSafely(url)
+    return { action: 'deny' }
+  })
 }
 
 /** Load the renderer, injecting `?windowId=<id>` so the preload can read it (§5.6). */

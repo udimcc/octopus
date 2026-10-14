@@ -26,10 +26,16 @@ import type {
   WorktreeRefDTO,
   SessionTypeDTO,
   SettingsDTO,
-  SessionConfigDTO
+  SessionConfigDTO,
+  IssueDTO
 } from '../shared/dto'
 import type { EventDTO } from '../shared/events'
-import type { TaskSnapshot, SessionSnapshot, WorktreeRefSnapshot } from '../domain/snapshots'
+import type {
+  TaskSnapshot,
+  SessionSnapshot,
+  WorktreeRefSnapshot,
+  IssueSnapshot
+} from '../domain/snapshots'
 import type { DomainEvent } from '../ports/event-bus'
 import type { Settings } from '../ports/settings-store'
 import type { WindowRecord } from '../ports/workspace-persistence'
@@ -86,6 +92,20 @@ export function toTaskDTO(t: TaskSnapshot): TaskDTO {
   }
 }
 
+/** Map an `IssueSnapshot` to its wire DTO ("Issues", §13.4). Enum values are the DTO strings. */
+export function toIssueDTO(i: IssueSnapshot): IssueDTO {
+  return {
+    id: i.id,
+    name: i.name,
+    description: i.description,
+    projectPath: i.projectPath,
+    status: i.status,
+    taskId: i.taskId,
+    createdAt: i.createdAt,
+    updatedAt: i.updatedAt
+  }
+}
+
 function toSessionTypeDTO(v: SessionTypeView): SessionTypeDTO {
   return {
     typeId: v.typeId,
@@ -116,7 +136,8 @@ export function toSettingsDTO(s: Settings): SettingsDTO {
     closeSessionKey: s.closeSessionKey,
     searchKey: s.searchKey,
     copyKey: s.copyKey,
-    pasteKey: s.pasteKey
+    pasteKey: s.pasteKey,
+    issuesKey: s.issuesKey
   }
 }
 
@@ -126,7 +147,8 @@ export function toWorkspaceStateDTO(view: AppStateView): WorkspaceStateDTO {
     activeTaskId: view.workspace.activeTaskId,
     sessionTypes: view.sessionTypes.map(toSessionTypeDTO),
     settings: toSettingsDTO(view.settings),
-    version: view.version
+    version: view.version,
+    issues: (view.workspace.issues ?? []).map(toIssueDTO)
   }
 }
 
@@ -255,6 +277,10 @@ export function toEventDTO(e: DomainEvent): EventDTO {
       }
     case 'taskStateChanged':
       return { type: 'taskStateChanged', taskId: e.taskId, state: e.state }
+    case 'issueUpserted':
+      return { type: 'issueUpserted', issue: toIssueDTO(e.issue) }
+    case 'issueDeleted':
+      return { type: 'issueDeleted', issueId: e.issueId }
     default: {
       const _never: never = e
       throw new Error(`unmapped domain event: ${JSON.stringify(_never)}`)

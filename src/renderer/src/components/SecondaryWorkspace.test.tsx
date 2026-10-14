@@ -57,6 +57,7 @@ function seed(sessions: SessionDTO[], thisWindowId: string): void {
         configSchema: {}
       }
     ],
+    issues: [],
     settings: {
       worktree: { location: '' },
       terminal: {},

@@ -14,6 +14,8 @@ type Branded<T, B> = T & { readonly [brand]: B }
 export type TaskId = Branded<string, 'TaskId'>
 /** Globally unique session identifier (I5) — needs no task context to route. */
 export type SessionId = Branded<string, 'SessionId'>
+/** Globally unique issue identifier (I19). */
+export type IssueId = Branded<string, 'IssueId'>
 /** Session-type identifier, resolved via the SessionTypeRegistry (§8). */
 export type TypeId = Branded<string, 'TypeId'>
 /**
@@ -28,6 +30,8 @@ export type WindowId = Branded<string, 'WindowId'>
 export const asTaskId = (raw: string): TaskId => raw as TaskId
 /** Tag a raw string as a {@link SessionId}. */
 export const asSessionId = (raw: string): SessionId => raw as SessionId
+/** Tag a raw string as an {@link IssueId}. */
+export const asIssueId = (raw: string): IssueId => raw as IssueId
 /** Tag a raw string as a {@link TypeId}. */
 export const asTypeId = (raw: string): TypeId => raw as TypeId
 /** Tag a raw string as a {@link WindowId}. */

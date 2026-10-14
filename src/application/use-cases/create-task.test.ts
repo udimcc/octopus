@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import { createTask } from './create-task'
+import { createIssue } from './create-issue'
+import { bindIssue } from './bind-issue'
 import { makeDeps, taskInput } from './test-fakes'
 import { TaskLifecycle } from '../../domain/lifecycle'
+import { IssueStatus } from '../../domain/issue'
+import { asIssueId, asTaskId } from '../../domain/ids'
 
 describe('createTask (§3.5, §6.4)', () => {
   it('drives None → Provisioning → Ready and persists only the Ready task', async () => {
@@ -168,5 +172,185 @@ describe('createTask (§3.5, §6.4)', () => {
     const tasks = workspace.tasks()
     expect(tasks.map((t) => t.position)).toEqual([0, 1])
     expect(tasks.map((t) => t.name)).toEqual(['first', 'second'])
+  })
+})
+
+describe('createTask issue binding (Issues §13.3, I19)', () => {
+  it('binds the requested issue only once Ready (mode: new), moving Todo → InProgress', async () => {
+    const fd = makeDeps()
+    const issueId = createIssue(fd.deps, { name: 'Fix', description: '' }).issueId!
+    const eventsBefore = fd.bus.events.length
+    // m3: capture the issue's binding state at the moment the Provisioning
+    // `taskCreated` fires — binding only happens inside the Ready persist
+    // transaction (module doc), never at Provisioning.
+    let issueTaskIdAtProvisioning: unknown = 'not observed'
+    const unsubscribe = fd.bus.subscribe((e) => {
+      if (e.type === 'taskCreated' && e.task.lifecycle === TaskLifecycle.Provisioning) {
+        issueTaskIdAtProvisioning = fd.workspace.issue(issueId)!.taskId
+      }
+    })
+
+    await createTask(fd.deps, taskInput('T', { issueId }))
+    unsubscribe()
+
+    expect(issueTaskIdAtProvisioning).toBeUndefined()
+
+    const taskId = asTaskId('task-1')
+    const issue = fd.workspace.issue(issueId)!
+    expect(issue.taskId).toBe(taskId)
+    expect(issue.status).toBe(IssueStatus.InProgress)
+    // issueUpserted published AFTER taskCreated (Ready), among this call's own events.
+    const types = fd.bus.events.slice(eventsBefore).map((e) => e.type)
+    const createdReadyIdx = types.lastIndexOf('taskCreated')
+    const issueUpsertedIdx = types.indexOf('issueUpserted')
+    expect(issueUpsertedIdx).toBeGreaterThan(createdReadyIdx)
+  })
+
+  it('binds the requested issue only once Ready (mode: none)', async () => {
+    const fd = makeDeps()
+    const issueId = createIssue(fd.deps, { name: 'Fix', description: '' }).issueId!
+    const eventsBefore = fd.bus.events.length
+
+    await createTask(fd.deps, { mode: 'none', name: 'Scratch', issueId })
+
+    const taskId = asTaskId('task-1')
+    const issue = fd.workspace.issue(issueId)!
+    expect(issue.taskId).toBe(taskId)
+    expect(issue.status).toBe(IssueStatus.InProgress)
+    const newEventTypes = fd.bus.events.slice(eventsBefore).map((e) => e.type)
+    expect(newEventTypes.filter((t) => t === 'issueUpserted')).toHaveLength(1)
+  })
+
+  it('a PROVISIONING failure leaves the requested issue completely unbound and the task unpersisted', async () => {
+    const fd = makeDeps()
+    const issueId = createIssue(fd.deps, { name: 'Fix', description: '' }).issueId!
+    const eventsBefore = fd.bus.events.length
+    fd.worktrees.createRejectsWith = new Error('create.sh exited 1')
+
+    await createTask(fd.deps, taskInput('Doomed', { issueId }))
+
+    const issue = fd.workspace.issue(issueId)!
+    expect(issue.taskId).toBeUndefined()
+    expect(issue.status).toBe(IssueStatus.Todo)
+    expect(fd.bus.events.slice(eventsBefore).filter((e) => e.type === 'issueUpserted')).toEqual([])
+    expect(fd.persistence.upsertedTasks).toEqual([])
+  })
+
+  it('stale-view: issue already bound to a DIFFERENT task — task is created unbound + error toast', async () => {
+    const fd = makeDeps()
+    await createTask(fd.deps, taskInput('Other'))
+    const otherTaskId = asTaskId('task-1')
+    const issueId = createIssue(fd.deps, { name: 'Fix', description: '' }).issueId!
+    bindIssue(fd.deps, { issueId, taskId: otherTaskId })
+
+    const res = await createTask(fd.deps, taskInput('New', { issueId }))
+
+    expect(res).toEqual({ ok: true })
+    const newTaskId = asTaskId('task-2')
+    expect(fd.workspace.task(newTaskId)).toBeDefined()
+    // The issue stays bound to the OTHER task, untouched.
+    expect(fd.workspace.issue(issueId)!.taskId).toBe(otherTaskId)
+    const errors = fd.bus.ofType('error')
+    expect(errors).toHaveLength(1)
+    expect(errors[0].message).toBe('Issue was linked to another task; task created without it')
+    expect(errors[0].taskId).toBe(newTaskId)
+  })
+
+  it('stale-view: issue no longer exists — task is created unbound + error toast', async () => {
+    const fd = makeDeps()
+    const bogusIssueId = asIssueId('ghost-issue')
+
+    const res = await createTask(fd.deps, taskInput('New', { issueId: bogusIssueId }))
+
+    expect(res).toEqual({ ok: true })
+    const taskId = asTaskId('task-1')
+    expect(fd.workspace.task(taskId)).toBeDefined()
+    const errors = fd.bus.ofType('error')
+    expect(errors).toHaveLength(1)
+    expect(errors[0].message).toBe('Issue no longer exists; task created without it')
+    expect(errors[0].taskId).toBe(taskId)
+  })
+
+  it('a PERSIST failure in the Ready transaction rolls back the task add, the prior active task, and the issue binding', async () => {
+    const fd = makeDeps()
+    await createTask(fd.deps, taskInput('First'))
+    const firstTaskId = asTaskId('task-1')
+    expect(fd.workspace.activeTaskId).toBe(firstTaskId)
+    const issueId = createIssue(fd.deps, { name: 'Fix', description: '' }).issueId!
+
+    // Throw from upsertIssue (not upsertTask), so `bindRequestedIssue` has already
+    // run `Workspace.bindIssue` (taskId set, Todo -> InProgress) by the time the
+    // transaction fails — only then does the catch's `restoreIssueBinding` have
+    // anything to undo. Throwing at `upsertTask` instead would fail before the
+    // bind ever runs, never exercising the rollback.
+    fd.persistence.upsertIssue = () => {
+      throw new Error('disk full')
+    }
+
+    const res = await createTask(fd.deps, taskInput('Second', { issueId }))
+
+    expect(res).toEqual({ ok: false, error: 'disk full' })
+    const newTaskId = asTaskId('task-2')
+    expect(fd.workspace.task(newTaskId)).toBeUndefined()
+    // The prior active task is restored.
+    expect(fd.workspace.activeTaskId).toBe(firstTaskId)
+    // The issue's prior (unbound, Todo) binding/status is restored. `removeTask`
+    // alone only clears the binding (I19) and leaves status at InProgress, so this
+    // also exercises `restoreIssueBinding`'s status restore specifically.
+    const issue = fd.workspace.issue(issueId)!
+    expect(issue.taskId).toBeUndefined()
+    expect(issue.status).toBe(IssueStatus.Todo)
+    // taskCreated (Provisioning) was undone, and the failure was announced.
+    expect(fd.bus.ofType('taskDeleted').map((e) => e.taskId)).toEqual([newTaskId])
+    expect(fd.bus.ofType('error').map((e) => e.taskId)).toEqual([newTaskId])
+    // Only createIssue's own issueUpserted was ever published — the failed bind's
+    // upsertIssue call threw before `bindRequestedIssue` could publish anything,
+    // and `announceBindOutcome` is never reached on this path.
+    expect(fd.bus.ofType('issueUpserted')).toHaveLength(1)
+  })
+
+  it('MINOR 3: binds the requested issue for mode "existing" (adopted worktree) too', async () => {
+    const fd = makeDeps()
+    fd.worktrees.adoptedPath = '/home/u/worktrees/wt-x'
+    fd.worktrees.adoptedRepoRoot = '/home/u/project'
+    const issueId = createIssue(fd.deps, { name: 'Fix', description: '' }).issueId!
+
+    await createTask(fd.deps, {
+      mode: 'existing',
+      name: 'Adopted',
+      worktreeDir: '/home/u/worktrees/wt-x',
+      issueId
+    })
+
+    const taskId = asTaskId('task-1')
+    const issue = fd.workspace.issue(issueId)!
+    expect(issue.taskId).toBe(taskId)
+    expect(issue.status).toBe(IssueStatus.InProgress)
+    // The persisted upsert carries the taskId, same as the SQL-visible binding.
+    const upserted = fd.persistence.upsertedIssues.at(-1)!
+    expect(upserted.id).toBe(issueId)
+    expect(upserted.taskId).toBe(taskId)
+  })
+
+  it('a PERSIST failure (provisioning mode, issue-bound variant) emits taskDeleted + error and returns ok:false', async () => {
+    const fd = makeDeps()
+    const issueId = createIssue(fd.deps, { name: 'Fix', description: '' }).issueId!
+    // Same reasoning as above: throw from upsertIssue so the bind actually ran
+    // in-memory before the rollback has to undo it.
+    fd.persistence.upsertIssue = () => {
+      throw new Error('disk full')
+    }
+
+    const res = await createTask(fd.deps, taskInput('T', { issueId }))
+
+    expect(res).toEqual({ ok: false, error: 'disk full' })
+    const taskId = asTaskId('task-1')
+    expect(fd.workspace.task(taskId)).toBeUndefined()
+    expect(fd.bus.ofType('taskDeleted').map((e) => e.taskId)).toEqual([taskId])
+    expect(fd.bus.ofType('error').map((e) => e.taskId)).toEqual([taskId])
+    const issue = fd.workspace.issue(issueId)!
+    expect(issue.taskId).toBeUndefined()
+    expect(issue.status).toBe(IssueStatus.Todo)
+    expect(fd.bus.ofType('issueUpserted')).toHaveLength(1)
   })
 })

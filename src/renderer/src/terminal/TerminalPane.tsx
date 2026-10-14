@@ -53,8 +53,10 @@ import { CanvasAddon } from '@xterm/addon-canvas'
 import '@xterm/xterm/css/xterm.css'
 import { useStore } from '../store/store'
 import { matchesChord } from '../keybindings/chords'
+import { isSafeExternalUrl } from '../../../shared/external-url'
 import { registerTerminalSink, unregisterTerminalSink } from '../pty/pty-router'
 import { registerSearchOpener, unregisterSearchOpener } from './terminal-search'
+import { registerTerminalFocuser, unregisterTerminalFocuser } from './terminal-focus'
 import { installCursorBlinkGuard } from './cursor-blink-guard'
 import { webglBudget } from './webgl-budget'
 import { probeGpuTier } from './gpu-capability'
@@ -211,21 +213,31 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
     term.loadAddon(fit)
     term.loadAddon(search)
     term.loadAddon(new SerializeAddon())
-    term.loadAddon(new WebLinksAddon())
+    // Explicit handler ("Issues", §13.4): the default handler opens via `window.open()`,
+    // which main's `setWindowOpenHandler` now denies (DESIGN §13.4/§13.5) — so terminal
+    // web links would silently stop working. Route through the same scheme allowlist
+    // and system-browser path as markdown links instead.
+    term.loadAddon(
+      new WebLinksAddon((_event, uri) => {
+        if (isSafeExternalUrl(uri)) void window.octopusAPI.shell.openExternal({ url: uri })
+      })
+    )
     const unicode = new Unicode11Addon()
     term.loadAddon(unicode)
     term.unicode.activeVersion = '11'
 
     term.open(host)
 
-    // Chords owned by the global shortcut layer (§5.4) — the eight free-form
+    // Chords owned by the global shortcut layer (§5.4) — the nine free-form
     // configurable chords — must NOT reach the PTY. The blanket Ctrl+Shift drop is a
     // safety net covering the Ctrl+Shift defaults; the explicit list also catches a
-    // rebind to any other modifier (e.g. `Alt+/`). Returning false drops the key
-    // before xterm turns it into `onData` output; the window listener's preventDefault
-    // alone is unreliable (xterm's own textarea handler runs first). Settings live via
-    // `getState()` so a rebind takes effect without re-attaching. This mirrors
-    // `useKeyboardShortcuts` so the layers agree.
+    // rebind to any other modifier (e.g. `Alt+/`) AND `issuesKey`, whose default
+    // (`Alt+Shift+KeyI`) isn't Ctrl+Shift at all, so without the explicit entry the
+    // terminal would swallow it before the global hook ever saw it. Returning false
+    // drops the key before xterm turns it into `onData` output; the window listener's
+    // preventDefault alone is unreliable (xterm's own textarea handler runs first).
+    // Settings live via `getState()` so a rebind takes effect without re-attaching.
+    // This mirrors `useKeyboardShortcuts` so the layers agree.
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true
       const {
@@ -238,7 +250,8 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
         newSessionKey,
         newTaskKey,
         closeSessionKey,
-        searchKey
+        searchKey,
+        issuesKey
       } = useStore.getState().settings
       // Copy/paste act on THIS terminal's selection/buffer, so they're handled here
       // (with the live `term`) rather than in the global shortcut hook. Checked before
@@ -267,7 +280,8 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
         newSessionKey,
         newTaskKey,
         closeSessionKey,
-        searchKey
+        searchKey,
+        issuesKey
       ]
       if (configurable.some((chord) => matchesChord(e, chord))) return false
       return true
@@ -289,6 +303,11 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
       // Focus after the input renders.
       setTimeout(() => searchInputRef.current?.focus(), 0)
     })
+    // Lets a caller that doesn't hold a ref to this pane (the Issues drawer's
+    // close-restore fallback) hand focus back to this terminal.
+    // `textarea` (not `term.focus()`, which takes no params) so `preventScroll` is
+    // honored — the drawer closing shouldn't also yank the session list's scroll.
+    registerTerminalFocuser(sessionId, () => term.textarea?.focus({ preventScroll: true }))
     // Keystrokes → backend PTY (fire-and-forget, §6.5).
     const dataSub = term.onData((data) => window.octopusAPI.pty.write({ sessionId, data }))
 
@@ -330,6 +349,7 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
       dataSub.dispose()
       unregisterTerminalSink(sessionId)
       unregisterSearchOpener(sessionId)
+      unregisterTerminalFocuser(sessionId)
       rendererRef.current?.addon.dispose()
       rendererRef.current = null
       webglBudget.release(sessionId)

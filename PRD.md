@@ -58,6 +58,112 @@ set of repositories doesn't have to re-pick the same directory for every new tas
   repository already in use by an existing task, so a user with existing tasks starts with a populated
   list instead of an empty one.
 
+## Issues
+
+An issue is a work item the user tracks inside Octopus: personal issues today, Jira issues later.
+Issues are created manually and stored locally. They survive restart.
+
+### Fields
+
+- **Name** (required).
+- **Description**, written and shown as markdown.
+- **Project** (optional): one of the configured Projects (above).
+- **Status**: one of a fixed set, each with its own icon. Users cannot add or remove statuses.
+  1. **Todo** (the default for a new issue)
+  2. **In progress**
+  3. **In review**
+  4. **Done**
+
+### Issues and tasks
+
+Binding is optional. A task can exist without an issue and an issue without a task, but an issue is
+bound to **at most one** task and a task to **at most one** issue.
+
+There are three ways to bind:
+- **Link task** (from the issue view):
+  - Tasks are grouped by project, the same way as in the Progress window's task list.
+  - Tasks already bound to another issue are grayed out ("already linked").
+  - If this issue is already bound, its old binding is replaced without a prompt.
+- **Create task** (from the issue view): opens the task-creation modal on **From New Worktree**,
+  prefilled:
+  - task name = the issue name;
+  - the issue is locked in;
+  - the issue's project is picked, with the new branch derived from the name.
+
+  An issue with no project opens with no project picked.
+- **Associated issue** (in the task-creation modal): an optional picker on all three tabs.
+  - It lists issues that are not Done. Issues already bound are grayed out ("already linked").
+  - Picking an issue fills the task name and branch if they are empty, and selects the issue's
+    project if no project is picked yet.
+
+Binding rules:
+- **The only automatic status change:** when an issue becomes bound by any of these three paths, its
+  status moves to **In progress** if it was **Todo**. Any other status is left unchanged.
+- When a binding ends (Unlink task, or deleting only the task), the issue's status is left unchanged.
+- A task created with an issue is bound only once the task is **ready** (its worktree exists).
+  - If creating the task fails, the issue stays unbound.
+  - If the issue was bound to another task while this one was being created, the task is still
+    created, unbound, and a notification says so.
+
+### Deleting
+
+- **Deleting a bound task or a bound issue** shows a warning with four choices:
+  - **Delete task only** or **Delete issue only**;
+  - **Delete both**;
+  - **Cancel**.
+- The task's usual "uncommitted changes — delete anyway?" step still applies. With **Delete both**,
+  the issue is deleted only if the task is actually deleted. If the user cancels that step, or the
+  task deletion fails, nothing is deleted and the binding remains.
+- **Deleting an unbound issue** asks for a simple confirmation.
+- **Removing a project** that issues refer to is allowed: those issues just lose their project. Tasks
+  still block a project's removal, as before.
+
+### Issues window
+
+The Issues window is a large panel. It is **not a session**, is not tied to any task, and opens and
+closes regardless of which task is active.
+
+**Opening and closing:**
+- Open it from the **Issues** button at the bottom left of the Progress window, below the tasks, or
+  with the keyboard shortcut (default **Alt+Shift+I**, configurable in Settings → Keybindings).
+- It slides in from the right and covers the whole session area, up to the Progress window, which
+  stays visible.
+- **Esc**, the **Issues** button, or the shortcut closes it.
+- It belongs to the **main window** only. Pressing the shortcut in a secondary window brings the main
+  window to the front and toggles its Issues window.
+- It always starts closed after a restart.
+
+**Layout:** a split view, with the issue list on the left and the selected issue on the right.
+
+- **Issue list:**
+  - Issues are grouped by status, in the order Todo, In progress, In review, Done.
+  - Each group can be collapsed. **Done** starts collapsed.
+  - Within a group, issues are shown newest first.
+  - Each row shows the status icon, the name, a one-line preview of the description, and (when
+    set) the project and the linked task.
+  - **+ New Issue** opens an empty issue in the right pane, ready to edit. **Save** creates it (the
+    name is required); **Cancel** discards it.
+- **Issue view:**
+  - The description is rendered as markdown. Links open in the system browser, and Octopus never
+    navigates away.
+  - **Edit** makes the name, description and project editable, with explicit **Save** and
+    **Cancel**.
+  - Unsaved edits ask "Discard unsaved changes?" before the user selects another issue, closes the
+    window, or presses Esc.
+  - Below the name, a toolbar holds the **status** dropdown and the buttons: **Edit**, **Create
+    task**, **Link task**, **Unlink task** (shown when bound) and **Delete**. As in Jira, the status
+    is changed right there, at any time, and is not part of the Edit form.
+  - Status icons: Todo is a dashed circle, In progress a play mark, In review an eye, Done a check.
+
+**On the task side:** a bound task shows its issue's status icon on its row in the Progress window.
+Hovering the icon shows the issue name; clicking it opens the Issues window on that issue.
+
+### Future
+
+- Fetch issues from Jira; instructions will come later.
+- A Kanban board tab in the Issues window.
+- Start a Claude brainstorm conversation from a generated prompt based on the issue description.
+
 ## Sessions
 
 A session is a window containing a developer tool needed for task completion.
@@ -138,7 +244,10 @@ A window listing all task names. Located on the left side of the screen.
 ### Controls
 
 - **New Task** button at the top of the window — opens the task-creation modal (name, a configured project, source branch, new branch).
-- **Delete Task** button at the top of the window.
+- **Delete Task** button at the top of the window. Deleting a task bound to an issue offers Delete
+  task only / Delete issue only / Delete both / Cancel (see Issues → Deleting).
+- **Issues** button at the bottom left of the window (below the task list) — toggles the Issues
+  window (see Issues → Issues window).
 
 ## UI Layout
 
@@ -154,12 +263,16 @@ A window listing all task names. Located on the left side of the screen.
 |    Task 2       |                                                   |
 |    Task 3       |                                                   |
 |                  |                                                   |
+|  [Issues]        |                                                   |
 +------------------+---------------------------------------------------+
 ```
 
 - **Left side:** Progress window with task list and controls.
 - **Right side:** Task window containing session content.
 - **Top of task window:** Session tabs (clickable) and a "New Session" dropdown button on the top-left.
+- **Issues window:** when open, slides in from the right and covers the whole right side (session tabs
+  and content), leaving the Progress window visible; its toggle button sits at the bottom of the
+  Progress window.
 
 ## Phases
 

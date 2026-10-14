@@ -18,11 +18,12 @@
  *    columns are written for record fidelity but intentionally NOT resurrected.
  */
 
-import { asTaskId, asSessionId, asTypeId, asWindowId } from '../../domain/ids'
+import { asTaskId, asSessionId, asTypeId, asWindowId, asIssueId } from '../../domain/ids'
 import { SessionState, TaskState } from '../../domain/state'
 import { TaskLifecycle, SessionLifecycle } from '../../domain/lifecycle'
+import { IssueStatus, parseIssueStatus } from '../../domain/issue'
 import type { SessionConfig } from '../../domain/session-config'
-import type { TaskSnapshot, SessionSnapshot } from '../../domain/snapshots'
+import type { TaskSnapshot, SessionSnapshot, IssueSnapshot } from '../../domain/snapshots'
 import type { WindowRecord } from '../../ports/workspace-persistence'
 
 /** A `tasks` row (§6.3). Nullable columns surface as `null` from better-sqlite3. */
@@ -64,6 +65,19 @@ export interface SessionRow {
    * the DB (pre-v6 rows / never-persisted → null → worktree-root fallback).
    */
   last_cwd?: string | null
+}
+
+/** An `issues` row (I19, v8 schema). Nullable columns surface as `null` from better-sqlite3. */
+export interface IssueRow {
+  id: string
+  name: string
+  description: string
+  project_path: string | null
+  status: string
+  /** UNIQUE, nullable (I19) — `null` means unbound; `ON DELETE SET NULL` on the task's deletion. */
+  task_id: string | null
+  created_at: number
+  updated_at: number
 }
 
 /** A `windows` row (V1.5, §3.7, §6.3). */
@@ -143,6 +157,20 @@ export function sessionToRow(snap: SessionSnapshot): SessionRow {
     exited_at: snap.exitedAt ?? null,
     // Persist the assignment tag; `Session.toSnapshot` always emits a windowId (§3.7).
     window_id: snap.windowId ?? 'main'
+  }
+}
+
+/** Serialize an issue for persistence (I19, v8 schema). `undefined` fields become `null`. */
+export function issueToRow(snap: IssueSnapshot): IssueRow {
+  return {
+    id: snap.id,
+    name: snap.name,
+    description: snap.description,
+    project_path: snap.projectPath ?? null,
+    status: snap.status,
+    task_id: snap.taskId ?? null,
+    created_at: snap.createdAt,
+    updated_at: snap.updatedAt
   }
 }
 
@@ -241,6 +269,26 @@ export function rowToSessionSnapshot(row: SessionRow): SessionSnapshot {
     // Window assignment is persisted metadata (not live process state), so it
     // round-trips on restore — a restored session reappears in its window (I18).
     windowId: asWindowId(row.window_id)
+  }
+}
+
+/**
+ * Reconstruct an issue snapshot from its row (I19, v8 schema). `NULL` columns
+ * become `undefined`. `status` goes through `parseIssueStatus` rather than a
+ * bare cast: a corrupt/pre-migration row (anything outside the enum's string
+ * values) falls back to `Todo` rather than smuggling an invalid status into
+ * the domain layer, which never otherwise has to defend against one.
+ */
+export function rowToIssueSnapshot(row: IssueRow): IssueSnapshot {
+  return {
+    id: asIssueId(row.id),
+    name: row.name,
+    description: row.description,
+    projectPath: row.project_path ?? undefined,
+    status: parseIssueStatus(row.status) ?? IssueStatus.Todo,
+    taskId: row.task_id ? asTaskId(row.task_id) : undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
   }
 }
 

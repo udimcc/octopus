@@ -124,6 +124,8 @@ export interface SettingsDTO {
   readonly searchKey?: string
   readonly copyKey?: string
   readonly pasteKey?: string
+  /** Toggle the Issues drawer ("Issues", §13.5); default `'Alt+Shift+KeyI'`. */
+  readonly issuesKey?: string
 }
 
 /** A deep-partial settings patch (nested objects merged, not replaced). */
@@ -149,6 +151,8 @@ export interface SettingsPatchDTO {
   readonly searchKey?: string
   readonly copyKey?: string
   readonly pasteKey?: string
+  /** Toggle the Issues drawer ("Issues", §13.5); default `'Alt+Shift+KeyI'`. */
+  readonly issuesKey?: string
 }
 
 /** Full workspace snapshot for renderer hydration on startup (§5.2). */
@@ -160,6 +164,8 @@ export interface WorkspaceStateDTO {
   readonly settings: SettingsDTO
   /** The app feature version (§10); the renderer uses it for version-gated UI. */
   readonly version: number
+  /** All locally-tracked issues ("Issues", §13.1). No guaranteed order; the renderer sorts for display. */
+  readonly issues: readonly IssueDTO[]
 }
 
 /** A persisted OS window on the wire (V1.5, §6.7). Mirror of `WindowRecord`. */
@@ -215,6 +221,73 @@ export interface ProjectWorktreeDTO {
   readonly usedByTaskName?: string
 }
 
+// ── Issues (§13.1, §6.3, "Issues") ────────────────────────────────────────────
+
+/** An issue's workflow status on the wire (mirror of the domain `IssueStatus` enum). */
+export type IssueStatusDTO = 'todo' | 'in_progress' | 'in_review' | 'done'
+
+/**
+ * A locally-tracked issue, optionally bound 1:1 to a task (`taskId`). The binding is
+ * stored only on the issue (invariant I19); a task looks its issue up in reverse via
+ * the renderer store's `issueForTask` selector. `description` is markdown, rendered by
+ * `IssueMarkdown`. `projectPath` is `undefined` when the issue has no project, or when
+ * its project was removed (`removeProject` clears it, leaving the issue itself intact).
+ */
+export interface IssueDTO {
+  readonly id: string
+  readonly name: string
+  readonly description: string
+  readonly projectPath?: string
+  readonly status: IssueStatusDTO
+  readonly taskId?: string
+  readonly createdAt: number
+  readonly updatedAt: number
+}
+
+// ── Issue command inputs (UI → backend) ───────────────────────────────────────
+
+/** Create an issue (Issues drawer, "+ New Issue"). `status` defaults to `'todo'`. */
+export interface CreateIssueInput {
+  readonly name: string
+  readonly description: string
+  readonly projectPath?: string
+  readonly status?: IssueStatusDTO
+}
+
+/**
+ * Patch an issue. All fields but `issueId` are optional (only provided fields change).
+ * `projectPath: null` explicitly clears the project; `undefined`/omitted leaves it as is.
+ */
+export interface UpdateIssueInput {
+  readonly issueId: string
+  readonly name?: string
+  readonly description?: string
+  readonly projectPath?: string | null
+  readonly status?: IssueStatusDTO
+}
+
+export interface DeleteIssueInput {
+  readonly issueId: string
+}
+
+/**
+ * Bind an issue to a task (1:1); replaces the issue's prior binding, if any.
+ * Rejected if the task is already linked to a different issue (I19).
+ */
+export interface BindIssueInput {
+  readonly issueId: string
+  readonly taskId: string
+}
+
+export interface UnbindIssueInput {
+  readonly issueId: string
+}
+
+/** Open a URL in the system browser (markdown links, terminal web links). */
+export interface OpenExternalInput {
+  readonly url: string
+}
+
 // ── Command inputs (UI → backend) ─────────────────────────────────────────────
 
 /**
@@ -230,6 +303,13 @@ export interface CreateTaskFromNewInput {
   readonly sourceBranch: string
   /** Branch to create the worktree ON (prefilled slug the user may edit). */
   readonly newBranch: string
+  /**
+   * The issue picked in the New-Task modal to bind this task to, once it
+   * reaches Ready ("Issues", §13.3). If the issue is gone, or already
+   * connected to a different task, by the time this task becomes Ready, the
+   * task is still created — unbound — and an `error` toast explains why.
+   */
+  readonly issueId?: string
 }
 
 /**
@@ -243,6 +323,13 @@ export interface CreateTaskFromExistingInput {
   readonly name: string
   /** The existing worktree directory, picked from the selected project's worktree list (§5.4). */
   readonly worktreeDir: string
+  /**
+   * The issue picked in the New-Task modal to bind this task to, once it
+   * reaches Ready ("Issues", §13.3). If the issue is gone, or already
+   * connected to a different task, by the time this task becomes Ready, the
+   * task is still created — unbound — and an `error` toast explains why.
+   */
+  readonly issueId?: string
 }
 
 /**
@@ -254,6 +341,14 @@ export interface CreateTaskFromExistingInput {
 export interface CreateTaskFromNoneInput {
   readonly mode: 'none'
   readonly name: string
+  /**
+   * The issue picked in the New-Task modal to bind this task to; since this
+   * mode becomes Ready synchronously (no provisioning step), the bind check
+   * runs immediately. If the issue is gone, or already linked to a
+   * different task, the task is still created — unbound — and an `error`
+   * toast explains why.
+   */
+  readonly issueId?: string
 }
 
 /**
@@ -269,6 +364,11 @@ export interface DeleteTaskInput {
   readonly force?: boolean
   /** The user acknowledged uncommitted changes in the dirty-confirm dialog. */
   readonly confirmedDirty?: boolean
+  /**
+   * Also delete this task's bound issue ("Delete both", "Issues" §13.3). Applied only in
+   * the final delete step, after the task itself is actually removed.
+   */
+  readonly alsoDeleteIssue?: boolean
 }
 
 export interface RenameTaskInput {
@@ -425,4 +525,6 @@ export interface CommandAck {
   readonly windowId?: string
   /** Resolved project returned by `projects.add`. */
   readonly project?: ProjectDTO
+  /** Id of an issue created by `issues.create` ("Issues", §13.3). */
+  readonly issueId?: string
 }

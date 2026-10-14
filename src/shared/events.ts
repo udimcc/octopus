@@ -12,7 +12,7 @@
  * up state without a signature change (§10); nobody emits them in V1.
  */
 
-import type { TaskDTO, SessionDTO } from './dto'
+import type { TaskDTO, SessionDTO, IssueDTO } from './dto'
 
 export interface PtyDataEventDTO {
   readonly type: 'ptyData'
@@ -84,6 +84,19 @@ export interface ActiveSessionChangedEventDTO {
   readonly taskId: string
   readonly sessionId: string
   readonly windowId: string
+}
+
+// ── Issue events ("Issues", §13.3) ───────────────────────────────────────────
+
+/** An issue was created or changed (create, update, bind, unbind). DTO mirror of `IssueUpsertedEvent`. */
+export interface IssueUpsertedEventDTO {
+  readonly type: 'issueUpserted'
+  readonly issue: IssueDTO
+}
+/** An issue was deleted. DTO mirror of `IssueDeletedEvent`. */
+export interface IssueDeletedEventDTO {
+  readonly type: 'issueDeleted'
+  readonly issueId: string
 }
 
 export interface ScriptProgressEventDTO {
@@ -193,6 +206,17 @@ export interface SessionSeenEventDTO {
   readonly sessionId: string
 }
 
+/**
+ * The Issues drawer should toggle open/closed ("Issues", §13.4). Routed to the MAIN
+ * window only, in response to `issue:toggleDrawer` sent from a secondary window (main
+ * then raises/focuses the main window). Like `sessionSeen`, it is
+ * SYNTHESIZED in main and routed directly, never published on the domain bus: drawer
+ * open/closed is a pure renderer view-state, not a domain fact.
+ */
+export interface IssuesDrawerToggleEventDTO {
+  readonly type: 'issuesDrawerToggle'
+}
+
 /** Every event that can flow over the `app:event` channel. Discriminated on `type`. */
 export type EventDTO =
   | PtyDataEventDTO
@@ -208,6 +232,8 @@ export type EventDTO =
   | TaskStaleEventDTO
   | ActiveTaskChangedEventDTO
   | ActiveSessionChangedEventDTO
+  | IssueUpsertedEventDTO
+  | IssueDeletedEventDTO
   | ScriptProgressEventDTO
   | ScriptErrorEventDTO
   | ErrorEventDTO
@@ -218,3 +244,4 @@ export type EventDTO =
   | TaskStateChangedEventDTO
   | SessionStateNotificationEventDTO
   | SessionSeenEventDTO
+  | IssuesDrawerToggleEventDTO

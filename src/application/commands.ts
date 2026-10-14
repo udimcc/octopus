@@ -9,9 +9,10 @@
  * will dispatch to recompute `TaskState`. Defined now, dispatched by nobody.
  */
 
-import type { TaskId, SessionId, TypeId, WindowId } from '../domain/ids'
+import type { TaskId, SessionId, TypeId, WindowId, IssueId } from '../domain/ids'
 import type { SessionConfig } from '../domain/session-config'
 import type { SessionState } from '../domain/state'
+import type { IssueStatus } from '../domain/issue'
 import type { StateChangeMeta } from '../ports/session-runtime'
 import type { ProjectSettings } from '../ports/settings-store'
 
@@ -25,6 +26,11 @@ export interface CreateTaskFromNewInput {
   readonly sourceBranch: string
   /** Branch to create the worktree ON. */
   readonly newBranch: string
+  /**
+   * Bind this task to an existing issue once it reaches Ready ("Issues", §13.3).
+   * Left unbound (with a toast) if the issue was deleted or bound elsewhere by then.
+   */
+  readonly issueId?: IssueId
 }
 
 /** Adopt an existing worktree directory (New-Task modal "From Existing Worktree"). */
@@ -33,6 +39,8 @@ export interface CreateTaskFromExistingInput {
   readonly name: string
   /** The existing worktree directory the user picked. */
   readonly worktreeDir: string
+  /** Bind this task to an existing issue once it reaches Ready ("Issues", §13.3). */
+  readonly issueId?: IssueId
 }
 
 /**
@@ -42,6 +50,8 @@ export interface CreateTaskFromExistingInput {
 export interface CreateTaskFromNoneInput {
   readonly mode: 'none'
   readonly name: string
+  /** Bind this task to an existing issue once it reaches Ready ("Issues", §13.3). */
+  readonly issueId?: IssueId
 }
 
 /** Discriminated on `mode`: new worktree, adopted repo, or no repo at all. */
@@ -52,6 +62,11 @@ export interface DeleteTaskInput {
   readonly taskId: TaskId
   readonly force?: boolean
   readonly confirmedDirty?: boolean
+  /**
+   * Also delete this task's bound issue ("Delete both", "Issues" §13.3). Applied only
+   * in the final delete step, after the task itself is actually removed.
+   */
+  readonly alsoDeleteIssue?: boolean
 }
 
 export interface RenameTaskInput {
@@ -146,6 +161,7 @@ export interface SettingsPatch {
   readonly defaultSessionTypeId?: string
   readonly worktreeCreateTimeoutMs?: number
   readonly groupTasksByRepo?: boolean
+  readonly issuesKey?: string
 }
 
 /** A session's runtime died spontaneously (§6.1). Routed back through the loop. */
@@ -252,6 +268,46 @@ export interface SetProjectDefaultBranchInput {
  */
 export type SeedProjectsInput = Record<string, never>
 
+// ── Issues (§13.3, "Issues") ──────────────────────────────────────────────────
+
+/** Create an issue (Issues drawer, "+ New Issue"). `status` defaults to `Todo`. */
+export interface CreateIssueInput {
+  readonly name: string
+  readonly description: string
+  readonly projectPath?: string
+  readonly status?: IssueStatus
+}
+
+/**
+ * Patch an issue. All fields but `issueId` are optional (only provided fields
+ * change). `projectPath: null` explicitly clears the project; `undefined`/omitted
+ * leaves it as is.
+ */
+export interface UpdateIssueInput {
+  readonly issueId: IssueId
+  readonly name?: string
+  readonly description?: string
+  readonly projectPath?: string | null
+  readonly status?: IssueStatus
+}
+
+export interface DeleteIssueInput {
+  readonly issueId: IssueId
+}
+
+/**
+ * Bind an issue to a task (1:1); replaces the issue's prior binding, if any.
+ * Rejects a task already linked to a different issue (I19).
+ */
+export interface BindIssueInput {
+  readonly issueId: IssueId
+  readonly taskId: TaskId
+}
+
+export interface UnbindIssueInput {
+  readonly issueId: IssueId
+}
+
 /**
  * The command union. Discriminated on `kind`; the loop's `switch` is exhaustive.
  * `ingestSessionState` is present but never dispatched in V1 (§10).
@@ -283,6 +339,11 @@ export type Command =
   | { readonly kind: 'removeProject'; readonly input: RemoveProjectInput }
   | { readonly kind: 'setProjectDefaultBranch'; readonly input: SetProjectDefaultBranchInput }
   | { readonly kind: 'seedProjects'; readonly input: SeedProjectsInput }
+  | { readonly kind: 'createIssue'; readonly input: CreateIssueInput }
+  | { readonly kind: 'updateIssue'; readonly input: UpdateIssueInput }
+  | { readonly kind: 'deleteIssue'; readonly input: DeleteIssueInput }
+  | { readonly kind: 'bindIssue'; readonly input: BindIssueInput }
+  | { readonly kind: 'unbindIssue'; readonly input: UnbindIssueInput }
 
 /**
  * Result of a command. `ok=false` + `needsDirtyConfirm` is the delete-task dirty
@@ -300,4 +361,6 @@ export interface CommandResult {
   readonly windowId?: WindowId
   /** The resolved project, returned by `addProject` (§5.4, §6.3). */
   readonly project?: ProjectSettings
+  /** The id of an issue just created by `createIssue` ("Issues", §13.3). */
+  readonly issueId?: IssueId
 }

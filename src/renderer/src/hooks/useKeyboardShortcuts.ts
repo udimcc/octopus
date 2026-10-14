@@ -6,17 +6,47 @@
  * chord is user-configurable and the settings dialog enforces ≥1 modifier, so a
  * binding can never shadow a bare terminal keystroke.
  *
- * CONFIGURABLE KEYS: all eight actions are FREE-FORM chords read from `settings` —
+ * CONFIGURABLE KEYS: all nine actions are FREE-FORM chords read from `settings` —
  * `sessionNextKey` / `sessionPrevKey` (cycle sessions), `taskNextKey` / `taskPrevKey`
  * (move between tasks), `newSessionKey` (new terminal in the active task), `newTaskKey`
- * (open the New-Task modal), `closeSessionKey` (close the active session), and
- * `searchKey` (terminal search). Each is a canonical chord string (see
- * `keybindings/chords.ts`). Defaults: session next/prev `Ctrl+Shift+ArrowRight` /
- * `Ctrl+Shift+ArrowLeft`; task next/prev `Ctrl+Shift+ArrowDown` / `Ctrl+Shift+ArrowUp`;
- * new session `Ctrl+Shift+N`; new task `Ctrl+Shift+T`; close session `Ctrl+Shift+W`;
- * search `Ctrl+Shift+F`. Each is bound independently (no "opposite" inference) and
- * matched with `matchesChord`. The settings dialog blocks a collision between them
- * (and against `RESERVED_CHORDS` in `chords.ts`, currently empty).
+ * (open the New-Task modal), `closeSessionKey` (close the active session), `searchKey`
+ * (terminal search), and `issuesKey` (toggle the Issues drawer). Each is a canonical
+ * chord string (see `keybindings/chords.ts`). Defaults: session next/prev
+ * `Ctrl+Shift+ArrowRight` / `Ctrl+Shift+ArrowLeft`; task next/prev
+ * `Ctrl+Shift+ArrowDown` / `Ctrl+Shift+ArrowUp`; new session `Ctrl+Shift+N`; new task
+ * `Ctrl+Shift+T`; close session `Ctrl+Shift+W`; search `Ctrl+Shift+F`; toggle issues
+ * `Alt+Shift+I`. Each is bound independently (no "opposite" inference) and matched
+ * with `matchesChord`. The settings dialog blocks a collision between them (and
+ * against `RESERVED_CHORDS` in `chords.ts`, currently empty).
+ *
+ * ISSUES DRAWER (`issuesKey`, PRD "Issues window"): the drawer exists only in the main
+ * window (§13.4/§13.5). In the main window the chord toggles the store's own guarded
+ * `toggleIssuesDrawer()` action directly. In a secondary window (`store.windowRole ===
+ * 'secondary'`) there is no drawer to toggle locally, so the chord fires
+ * `window.octopusAPI.issues.toggleDrawer()` instead — a fire-and-forget IPC that asks
+ * main to raise/focus the main window and relay `issuesDrawerToggle` to it.
+ *
+ * ESCAPE FALLBACK: the drawer's own `onKeyDown` handles Escape, but only when
+ * the keydown's target is actually inside its DOM subtree — once focus has fallen
+ * outside it entirely (e.g. a nested confirm dialog's autofocused button got disabled
+ * or unmounted out from under the user), a `keydown` on `<body>` never reaches it.
+ * This hook maps Escape to the same guarded close the drawer itself uses
+ * (`toggleIssuesDrawer()`) whenever the main window has the drawer open and no other
+ * `[aria-modal="true"]` dialog is currently showing (that dialog owns Escape itself
+ * while it's up). Note `discardPrompt` can't be true here: it being true means
+ * `DiscardChangesPrompt` (`aria-modal="true"`) is up, which is exactly the condition
+ * that already made the clause above bail — so there is no `cancelDiscard()` branch
+ * to parallel the drawer's own handler. The drawer's own handler calls
+ * `e.stopPropagation()` on Escape, which also stops the underlying native event — so
+ * whenever that handler actually sees the keypress, this fallback never does; the two
+ * can't both fire for one keypress.
+ *
+ * DRAWER-OPEN CHORD SUPPRESSION: while the main window's Issues drawer covers
+ * the workspace, only `issuesKey` itself and the task/session navigation chords
+ * (`sessionNextKey`/`sessionPrevKey`/`taskNextKey`/`taskPrevKey`) still act — navigating
+ * is harmless, since the drawer stays open and the workspace underneath just switches.
+ * Everything else that acts on the now-hidden session (new/close session, search) is a
+ * no-op while the drawer is open, rather than operating invisibly behind it.
  *
  * COPY/PASTE (`Ctrl+Shift+C/V`, §5.4) are NOT handled here: they act on a specific
  * terminal's selection/buffer, so they're bound in `TerminalPane` (which holds the
@@ -55,6 +85,29 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
     const onKeyDown = (e: KeyboardEvent): void => {
       const store = useStore.getState()
       const { taskOrder, activeTaskId } = store
+
+      // Escape fallback — see the header comment. Only engages when no
+      // other modal dialog is up (it owns Escape itself while showing); checked
+      // first since Escape never has a modifier and so can never also match one of
+      // the configurable chords below.
+      if (
+        e.key === 'Escape' &&
+        store.windowRole === 'main' &&
+        store.issuesDrawerOpen &&
+        !document.querySelector('[aria-modal="true"]')
+      ) {
+        e.preventDefault()
+        // `store.discardPrompt` can't be true here — see the header comment — so
+        // this is always the plain close, never `cancelDiscard()`.
+        store.toggleIssuesDrawer()
+        return
+      }
+
+      // Drawer-open chord suppression — see the header comment. Navigation
+      // (session/task cycling) and `issuesKey` itself are exempt; checked once here
+      // and consulted by the chord branches below rather than threaded through
+      // every helper's own signature.
+      const suppressedByDrawer = store.windowRole === 'main' && store.issuesDrawerOpen
 
       // Cycle the active task by `delta`, wrapping, then switch to it. The walk order
       // follows the VISUAL order of the Progress panel, not `taskOrder` (creation/append
@@ -130,7 +183,8 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
         newSessionKey,
         newTaskKey,
         closeSessionKey,
-        searchKey
+        searchKey,
+        issuesKey
       } = store.settings
       if (matchesChord(e, sessionNextKey)) {
         e.preventDefault()
@@ -152,24 +206,36 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
         cycleTask(-1)
         return
       }
+      // These four act on the (possibly now-hidden) workspace, so they're suppressed
+      // while the drawer covers it — the chord is still consumed
+      // (`preventDefault`), it just doesn't do anything.
       if (matchesChord(e, newSessionKey)) {
         e.preventDefault()
-        newSession()
+        if (!suppressedByDrawer) newSession()
         return
       }
       if (matchesChord(e, newTaskKey)) {
         e.preventDefault()
-        onNewTask()
+        if (!suppressedByDrawer) onNewTask()
         return
       }
       if (matchesChord(e, closeSessionKey)) {
         e.preventDefault()
-        closeSession()
+        if (!suppressedByDrawer) closeSession()
         return
       }
       if (matchesChord(e, searchKey)) {
         e.preventDefault()
-        onSearch?.()
+        if (!suppressedByDrawer) onSearch?.()
+        return
+      }
+      if (matchesChord(e, issuesKey)) {
+        e.preventDefault()
+        if (store.windowRole === 'secondary') {
+          window.octopusAPI.issues.toggleDrawer()
+        } else {
+          store.toggleIssuesDrawer()
+        }
         return
       }
       // Fixed diagnostic chord (§11): toggle the state-detection debug overlay.

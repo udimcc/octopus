@@ -8,8 +8,13 @@
  * stays free of any storage-engine types.
  */
 
-import type { TaskId, SessionId, WindowId } from '../domain/ids'
-import type { WorkspaceSnapshot, TaskSnapshot, SessionSnapshot } from '../domain/snapshots'
+import type { TaskId, SessionId, WindowId, IssueId } from '../domain/ids'
+import type {
+  WorkspaceSnapshot,
+  TaskSnapshot,
+  SessionSnapshot,
+  IssueSnapshot
+} from '../domain/snapshots'
 
 /**
  * A persisted OS window (V1.5, DESIGN §3.7, §6.3). Pixel geometry deliberately
@@ -30,13 +35,21 @@ export interface WindowRecord {
 }
 
 export interface WorkspacePersistence {
-  /** Load the full persisted workspace on startup (empty on first run) (§6.3). */
+  /**
+   * Load the full persisted workspace on startup (empty on first run) (§6.3).
+   * Includes `issues` (I19, v8 schema).
+   */
   load(): WorkspaceSnapshot
 
   /** Insert or update a task row (name/worktree/branch/repo_root/order/active-session). */
   upsertTask(task: TaskSnapshot): void
-  /** Delete a task; sessions cascade via the FK (§6.3). */
+  /** Delete a task; sessions cascade via the FK (§6.3). Any bound issue's `task_id` is set to NULL. */
   deleteTask(taskId: TaskId): void
+
+  /** Insert or update an issue row (I19, v8 schema). */
+  upsertIssue(issue: IssueSnapshot): void
+  /** Delete an issue row. The bound task, if any, is left untouched. */
+  deleteIssue(id: IssueId): void
 
   /** Insert or update a session row (definition only). */
   upsertSession(session: SessionSnapshot): void

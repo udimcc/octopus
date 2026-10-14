@@ -45,6 +45,11 @@ import { addProject } from './use-cases/add-project'
 import { removeProject } from './use-cases/remove-project'
 import { setProjectDefaultBranch } from './use-cases/set-project-default-branch'
 import { seedProjects } from './use-cases/seed-projects'
+import { createIssue } from './use-cases/create-issue'
+import { updateIssue } from './use-cases/update-issue'
+import { deleteIssue } from './use-cases/delete-issue'
+import { bindIssue } from './use-cases/bind-issue'
+import { unbindIssue } from './use-cases/unbind-issue'
 
 const OK: CommandResult = { ok: true }
 
@@ -95,8 +100,7 @@ export class CommandLoop {
     // casts are needed.
     switch (command.kind) {
       case 'createTask':
-        await createTask(this.deps, command.input)
-        return OK
+        return createTask(this.deps, command.input)
       case 'deleteTask':
         return deleteTask(this.deps, command.input)
       case 'switchTask':
@@ -172,6 +176,16 @@ export class CommandLoop {
         // `removeProject` mutating the same `settings.json` key.
         await seedProjects(this.deps)
         return OK
+      case 'createIssue':
+        return createIssue(this.deps, command.input)
+      case 'updateIssue':
+        return updateIssue(this.deps, command.input)
+      case 'deleteIssue':
+        return deleteIssue(this.deps, command.input)
+      case 'bindIssue':
+        return bindIssue(this.deps, command.input)
+      case 'unbindIssue':
+        return unbindIssue(this.deps, command.input)
       default: {
         // Exhaustiveness: a new command kind must be handled here.
         const _never: never = command

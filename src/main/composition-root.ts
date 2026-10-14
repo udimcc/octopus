@@ -154,6 +154,43 @@ export function resolveNotificationTargetWindow(
   return mainId
 }
 
+/**
+ * Find the live `BrowserWindow` for a tracked `WindowId`, skipping any window
+ * Electron has already torn down. Shared by the three places that resolve a
+ * window by id and then act on it — `activeSessionChanged`'s cross-window
+ * raise, the §9.5 toast's forced repaint, and the issues-drawer-toggle relay —
+ * so the destroyed-check and the `windowIds` reverse-lookup live in one place
+ * (§13.4, §6.7).
+ */
+function findWindow(
+  windowIds: ReadonlyMap<number, WindowId>,
+  id: WindowId
+): BrowserWindow | undefined {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue
+    if (windowIds.get(win.webContents.id) === id) {
+      return win
+    }
+  }
+  return undefined
+}
+
+/**
+ * Bring a window to the foreground (un-minimize, show, focus) and force a
+ * repaint. The repaint is the GPU-less VDI passive-repaint workaround used
+ * throughout this file: `invalidate()` just schedules a full repaint (no-op
+ * cost on a real GPU), needed because SwiftShader doesn't otherwise paint a
+ * freshly-raised-but-uninteracted window's first frame.
+ */
+function raiseWindow(win: BrowserWindow): void {
+  if (win.isMinimized()) {
+    win.restore()
+  }
+  win.show()
+  win.focus()
+  win.webContents.invalidate()
+}
+
 export function bootstrap(): AppContext {
   // 1. Raise the fd limit FIRST so child PTYs inherit the higher soft limit (§6.1).
   const rlimit = raiseFileLimit()
@@ -410,18 +447,9 @@ export function bootstrap(): AppContext {
   // because only main owns `BrowserWindow`; the registry stays transport-agnostic.
   bus.subscribe((event) => {
     if (event.type !== 'activeSessionChanged') return
-    for (const win of BrowserWindow.getAllWindows()) {
-      if (win.isDestroyed()) continue
-      if (windowIds.get(win.webContents.id) !== event.windowId) continue
-      if (win.isMinimized()) win.restore()
-      win.show()
-      win.focus()
-      // Same VDI passive-repaint stall as the §9.5 toast sink below: on the GPU-less
-      // SwiftShader compositor a raised-but-uninteracted window may not paint its first
-      // frame, so the renderer's focus flash wouldn't show. `invalidate` just schedules
-      // a full repaint (no-op cost on a real GPU).
-      win.webContents.invalidate()
-      return
+    const win = findWindow(windowIds, event.windowId)
+    if (win) {
+      raiseWindow(win)
     }
   })
 
@@ -464,14 +492,10 @@ export function bootstrap(): AppContext {
     // frame for a passive DOM mutation until some input/resize wakes it, so the
     // freshly-pushed toast paints late (or not until the next interaction) — exactly
     // the "I can't see any notification" symptom. Force a full repaint of the target
-    // window so the toast shows immediately. No-op cost on a real GPU; `invalidate`
-    // just schedules a paint. Guard against a destroyed/absent webContents.
-    for (const win of BrowserWindow.getAllWindows()) {
-      if (win.isDestroyed()) continue
-      if (windowIds.get(win.webContents.id) !== target) continue
-      win.webContents.invalidate()
-      break
-    }
+    // window so the toast shows immediately. Only a repaint, never a raise (§9.5):
+    // a passive toast must not steal focus. `findWindow` returns `undefined` for a
+    // destroyed/absent webContents, which the optional call below just skips.
+    findWindow(windowIds, target)?.webContents.invalidate()
   }
 
   // Gate on the user setting and route to the active window (§9.5). The BURST throttle
@@ -499,7 +523,22 @@ export function bootstrap(): AppContext {
     // place (no focus transition to broadcast), so fan the clear out to every window's
     // ready-for-review view-model. Synthesized here (not on the bus) like the §9.5 toast.
     broadcastSessionSeen: (sessionId) =>
-      windowRegistry.broadcast({ type: 'sessionSeen', sessionId })
+      windowRegistry.broadcast({ type: 'sessionSeen', sessionId }),
+    // Issues drawer toggle relay (§13.4): sent only by a SECONDARY window's
+    // shortcut (the main window toggles its own store locally and never calls
+    // this). Relay the toggle to the main window ONLY first — never broadcast,
+    // so a secondary window never opens a drawer of its own — THEN raise/focus
+    // the main `BrowserWindow`, which forces the VDI repaint (same
+    // passive-DOM-update stall as the §9.5 toast above, which also invalidates
+    // AFTER its `sendTo`): repainting before the renderer has processed the
+    // toggle risks painting the pre-toggle frame on this GPU-less host.
+    toggleIssuesDrawer: () => {
+      const win = findWindow(windowIds, MAIN_WINDOW_ID)
+      windowRegistry.sendTo(MAIN_WINDOW_ID, { type: 'issuesDrawerToggle' })
+      if (win) {
+        raiseWindow(win)
+      }
+    }
   })
 
   // Async daemon warmup (§6.2). Selects the durable backend when the setting asks

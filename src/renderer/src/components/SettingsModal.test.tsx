@@ -9,6 +9,7 @@ const seededState: WindowedWorkspaceStateDTO = {
   tasks: [],
   activeTaskId: undefined,
   sessionTypes: [],
+  issues: [],
   settings: {
     worktree: { location: '/repos' },
     terminal: { shell: '/bin/bash' },
@@ -23,7 +24,8 @@ const seededState: WindowedWorkspaceStateDTO = {
     closeSessionKey: 'Ctrl+Shift+KeyW',
     searchKey: 'Ctrl+Shift+KeyF',
     copyKey: 'Ctrl+Shift+KeyC',
-    pasteKey: 'Ctrl+Shift+KeyV'
+    pasteKey: 'Ctrl+Shift+KeyV',
+    issuesKey: 'Alt+Shift+KeyI'
   },
   version: 1,
   thisWindowId: 'main',
@@ -87,6 +89,7 @@ describe('<SettingsModal>', () => {
     expect(screen.getByLabelText('terminal search shortcut')).toHaveTextContent('Ctrl+Shift+F')
     expect(screen.getByLabelText('copy shortcut')).toHaveTextContent('Ctrl+Shift+C')
     expect(screen.getByLabelText('paste shortcut')).toHaveTextContent('Ctrl+Shift+V')
+    expect(screen.getByLabelText('toggle issues shortcut')).toHaveTextContent('Alt+Shift+I')
   })
 
   it('saves a patch and refetches state, then closes', async () => {
@@ -112,7 +115,8 @@ describe('<SettingsModal>', () => {
       closeSessionKey: 'Ctrl+Shift+KeyW',
       searchKey: 'Ctrl+Shift+KeyF',
       copyKey: 'Ctrl+Shift+KeyC',
-      pasteKey: 'Ctrl+Shift+KeyV'
+      pasteKey: 'Ctrl+Shift+KeyV',
+      issuesKey: 'Alt+Shift+KeyI'
     })
     // updateSettings emits nothing → the modal must refetch getState to reflect it.
     await waitFor(() => expect(bridge.api.app.getState).toHaveBeenCalled())
@@ -136,7 +140,8 @@ describe('<SettingsModal>', () => {
       closeSessionKey: 'Ctrl+Shift+KeyW',
       searchKey: 'Ctrl+Shift+KeyF',
       copyKey: 'Ctrl+Shift+KeyC',
-      pasteKey: 'Ctrl+Shift+KeyV'
+      pasteKey: 'Ctrl+Shift+KeyV',
+      issuesKey: 'Alt+Shift+KeyI'
     })
   })
 
@@ -332,6 +337,36 @@ describe('<SettingsModal>', () => {
     const alerts = screen.getAllByRole('alert')
     expect(alerts.some((a) => a.textContent?.includes('Already used by Paste'))).toBe(true)
     expect(alerts.some((a) => a.textContent?.includes('Already used by Copy'))).toBe(true)
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
+
+  it('rebinds the toggle-issues shortcut via the capture flow and saves it', () => {
+    const bridge = installStubBridge({ state: seededState })
+    render(<SettingsModal onClose={vi.fn()} />)
+    openKeyBindings()
+    const issuesBtn = screen.getByLabelText('toggle issues shortcut')
+    expect(issuesBtn).toHaveTextContent('Alt+Shift+I')
+    fireEvent.click(issuesBtn)
+    fireEvent.keyDown(issuesBtn, { code: 'KeyK', ctrlKey: true, altKey: true })
+    expect(issuesBtn).toHaveTextContent('Ctrl+Alt+K')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(bridge.api.app.updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ issuesKey: 'Ctrl+Alt+KeyK' })
+    )
+  })
+
+  it('blocks saving when the toggle-issues chord collides with another action', () => {
+    installStubBridge({ state: seededState })
+    render(<SettingsModal onClose={vi.fn()} />)
+    openKeyBindings()
+    const issuesBtn = screen.getByLabelText('toggle issues shortcut')
+    fireEvent.click(issuesBtn)
+    // Bind toggle-issues to the (default) new-session chord → cross-action collision.
+    fireEvent.keyDown(issuesBtn, { code: 'KeyN', ctrlKey: true, shiftKey: true })
+    const alerts = screen.getAllByRole('alert')
+    expect(alerts.some((a) => a.textContent?.includes('Already used by New session'))).toBe(true)
+    expect(alerts.some((a) => a.textContent?.includes('Already used by Toggle Issues'))).toBe(true)
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
   })
 

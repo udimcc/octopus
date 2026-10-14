@@ -8,6 +8,18 @@ All notable changes to Octopus are documented here. The format is based on
 
 ### Added
 
+- **Issues.** Track work items inside Octopus: a name, a markdown description, an optional project, and
+  a status (Todo, In progress, In review, Done). Open the Issues drawer from the button at the bottom
+  left of the Progress window, below the task list, or with **Alt+Shift+I** (configurable in Settings →
+  Keybindings); it slides in from the right over the session area and lists issues grouped by status,
+  newest first. An issue can be bound 1:1 to a task — from the issue view ("Link task" / "Create
+  task") or from the New-Task modal's issue picker — which moves a Todo issue to In progress; unbinding
+  never changes the status. Deleting a bound task or issue offers "Delete task only", "Delete issue
+  only", "Delete both" or "Cancel"; a bound task shows its issue's status icon, with the issue name on
+  hover. Links in a description open in the system browser (http/https only); nothing else navigates the
+  app window. Stored locally in a new `issues` table (schema v8) — upgrading writes an
+  `octopus.db.bak-v7` backup first, and an older build refuses to open the upgraded database rather than
+  risk corrupting it.
 - **Defined projects in the New-Task modal.** A left Projects sidebar on the "From New
   Worktree" and "From Existing Repo" tabs replaces the per-task directory picker. "+ Add
   project" opens the folder picker once per repo — a linked worktree resolves to its

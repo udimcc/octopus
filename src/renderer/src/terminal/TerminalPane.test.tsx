@@ -40,7 +40,12 @@ const h = vi.hoisted(() => {
   // simulating a reflow so the on-show `scrollToBottom` branch can be exercised. Null
   // (the default) makes `fit()` a no-op, so mount/resize assertions see 80×24.
   const fitDims: { value: { cols: number; rows: number } | null } = { value: null }
-  return { onDataDispose, instances, gpuTier, fitDims }
+  // Captures the handler `TerminalPane` passes to `new WebLinksAddon(handler)`, so a
+  // test can invoke it directly without a real xterm link-matcher.
+  const webLinksHandler: { value: ((event: MouseEvent, uri: string) => void) | null } = {
+    value: null
+  }
+  return { onDataDispose, instances, gpuTier, fitDims, webLinksHandler }
 })
 
 vi.mock('@xterm/xterm', () => ({
@@ -91,7 +96,13 @@ vi.mock('@xterm/addon-fit', () => ({
 vi.mock('@xterm/addon-search', () => ({ SearchAddon: class {} }))
 vi.mock('@xterm/addon-serialize', () => ({ SerializeAddon: class {} }))
 vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: class {} }))
-vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }))
+vi.mock('@xterm/addon-web-links', () => ({
+  WebLinksAddon: class {
+    constructor(handler: (event: MouseEvent, uri: string) => void) {
+      h.webLinksHandler.value = handler
+    }
+  }
+}))
 vi.mock('@xterm/addon-webgl', () => ({
   WebglAddon: class {
     static constructed = 0
@@ -120,12 +131,17 @@ vi.mock('./terminal-search', () => ({
   registerSearchOpener: vi.fn(),
   unregisterSearchOpener: vi.fn()
 }))
+vi.mock('./terminal-focus', () => ({
+  registerTerminalFocuser: vi.fn(),
+  unregisterTerminalFocuser: vi.fn()
+}))
 
 // Imported AFTER the mocks are registered.
 import { TerminalPane } from './TerminalPane'
 import { useStore, initialData } from '../store/store'
 import { registerTerminalSink, unregisterTerminalSink } from '../pty/pty-router'
 import { registerSearchOpener, unregisterSearchOpener } from './terminal-search'
+import { registerTerminalFocuser, unregisterTerminalFocuser } from './terminal-focus'
 import { webglBudget } from './webgl-budget'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { CanvasAddon } from '@xterm/addon-canvas'
@@ -147,8 +163,10 @@ describe('<TerminalPane> wiring (§5.3/§6.1)', () => {
     webglBudget.release('s1')
     webglBudget.release('s2')
     window.octopusAPI = {
-      pty: { write: vi.fn(), resize: vi.fn() }
+      pty: { write: vi.fn(), resize: vi.fn() },
+      shell: { openExternal: vi.fn() }
     } as unknown as typeof window.octopusAPI
+    h.webLinksHandler.value = null
     // jsdom has no layout: every element reports offsetWidth/Height === 0, which
     // TerminalPane's "is the host laid out?" guard would read as hidden and skip the
     // fit. Force a non-zero box so the mount/on-show fit runs (the 0×0 hidden case is
@@ -239,6 +257,29 @@ describe('<TerminalPane> wiring (§5.3/§6.1)', () => {
     expect(handler?.({ type: 'keydown', code: 'KeyL', altKey: true } as KeyboardEvent)).toBe(true)
   })
 
+  it('also drops the configured issuesKey chord (Alt+Shift+I default), so it reaches the window-level shortcut handler instead of the shell', () => {
+    render(<TerminalPane sessionId="s1" active={true} />)
+    const handler = h.instances[0].keyHandler
+    expect(
+      handler?.({ type: 'keydown', code: 'KeyI', altKey: true, shiftKey: true } as KeyboardEvent)
+    ).toBe(false)
+  })
+
+  it('routes safe http/https web links through shell.openExternal, and ignores unsafe schemes', () => {
+    render(<TerminalPane sessionId="s1" active={true} />)
+    const onLink = h.webLinksHandler.value
+    expect(onLink).toBeTypeOf('function')
+
+    onLink?.({} as MouseEvent, 'https://example.com/path')
+    expect(window.octopusAPI.shell.openExternal).toHaveBeenCalledWith({
+      url: 'https://example.com/path'
+    })
+
+    onLink?.({} as MouseEvent, 'javascript:alert(1)')
+    onLink?.({} as MouseEvent, 'file:///etc/passwd')
+    expect(window.octopusAPI.shell.openExternal).toHaveBeenCalledTimes(1)
+  })
+
   it('activates Unicode 11', () => {
     render(<TerminalPane sessionId="s1" active={true} />)
     expect(h.instances[0].unicode.activeVersion).toBe('11')
@@ -251,11 +292,24 @@ describe('<TerminalPane> wiring (§5.3/§6.1)', () => {
     expect(h.onDataDispose).toHaveBeenCalledOnce()
     expect(unregisterTerminalSink).toHaveBeenCalledWith('s1')
     expect(unregisterSearchOpener).toHaveBeenCalledWith('s1')
+    expect(unregisterTerminalFocuser).toHaveBeenCalledWith('s1')
   })
 
   it('registers a search opener for the session', () => {
     render(<TerminalPane sessionId="s1" active={true} />)
     expect(registerSearchOpener).toHaveBeenCalledWith('s1', expect.any(Function))
+  })
+
+  it('registers a terminal focuser for the session (the Issues drawer close-restore fallback, §5.4)', () => {
+    render(<TerminalPane sessionId="s1" active={true} />)
+    expect(registerTerminalFocuser).toHaveBeenCalledWith('s1', expect.any(Function))
+    // Invoke the registered focuser: it must focus xterm's textarea with preventScroll.
+    const textareaFocus = vi.fn()
+    ;(h.instances.at(-1) as unknown as { textarea: { focus: typeof textareaFocus } }).textarea = {
+      focus: textareaFocus
+    }
+    ;(vi.mocked(registerTerminalFocuser).mock.calls.at(-1)![1] as () => void)()
+    expect(textareaFocus).toHaveBeenCalledWith({ preventScroll: true })
   })
 
   it('an active pane leases a WebGL slot; a hidden one holds none (Canvas tier)', () => {

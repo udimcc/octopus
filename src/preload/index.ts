@@ -39,7 +39,13 @@ import type {
   AddProjectInput,
   RemoveProjectInput,
   SetProjectDefaultBranchInput,
-  ListProjectWorktreesInput
+  ListProjectWorktreesInput,
+  CreateIssueInput,
+  UpdateIssueInput,
+  DeleteIssueInput,
+  BindIssueInput,
+  UnbindIssueInput,
+  OpenExternalInput
 } from '../shared/dto'
 import type { EventDTO } from '../shared/events'
 
@@ -131,6 +137,25 @@ const octopusAPI: OctopusAPI = {
   clipboard: {
     read: (): Promise<string> => ipcRenderer.invoke(CHANNELS.clipboardRead),
     write: (text: string): Promise<void> => ipcRenderer.invoke(CHANNELS.clipboardWrite, text)
+  },
+
+  issues: {
+    create: (input: CreateIssueInput): Promise<CommandAck> =>
+      ipcRenderer.invoke(CHANNELS.issueCreate, input),
+    update: (input: UpdateIssueInput): Promise<CommandAck> =>
+      ipcRenderer.invoke(CHANNELS.issueUpdate, input),
+    delete: (input: DeleteIssueInput): Promise<CommandAck> =>
+      ipcRenderer.invoke(CHANNELS.issueDelete, input),
+    bind: (input: BindIssueInput): Promise<CommandAck> =>
+      ipcRenderer.invoke(CHANNELS.issueBind, input),
+    unbind: (input: UnbindIssueInput): Promise<CommandAck> =>
+      ipcRenderer.invoke(CHANNELS.issueUnbind, input),
+    toggleDrawer: (): void => ipcRenderer.send(CHANNELS.issuesToggleDrawer)
+  },
+
+  shell: {
+    openExternal: (input: OpenExternalInput): Promise<boolean> =>
+      ipcRenderer.invoke(CHANNELS.shellOpenExternal, input)
   },
 
   onEvent: (handler: (event: EventDTO) => void): (() => void) => {

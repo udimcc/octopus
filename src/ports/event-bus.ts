@@ -14,9 +14,9 @@
  * store (§5.2).
  */
 
-import type { TaskId, SessionId, WindowId } from '../domain/ids'
+import type { TaskId, SessionId, WindowId, IssueId } from '../domain/ids'
 import type { SessionState, TaskState } from '../domain/state'
-import type { TaskSnapshot, SessionSnapshot } from '../domain/snapshots'
+import type { TaskSnapshot, SessionSnapshot, IssueSnapshot } from '../domain/snapshots'
 import type { StateChangeMeta } from './session-runtime'
 
 /** High-frequency terminal output for one session (§6.5, §5.2). */
@@ -154,6 +154,19 @@ export interface SessionMovedToWindowEvent {
   readonly cause?: 'windowClosed'
 }
 
+// ── Issue lifecycle events ("Issues", §13.3) ──────────────────────────────────────
+
+/** An issue was created or changed (create/update/bind/unbind, or a cascading effect
+ * like `removeProject` clearing its project, or `deleteTask` unbinding it). */
+export interface IssueUpsertedEvent {
+  readonly type: 'issueUpserted'
+  readonly issue: IssueSnapshot
+}
+export interface IssueDeletedEvent {
+  readonly type: 'issueDeleted'
+  readonly issueId: IssueId
+}
+
 // ── Dormant V2 state seams (§10 V1) — emitted by nobody in V1 ─────────────────────
 
 export interface SessionStateChangedEvent {
@@ -190,6 +203,8 @@ export type DomainEvent =
   | WindowCreatedEvent
   | WindowClosedEvent
   | SessionMovedToWindowEvent
+  | IssueUpsertedEvent
+  | IssueDeletedEvent
   | SessionStateChangedEvent
   | TaskStateChangedEvent
 

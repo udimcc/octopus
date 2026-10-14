@@ -124,6 +124,32 @@ describe('parseSettings (§6.3)', () => {
     expect(merged.copyKey).toBe('Alt+KeyY')
     expect(merged.pasteKey).toBe('Ctrl+Shift+KeyV') // untouched
   })
+
+  it('defaults issuesKey to the Alt+Shift+KeyI chord and tolerates an older file without it', () => {
+    expect(DEFAULT_SETTINGS.issuesKey).toBe('Alt+Shift+KeyI')
+    expect(parseSettings('{}').issuesKey).toBe('Alt+Shift+KeyI')
+    // A settings.json written before the Issues feature existed has no `issuesKey`
+    // key at all; parsing it must not crash and must fill in the default while
+    // leaving the rest of the (older) file intact.
+    const legacy = parseSettings(
+      JSON.stringify({ worktree: { location: '/wt' }, pasteKey: 'Ctrl+Shift+KeyV' })
+    )
+    expect(legacy.issuesKey).toBe('Alt+Shift+KeyI')
+    expect(legacy.worktree.location).toBe('/wt')
+    expect(legacy.pasteKey).toBe('Ctrl+Shift+KeyV')
+  })
+
+  it('round-trips issuesKey through a patch, independently of the other chords', () => {
+    const merged = mergeSettings(DEFAULT_SETTINGS, { issuesKey: 'Alt+KeyX' })
+    expect(merged.issuesKey).toBe('Alt+KeyX')
+    expect(merged.pasteKey).toBe('Ctrl+Shift+KeyV') // untouched
+    expect(merged.copyKey).toBe('Ctrl+Shift+KeyC') // untouched
+  })
+
+  it('ignores a wrong-typed issuesKey, keeping the base', () => {
+    const merged = mergeSettings(DEFAULT_SETTINGS, { issuesKey: 42 as unknown as string })
+    expect(merged.issuesKey).toBe('Alt+Shift+KeyI')
+  })
 })
 
 describe('mergeSettings (deep-merge, §6.4)', () => {
@@ -331,6 +357,29 @@ describe('JsonSettingsStore (I16 — no secrets, atomic write)', () => {
     store.save({ projects: [{ path: '/repo/a' }] })
     const saved = store.save({})
     expect(saved.projects).toEqual([{ path: '/repo/a' }])
+  })
+
+  it('persists a patched issuesKey and reloads it from disk', () => {
+    const store = new JsonSettingsStore(path)
+    store.load()
+    const saved = store.save({ issuesKey: 'Alt+Shift+KeyJ' })
+    expect(saved.issuesKey).toBe('Alt+Shift+KeyJ')
+
+    const reopened = new JsonSettingsStore(path)
+    expect(reopened.load().issuesKey).toBe('Alt+Shift+KeyJ')
+  })
+
+  it('loads an older settings file predating issuesKey with the default chord', () => {
+    writeFileSync(
+      path,
+      JSON.stringify({ worktree: { location: '/wt' }, pasteKey: 'Ctrl+Shift+KeyV' }),
+      'utf8'
+    )
+    const store = new JsonSettingsStore(path)
+    const loaded = store.load()
+    expect(loaded.issuesKey).toBe('Alt+Shift+KeyI')
+    expect(loaded.worktree.location).toBe('/wt')
+    expect(store.loadFailed()).toBe(false)
   })
 })
 

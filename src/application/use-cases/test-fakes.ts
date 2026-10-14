@@ -20,12 +20,19 @@ import {
   asSessionId,
   asTypeId,
   asWindowId,
+  asIssueId,
   type TaskId,
   type SessionId,
-  type WindowId
+  type WindowId,
+  type IssueId
 } from '../../domain/ids'
 import type { SessionConfig } from '../../domain/session-config'
-import type { WorkspaceSnapshot, TaskSnapshot, SessionSnapshot } from '../../domain/snapshots'
+import type {
+  WorkspaceSnapshot,
+  TaskSnapshot,
+  SessionSnapshot,
+  IssueSnapshot
+} from '../../domain/snapshots'
 import type { DomainEvent, EventBus, EventHandler, Unsubscribe } from '../../ports/event-bus'
 import type { IdGenerator } from '../../ports/id-generator'
 import type { Clock } from '../../ports/clock'
@@ -187,6 +194,10 @@ export class FakePersistence implements WorkspacePersistence {
   readonly upsertedSessions: SessionSnapshot[] = []
   readonly deletedSessions: SessionId[] = []
   readonly activeTaskSet: Array<TaskId | undefined> = []
+  readonly upsertedIssues: IssueSnapshot[] = []
+  readonly deletedIssues: IssueId[] = []
+  /** Persisted issues keyed by id (I19, mirrors the `issues` table). Seeded from the initial snapshot. */
+  readonly issues: Map<IssueId, IssueSnapshot>
   /** Persisted scrollback keyed by session id (mirrors the `session_scrollback` table). */
   readonly savedScrollback = new Map<SessionId, string>()
   /** Persisted last-known cwd keyed by session id (mirrors the `sessions.last_cwd` column). */
@@ -199,15 +210,31 @@ export class FakePersistence implements WorkspacePersistence {
 
   constructor(initial: WorkspaceSnapshot = { tasks: [], activeTaskId: undefined }) {
     this.initial = initial
+    this.issues = new Map((initial.issues ?? []).map((i) => [i.id, i]))
   }
   load(): WorkspaceSnapshot {
-    return this.initial
+    return { ...this.initial, issues: [...this.issues.values()] }
   }
   upsertTask(task: TaskSnapshot): void {
     this.upsertedTasks.push(task)
   }
   deleteTask(taskId: TaskId): void {
     this.deletedTasks.push(taskId)
+    // Mirror the real `issues.task_id ... ON DELETE SET NULL` (I19): any fake
+    // issue bound to this task is unbound, not deleted.
+    for (const issue of this.issues.values()) {
+      if (issue.taskId === taskId) {
+        this.issues.set(issue.id, { ...issue, taskId: undefined })
+      }
+    }
+  }
+  upsertIssue(issue: IssueSnapshot): void {
+    this.upsertedIssues.push(issue)
+    this.issues.set(issue.id, issue)
+  }
+  deleteIssue(id: IssueId): void {
+    this.deletedIssues.push(id)
+    this.issues.delete(id)
   }
   upsertSession(session: SessionSnapshot): void {
     this.upsertedSessions.push(session)
@@ -456,6 +483,7 @@ export class SeqIdGenerator implements IdGenerator {
   private t = 0
   private s = 0
   private w = 0
+  private i = 0
   newTaskId(): TaskId {
     this.t++
     return asTaskId(`task-${this.t}`)
@@ -467,6 +495,10 @@ export class SeqIdGenerator implements IdGenerator {
   newWindowId(): WindowId {
     this.w++
     return asWindowId(`window-${this.w}`)
+  }
+  newIssueId(): IssueId {
+    this.i++
+    return asIssueId(`issue-${this.i}`)
   }
 }
 

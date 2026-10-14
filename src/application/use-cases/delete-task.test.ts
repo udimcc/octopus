@@ -2,9 +2,12 @@ import { describe, it, expect } from 'vitest'
 import { createTask } from './create-task'
 import { openSession } from './open-session'
 import { deleteTask } from './delete-task'
+import { createIssue } from './create-issue'
+import { bindIssue } from './bind-issue'
 import { makeDeps, taskInput, type FakeDeps } from './test-fakes'
 import { asTaskId } from '../../domain/ids'
 import { TaskLifecycle } from '../../domain/lifecycle'
+import { IssueStatus } from '../../domain/issue'
 
 /** Seed one Ready, active task ('task-1') with `sessionCount` running sessions. */
 async function seedReadyTask(
@@ -156,5 +159,166 @@ describe('deleteTask idempotence (I4)', () => {
     const { deps } = makeDeps()
     const result = await deleteTask(deps, { taskId: asTaskId('ghost') })
     expect(result).toEqual({ ok: true })
+  })
+})
+
+describe('deleteTask issue unbind/delete (Issues §13.3, I19)', () => {
+  it('alsoDeleteIssue: true deletes the bound issue ONLY when the task delete actually succeeds', async () => {
+    const fd = await seedReadyTask(0)
+    const issueId = createIssue(fd.deps, { name: 'Fix', description: '' }).issueId!
+    bindIssue(fd.deps, { issueId, taskId: fd.taskId })
+
+    const result = await deleteTask(fd.deps, { taskId: fd.taskId, alsoDeleteIssue: true })
+
+    expect(result).toEqual({ ok: true })
+    expect(fd.persistence.deletedIssues).toEqual([issueId])
+    expect(fd.workspace.issue(issueId)).toBeUndefined()
+    expect(fd.bus.ofType('issueDeleted').map((e) => e.issueId)).toEqual([issueId])
+  })
+
+  it('I1b: a step-5 persist failure (deleteIssue throws) rejects and leaves the task + issue binding intact', async () => {
+    const fd = await seedReadyTask(0)
+    const issueId = createIssue(fd.deps, { name: 'Fix', description: '' }).issueId!
+    bindIssue(fd.deps, { issueId, taskId: fd.taskId })
+    fd.persistence.deleteIssue = () => {
+      throw new Error('disk full')
+    }
+
+    // delete-task.ts has no try/catch around the step-5 transaction (unlike
+    // create-task.ts's persistReadyTask), so a throw inside it propagates out of
+    // the use-case instead of surfacing as `{ ok: false }`.
+    await expect(deleteTask(fd.deps, { taskId: fd.taskId, alsoDeleteIssue: true })).rejects.toThrow(
+      'disk full'
+    )
+
+    // workspace.removeTask/removeIssue (delete-task.ts:156-166) run only AFTER
+    // the transaction call returns, so the throw never reaches them: the task
+    // and the issue (still bound, still InProgress) are both still there.
+    expect(fd.workspace.task(fd.taskId)).toBeDefined()
+    const issue = fd.workspace.issue(issueId)!
+    expect(issue.taskId).toBe(fd.taskId)
+    expect(issue.status).toBe(IssueStatus.InProgress)
+    expect(fd.bus.ofType('taskDeleted')).toEqual([])
+    expect(fd.bus.ofType('issueDeleted')).toEqual([])
+    // Only createIssue's + bindIssue's own issueUpserted events — none from the
+    // failed delete attempt.
+    expect(fd.bus.ofType('issueUpserted').filter((e) => e.issue.id === issueId)).toHaveLength(2)
+  })
+
+  it('a needsDirtyConfirm return leaves the bound issue COMPLETELY untouched', async () => {
+    const fd = await seedReadyTask(0)
+    const issueId = createIssue(fd.deps, { name: 'Fix', description: '' }).issueId!
+    bindIssue(fd.deps, { issueId, taskId: fd.taskId })
+    fd.worktrees.dirty = true
+
+    const result = await deleteTask(fd.deps, { taskId: fd.taskId, alsoDeleteIssue: true })
+
+    expect(result).toEqual({ ok: false, needsDirtyConfirm: true })
+    const issue = fd.workspace.issue(issueId)!
+    expect(issue.taskId).toBe(fd.taskId)
+    expect(issue.status).toBe(IssueStatus.InProgress)
+    expect(fd.persistence.deletedIssues).toEqual([])
+    expect(fd.bus.ofType('issueDeleted')).toEqual([])
+    // Only the earlier createIssue + bindIssue upserts — nothing new from the delete attempt.
+    expect(fd.bus.ofType('issueUpserted').filter((e) => e.issue.id === issueId)).toHaveLength(2)
+  })
+
+  it('a worktree-remove failure also leaves the bound issue untouched (task stays DeleteFailed)', async () => {
+    const fd = await seedReadyTask(0)
+    const issueId = createIssue(fd.deps, { name: 'Fix', description: '' }).issueId!
+    bindIssue(fd.deps, { issueId, taskId: fd.taskId })
+    fd.worktrees.removeRejectsWith = new Error('permission denied')
+
+    const result = await deleteTask(fd.deps, { taskId: fd.taskId, alsoDeleteIssue: true })
+
+    expect(result.ok).toBe(false)
+    expect(fd.workspace.task(fd.taskId)?.lifecycle).toBe(TaskLifecycle.DeleteFailed)
+    const issue = fd.workspace.issue(issueId)!
+    expect(issue.taskId).toBe(fd.taskId)
+    expect(issue.status).toBe(IssueStatus.InProgress)
+    expect(fd.persistence.deletedIssues).toEqual([])
+  })
+
+  it('a plain delete (no alsoDeleteIssue) unbinds the issue without changing its status', async () => {
+    const fd = await seedReadyTask(0)
+    const issueId = createIssue(fd.deps, { name: 'Fix', description: '' }).issueId!
+    bindIssue(fd.deps, { issueId, taskId: fd.taskId })
+
+    const result = await deleteTask(fd.deps, { taskId: fd.taskId })
+
+    expect(result).toEqual({ ok: true })
+    const issue = fd.workspace.issue(issueId)!
+    expect(issue.taskId).toBeUndefined()
+    expect(issue.status).toBe(IssueStatus.InProgress)
+    // MINOR 4: `fd.persistence.issues.get(issueId)?.taskId` is vacuous here —
+    // `FakePersistence.deleteTask` mirrors the real `ON DELETE SET NULL` and would
+    // leave the map's `taskId` undefined even if delete-task.ts's own explicit
+    // `upsertIssue(unboundIssueSnapshot)` call were deleted. Assert the recorded
+    // upsert call itself instead, which only happens if that call runs.
+    const upserted = fd.persistence.upsertedIssues.at(-1)
+    expect(upserted).toMatchObject({ id: issueId, status: IssueStatus.InProgress })
+    expect(upserted?.taskId).toBeUndefined()
+    expect(fd.bus.ofType('issueUpserted').at(-1)?.issue.taskId).toBeUndefined()
+  })
+
+  it('the force-forget path still processes the bound issue the same as a normal delete', async () => {
+    const fd = await seedReadyTask(0)
+    const issueId = createIssue(fd.deps, { name: 'Fix', description: '' }).issueId!
+    bindIssue(fd.deps, { issueId, taskId: fd.taskId })
+    // First attempt fails → DeleteFailed, bound issue still untouched.
+    fd.worktrees.removeRejectsWith = new Error('boom')
+    await deleteTask(fd.deps, { taskId: fd.taskId })
+    expect(fd.workspace.task(fd.taskId)?.lifecycle).toBe(TaskLifecycle.DeleteFailed)
+
+    const result = await deleteTask(fd.deps, {
+      taskId: fd.taskId,
+      force: true,
+      alsoDeleteIssue: true
+    })
+
+    expect(result).toEqual({ ok: true })
+    expect(fd.workspace.task(fd.taskId)).toBeUndefined()
+    expect(fd.workspace.issue(issueId)).toBeUndefined()
+    expect(fd.persistence.deletedIssues).toEqual([issueId])
+    expect(fd.bus.ofType('issueDeleted').map((e) => e.issueId)).toEqual([issueId])
+  })
+
+  it('m11: alsoDeleteIssue on a task with NO bound issue is a harmless no-op (no issue* events from the delete)', async () => {
+    const fd = await seedReadyTask(0)
+    const issueId = createIssue(fd.deps, {
+      name: 'Unrelated, never bound',
+      description: ''
+    }).issueId!
+    const issueUpsertedBefore = fd.bus.ofType('issueUpserted').length
+
+    const result = await deleteTask(fd.deps, { taskId: fd.taskId, alsoDeleteIssue: true })
+
+    expect(result).toEqual({ ok: true })
+    expect(fd.workspace.task(fd.taskId)).toBeUndefined()
+    // The unrelated issue was never touched: still there, still unbound.
+    expect(fd.workspace.issue(issueId)).toBeDefined()
+    expect(fd.workspace.issue(issueId)!.taskId).toBeUndefined()
+    expect(fd.persistence.deletedIssues).toEqual([])
+    expect(fd.bus.ofType('issueDeleted')).toEqual([])
+    // Only createIssue's own upsert — nothing new published by this delete.
+    expect(fd.bus.ofType('issueUpserted')).toHaveLength(issueUpsertedBefore)
+  })
+
+  it('the dirty-confirm CANCEL path (never confirming) keeps BOTH the task and the issue fully intact', async () => {
+    const fd = await seedReadyTask(0)
+    const issueId = createIssue(fd.deps, { name: 'Fix', description: '' }).issueId!
+    bindIssue(fd.deps, { issueId, taskId: fd.taskId })
+    fd.worktrees.dirty = true
+
+    const result = await deleteTask(fd.deps, { taskId: fd.taskId })
+
+    expect(result).toEqual({ ok: false, needsDirtyConfirm: true })
+    // The user cancels: no second dispatch with confirmedDirty ever happens.
+    expect(fd.workspace.task(fd.taskId)?.lifecycle).toBe(TaskLifecycle.Ready)
+    const issue = fd.workspace.issue(issueId)!
+    expect(issue.taskId).toBe(fd.taskId)
+    expect(issue.status).toBe(IssueStatus.InProgress)
+    expect(fd.persistence.deletedTasks).toEqual([])
+    expect(fd.persistence.deletedIssues).toEqual([])
   })
 })

@@ -30,6 +30,7 @@ const EMPTY_STATE: WindowedWorkspaceStateDTO = {
     groupTasksByRepo: true
   },
   version: 1,
+  issues: [],
   // V1.5: each renderer is stamped with its window identity + the window list.
   thisWindowId: 'main',
   thisWindowRole: 'main',
@@ -59,6 +60,14 @@ export function makeStubBridge(options?: {
   const projectAdd = vi.fn(() => Promise.resolve(ackImpl()))
   const projectRemove = vi.fn(() => Promise.resolve(ackImpl()))
   const projectSetDefaultBranch = vi.fn(() => Promise.resolve(ackImpl()))
+  // Separate mocks (not the shared `ack`) for the same reason as the project ones
+  // above — a test can assert on one issue mutation without it being muddied by
+  // other command dispatches that happen to share the same default ack.
+  const issueCreate = vi.fn(() => Promise.resolve(ackImpl()))
+  const issueUpdate = vi.fn(() => Promise.resolve(ackImpl()))
+  const issueDelete = vi.fn(() => Promise.resolve(ackImpl()))
+  const issueBind = vi.fn(() => Promise.resolve(ackImpl()))
+  const issueUnbind = vi.fn(() => Promise.resolve(ackImpl()))
   const state = options?.state ?? EMPTY_STATE
   const windowId = options?.windowId ?? state.thisWindowId
 
@@ -101,6 +110,17 @@ export function makeStubBridge(options?: {
     clipboard: {
       read: vi.fn().mockResolvedValue(''),
       write: vi.fn().mockResolvedValue(undefined)
+    },
+    issues: {
+      create: issueCreate,
+      update: issueUpdate,
+      delete: issueDelete,
+      bind: issueBind,
+      unbind: issueUnbind,
+      toggleDrawer: vi.fn()
+    },
+    shell: {
+      openExternal: vi.fn().mockResolvedValue(true)
     },
     onEvent: (handler) => {
       listeners.add(handler)

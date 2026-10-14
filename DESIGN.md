@@ -107,6 +107,10 @@ Session (entity inside the Task aggregate)
   1 ── 1 SessionConfig   (type-specific value object; fully serializable)
   1 ── 0/1 RuntimeHandle  (opaque id into infra; not the process object)
   attribute: SessionState (phase 2+)
+
+Issue (own aggregate; "Issues", §13.1)
+  0/1 ── 0/1 Task        (binding stored only on Issue.taskId?, I19; by id, not object pointer)
+  * ── 0/1 ProjectPath   (many issues per project; optional; by configured project's path, not an object reference)
 ```
 
 **Aggregate boundaries.** `Task` is the consistency boundary for its sessions (all add/remove/reorder/state
@@ -132,6 +136,8 @@ persistence, event routing, and any future multi-window refactor clean.
   records ownership for the delete path (§6.4): `true` when Octopus provisioned the worktree ("From New
   Worktree" → removed from disk on delete), `false` when the task merely adopted an existing directory
   ("From Existing Repo" → left on disk on delete). Provisioning *status* lives in `TaskLifecycle`, not here.
+- **Issue** (own aggregate, "Issues") — `id`, `name`, `description` (markdown), `projectPath?`,
+  `status: IssueStatus`, `taskId?` (the 1:1 binding, stored only here, I19), timestamps. Full detail in §13.1.
 - **SessionType** (registry descriptor, behavior not data) — `typeId`, `displayName`, `icon`,
   `availableFromVersion`, `configSchema`, `capabilities: Set<Capability>`, runtime factory reference.
 - **SessionConfig** — per-type, validated against the type's `configSchema`. Must be fully serializable so a
@@ -465,18 +471,19 @@ restore complexity). The serialize-and-replay path is kept available for a futur
     session (opening its tab in its window). Because it is a renderer view-model flag it survives task switches
     (still in the store) but not an app restart (a restored session starts un-flagged — a finished-long-ago
     agent is just idle).
-- **Keyboard:** eight actions are **fully user-configurable chords** in Settings — next/prev session
+- **Keyboard:** nine actions are **fully user-configurable chords** in Settings — next/prev session
   (`sessionNextKey` / `sessionPrevKey`, defaults `Ctrl+Shift+→`/`←`), next/prev task (`taskNextKey` /
   `taskPrevKey`, defaults `Ctrl+Shift+↓`/`↑`), new session (`newSessionKey`, default `Ctrl+Shift+N`), new task
-  (`newTaskKey`, default `Ctrl+Shift+T`), close session (`closeSessionKey`, default `Ctrl+Shift+W`), and
-  terminal search (`searchKey`, default `Ctrl+Shift+F`) — each bound independently (no "opposite" is
+  (`newTaskKey`, default `Ctrl+Shift+T`), close session (`closeSessionKey`, default `Ctrl+Shift+W`),
+  terminal search (`searchKey`, default `Ctrl+Shift+F`), and toggle the Issues drawer (`issuesKey`, default
+  `Alt+Shift+KeyI`; "Issues", §13.5) — each bound independently (no "opposite" is
   inferred). Next/prev session and close session act on THIS window's mark (§3.7); next/prev walk the
   active task's tabs across windows, raising the host window when the walk leaves this one. A capture accepts any key but is validated to require ≥1 modifier (so it can't shadow a bare
   terminal keystroke) and is checked for conflicts against every other configurable chord (and
   `RESERVED_CHORDS`, currently empty) before Save is allowed. `Ctrl+Shift+C/V` copy/paste and `Esc` close
   modal/dropdown are not configurable. Because every binding requires a modifier, terminal `Ctrl+C` etc. are
   never stolen. `TerminalPane` also installs an xterm `attachCustomKeyEventHandler` that drops both every
-  `Ctrl+Shift` chord AND the eight configurable chords before they become PTY input, so a global shortcut is
+  `Ctrl+Shift` chord AND the nine configurable chords before they become PTY input, so a global shortcut is
   never *also* written to the terminal (the `window` listener's `preventDefault` alone is unreliable —
   xterm's textarea handler runs first).
 - **Empty states & toasts:** "No tasks yet", "No sessions", inline "Connecting…" written into the terminal;
@@ -927,6 +934,13 @@ once) — `ptyData` in the register→`getState` gap is unbounded in principle.
   On restore, windows and their session assignments are reconstructed alongside tasks/sessions (extends
   I13/I14/I15) — the Electron process still resurrects no live process state (fresh PTYs on the in-process
   backend; the daemon backend re-attaches to PTYs it kept running, I13).
+- **I19.** (Issues, §13) An `Issue`↔`Task` binding is 1:1 and stored **only on the issue** (`Issue.taskId?`);
+  the task side is a reverse lookup (`issueForTask`), never a second stored pointer, so the two can't
+  disagree. Any bind (`bindIssue`, `createTask(issueId)`, or picking an issue in the New-Task modal) moves
+  the issue's status `todo → in_progress` in the **same command**; any other status is left unchanged.
+  Unbinding (`unbindIssue`, or deleting only the task) never changes status. Binding silently replaces
+  the issue's prior binding; binding a task already linked to a different issue is rejected
+  ("already linked") — enforced by the backend, not just the picker.
 
 ---
 
@@ -1384,6 +1398,12 @@ is untouched: a `JenkinsPane` carries a `windowId` like any session and moves be
   and aggregation pick it up automatically. **Zero changes** to Domain, Application use cases, Terminal, or
   the aggregator.
 
+### Issues — orthogonal to the phases above (§13)
+
+Shipped as a self-contained, additive feature rather than a numbered phase: it is not gated by
+`CURRENT_VERSION` (§6.4) and required no change to `Task`, `Session`, the state lattice, or the
+aggregator. See §13 for the full design.
+
 ---
 
 ## 11. Cross-Cutting Concerns & Risks
@@ -1455,3 +1475,125 @@ These were reviewed and decided; recorded here so implementation doesn't re-liti
    drop-on-window* (§5.6). Closing a secondary window with live sessions asks (move-to-main vs kill); closing
    the main window quits the app. Windows + assignments restore on relaunch, with off-screen clamping (§3.7,
    §5.6, §6.7, I18).
+
+---
+
+## 13. Issues
+
+**Product spec:** `PRD.md` → *Issues* (fields, binding rules, the Issues window — authoritative for
+behavior; this section is the architecture). An issue is a locally-stored work item, optionally bound
+1:1 to a task, so the work item and the worktree/sessions implementing it stay connected. Approach A:
+`Issue` is a domain aggregate whose changes go through the single-writer command loop (§6.6), the same
+as `Task`.
+
+### 13.1 Domain
+
+- **`Issue`** — `id: IssueId`, `name` (required), `description` (markdown text, opaque to the domain),
+  `projectPath?` (one of the configured Projects, §6.3; no referential constraint — removing a project
+  just clears it, see below), `status: IssueStatus`, `taskId?`, timestamps.
+- **`IssueStatus`** enum — `todo | in_progress | in_review | done`, a fixed user-set set (no custom
+  statuses). `todo` is the default for a new issue.
+- **Invariant I19** (§7): the `Issue`↔`Task` binding is 1:1 and stored **only on the issue**
+  (`Issue.taskId?`); the task side is a reverse lookup, never a second stored pointer. Any bind moves
+  `todo → in_progress` in the same command; any other status is left unchanged; unbind never changes
+  status.
+
+### 13.2 Persistence — schema v8
+
+Migration `{ toVersion: 8 }` (append-only, after v7 — never edit v1–v7) adds:
+
+```sql
+CREATE TABLE issues (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+  project_path TEXT, status TEXT NOT NULL DEFAULT 'todo'
+    CHECK(status IN ('todo','in_progress','in_review','done')),
+  task_id TEXT UNIQUE REFERENCES tasks(id) ON DELETE SET NULL,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+```
+
+`task_id` is `UNIQUE` (enforces 1:1 at the storage layer too) and `ON DELETE SET NULL`, so deleting a
+task row automatically clears the issue's binding without a separate statement — **this is also why
+`upsertTask` must stay `INSERT ... ON CONFLICT(id) DO UPDATE` and must never become `INSERT OR REPLACE`:
+`REPLACE` deletes-then-reinserts the row, which fires the same `ON DELETE SET NULL` trigger and silently
+unbinds the issue on an ordinary save.** `upsertIssue` is the same `ON CONFLICT(id) DO UPDATE` shape.
+`load()` returns `issues` alongside `tasks`/`sessions`. Rolling back the binary to a pre-v8 build hits
+the same `IncompatibleDbError` fatal-dialog path as any other forward migration (§6.3); a
+`.bak-v7` backup is written before the v8 upgrade runs.
+
+### 13.3 Application — commands, events, cross-cutting hooks
+
+- **New commands:** `createIssue`, `updateIssue`, `deleteIssue`, `bindIssue`, `unbindIssue`.
+- **`createTask(..., issueId?)`** binds the issue in the **same transaction** that persists the task once
+  it reaches `Ready` (§3.5) — not at `Provisioning` — so a failed provision leaves the issue unbound. The
+  single-writer loop (§6.6) serializes `createTask` across the provisioning await, so nothing can rebind
+  the issue while this command runs; if `issueId` was already bound to a different task (or gone) by the
+  time the command reached the front of the loop, that is a STALE-VIEW case, not a race — the New-Task
+  modal's issue-picker list was read before the user picked one and the command was dispatched, and
+  another window's bind/delete can land in that gap. Either way, the task is still created, **unbound**,
+  with an error toast explaining why, rather than silently stealing the binding or failing the task.
+- **`deleteTask(..., alsoDeleteIssue?)`** applies the issue deletion only inside the task's **final**
+  delete transaction: a dirty-worktree-gate cancel or a delete failure leaves the issue (and its binding)
+  untouched, mirroring the task's own all-or-nothing delete (I3/I4).
+- **`removeProject`** additionally clears `projectPath` on every issue referencing the removed project
+  (issues never block project removal, unlike tasks).
+- **Events:** `IssueUpsertedEvent { type: 'issueUpserted', issue }`, `IssueDeletedEvent { type:
+  'issueDeleted', issueId }`, added to the `DomainEvent` union (§6.5) and consumed by the renderer store
+  exactly like task/session events.
+
+### 13.4 IPC — contract, drawer-toggle relay, safe external links
+
+- New `issues` API group (create/update/delete/bind/unbind, request/reply over `ipcMain.handle`, §6.5)
+  plus `issues.toggleDrawer()` as a one-way `ipcRenderer.send`.
+- **Drawer-toggle relay.** The Issues window (PRD: *Issues window*; internally `issuesDrawer*`) lives only
+  in the main window (PRD, §5.6-style single-owner UI). The shortcut is global, so pressing it in a
+  secondary window must not open a drawer there: main's handler for the `issue:toggleDrawer` channel
+  **raises the main window** and sends `issuesDrawerToggle` to the main renderer only — never broadcast,
+  unlike `sessionStateChanged`/`taskStateChanged`. Drawer open/closed state is renderer-local view-state,
+  **not persisted** and **not part of `StoreData`'s hydrated projection** — it always starts closed.
+- **`shell:openExternal`** — a validated command, not a bare `shell.openExternal` passthrough: the main
+  handler calls the shared `openExternalSafely` (`src/main/window.ts`), which validates AND normalizes
+  via `toSafeExternalUrl` (`src/shared/external-url.ts` — the same check `isSafeExternalUrl` wraps, so the
+  renderer can filter before even asking) and only invokes Electron's `shell.openExternal` for `http`/
+  `https`; everything else (`file:`, `javascript:`, bare strings) is a silent no-op. Defense in depth
+  beyond the per-call check: every `BrowserWindow`'s `will-navigate` denies top-level navigation to any
+  non-own-renderer URL, and `setWindowOpenHandler` denies all new-window requests, routing their URL
+  through `openExternalSafely` instead — the renderer's CSP (`default-src 'self'`) only governs
+  subresource fetches (scripts/styles/images/etc.) from within the loaded page, NOT top-level navigation
+  or `window.open`, so `will-navigate`/`setWindowOpenHandler` are the actual control stopping a renderer
+  bug from silently loading an external origin into Octopus's own window. The terminal's `WebLinksAddon`
+  (xterm) is wired to the same `isSafeExternalUrl` + `shell.openExternal` path, so a clicked link in a
+  PTY's output obeys the identical allowlist instead of xterm's default `window.open`.
+
+### 13.5 Renderer
+
+- The store's issues projection (`issues: Record<string, IssueDTO>`) hydrates from `getState` and
+  reduces `issueUpserted`/`issueDeleted` like any other entity collection.
+- **Drawer view-state** (`issuesDrawerOpen`, `selectedIssueId`, an in-progress new-issue draft flag, an
+  edit-dirty flag, and a pending `discardPrompt` action) lives in `StoreData` as ordinary renderer state,
+  but is NOT part of the backend-hydrated projection: nothing here rides `WorkspaceStateDTO` or any
+  domain event, it starts `false`/`undefined`/`null` on every launch (`initialData()`), and it is never
+  persisted (§13.4) — it must also survive the store's settings-driven re-hydrate (opening the Settings
+  modal does not close the drawer or lose an in-progress edit).
+  Navigating away while `issueEditDirty` is set raises `discardPrompt` instead of acting immediately
+  (close / select-another / new), mirroring the task delete dirty-gate's confirm-first shape (I3/I4 for
+  tasks; no new invariant needed since this is UI-only, not aggregate state).
+- **Markdown** renders via `react-markdown` + `remark-gfm` (GitHub tables/checklists) with `skipHtml` —
+  raw HTML in a description is never rendered, closing the same injection surface the CSP already closes
+  for remote content; `img` renders as alt text only, since `default-src 'self'` blocks a remote image
+  anyway and a broken-image box would be the only visible result.
+- **Status icons** are small inline SVGs (dashed circle / play / eye / check) drawn in `currentColor`
+  — plain paint, so SwiftShader-safe, and no icon library. A native `<option>` can't host SVG, so the
+  New-Task "Associated issue" picker is a custom listbox (`IssuePicker`) showing the same icons.
+- **No GPU on the VDI host (§5.3's software-GL constraint):** the drawer slides in with a CSS `transform`
+  only — never `backdrop-filter`/`filter` blur, for the same reason modal backdrops dropped blur —
+  SwiftShader software rendering makes blur a visible multi-second stall on this host, not a style choice.
+
+### 13.6 Testing
+
+Unit/component tests follow the existing split (§11 testing strategy): domain (binding, the 1:1
+invariant, `todo → in_progress` only from `todo`), persistence (v7→v8 migration, round trip, `SET NULL`
+on task delete, the `UNIQUE` violation on a double bind), application (CRUD, the bind-on-Ready stale-view
+case, the delete-both all-or-nothing transaction, project-removal cleanup), and renderer (reducers, drawer
+view-state, the discard-prompt gate, link-scheme filtering). A `scripts/probe-sqlite-store.cjs` run
+exercises the migration and constraints against the real `better-sqlite3` binary, matching the existing
+real-SQLite probe pattern.

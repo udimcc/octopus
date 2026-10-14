@@ -4,7 +4,7 @@
  * so the application/domain stay pure and tests can inject deterministic ids.
  */
 
-import type { TaskId, SessionId, WindowId } from '../domain/ids'
+import type { TaskId, SessionId, WindowId, IssueId } from '../domain/ids'
 
 export interface IdGenerator {
   /** A fresh globally-unique task id (I6). */
@@ -13,4 +13,6 @@ export interface IdGenerator {
   newSessionId(): SessionId
   /** A fresh globally-unique window id (V1.5, §3.7). */
   newWindowId(): WindowId
+  /** A fresh globally-unique issue id (I19). */
+  newIssueId(): IssueId
 }

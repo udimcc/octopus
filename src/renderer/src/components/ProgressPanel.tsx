@@ -41,6 +41,8 @@ export function ProgressPanel({ onNewTask }: ProgressPanelProps): React.JSX.Elem
   const setActiveTask = useStore((s) => s.setActiveTask)
   const grouped = useStore((s) => s.settings.groupTasksByRepo)
   const setGroupTasksByRepo = useStore((s) => s.setGroupTasksByRepo)
+  const issuesDrawerOpen = useStore((s) => s.issuesDrawerOpen)
+  const toggleIssuesDrawer = useStore((s) => s.toggleIssuesDrawer)
   // Subscribe to every input `taskDisplayState` folds in so the rollup re-renders when
   // any of them change (§9.5/§9): the finished-unseen map and session states (raise/
   // clear + plain state flips), PLUS the on-screen inputs (window focus + active tab),
@@ -241,6 +243,24 @@ export function ProgressPanel({ onNewTask }: ProgressPanelProps): React.JSX.Elem
           </SortableContext>
         )}
       </DndContext>
+
+      {/* "Issues" button (PRD "Progress Window" → "Controls"; "Issues" → "Issues
+          window"), pinned below the task list: the list above is the `flex: 1`
+          scroller, so this sits in the remaining space and never scrolls with it.
+          The `id` is a focus-restore fallback target for `IssuesDrawer`:
+          if the drawer can't restore focus to whatever had it before opening (or
+          to an on-screen terminal), it lands here instead of `<body>`. */}
+      <div style={{ padding: 12, borderTop: `1px solid ${color.border}` }}>
+        <button
+          id="issues-drawer-toggle"
+          type="button"
+          onClick={toggleIssuesDrawer}
+          aria-pressed={issuesDrawerOpen}
+          style={{ width: '100%' }}
+        >
+          Issues
+        </button>
+      </div>
 
       {deleteTaskId && tasks[deleteTaskId] ? (
         <DeleteTaskConfirm taskId={deleteTaskId} onClose={() => setDeleteTaskId(null)} />

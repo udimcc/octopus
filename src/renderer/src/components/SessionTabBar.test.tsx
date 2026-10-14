@@ -49,6 +49,7 @@ function seed(opts: {
     tasks: [t],
     activeTaskId: 't1',
     sessionTypes: opts.sessionTypes ?? [TERMINAL_TYPE],
+    issues: [],
     settings: {
       worktree: { location: '' },
       terminal: {},

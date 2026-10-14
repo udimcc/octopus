@@ -10,8 +10,13 @@
  * `mappers.ts`; this class is just prepared statements + the schema bootstrap.
  */
 
-import type { TaskId, SessionId, WindowId } from '../../domain/ids'
-import type { WorkspaceSnapshot, TaskSnapshot, SessionSnapshot } from '../../domain/snapshots'
+import type { TaskId, SessionId, WindowId, IssueId } from '../../domain/ids'
+import type {
+  WorkspaceSnapshot,
+  TaskSnapshot,
+  SessionSnapshot,
+  IssueSnapshot
+} from '../../domain/snapshots'
 import type { WorkspacePersistence, WindowRecord } from '../../ports/workspace-persistence'
 import type { SqliteDb } from './sqlite-db'
 import {
@@ -25,11 +30,14 @@ import {
   taskToRow,
   sessionToRow,
   windowToRow,
+  issueToRow,
   rowToTaskSnapshot,
   rowToWindowRecord,
+  rowToIssueSnapshot,
   type TaskRow,
   type SessionRow,
-  type WindowRow
+  type WindowRow,
+  type IssueRow
 } from './mappers'
 import { IncompatibleDbError } from './errors'
 
@@ -125,9 +133,31 @@ export class SqliteStore implements WorkspacePersistence {
     // Guard the active pointer against a task that no longer exists (I9); hydrate
     // enforces this too, but keeping the snapshot clean avoids surprises.
     const activeExists = activeTaskId !== undefined && tasks.some((t) => t.id === activeTaskId)
-    return { tasks, activeTaskId: activeExists ? activeTaskId : undefined }
+
+    // Newest first (I19), with `id` as a tiebreaker for issues created in the
+    // same millisecond so `load`'s order is deterministic. This is only a
+    // starting order, not a guarantee: the renderer re-sorts for display, and
+    // `createIssue` appends new issues to in-memory order rather than
+    // reinserting at the front, so the live `Workspace`'s order can already
+    // diverge from created-desc before the next `load`.
+    const issueRows = this.db
+      .prepare('SELECT * FROM issues ORDER BY created_at DESC, id')
+      .all() as IssueRow[]
+    const issues = issueRows.map(rowToIssueSnapshot)
+
+    return { tasks, activeTaskId: activeExists ? activeTaskId : undefined, issues }
   }
 
+  // `ON CONFLICT(id) DO UPDATE`, deliberately NOT `INSERT OR REPLACE` (I19): REPLACE
+  // deletes-then-reinserts the row, which would fire `issues.task_id`'s
+  // `ON DELETE SET NULL` and silently unbind any issue connected to this task on
+  // every routine save. DO UPDATE mutates the row in place, so the FK never sees a
+  // delete. The same caution applies beyond this one statement: a future migration
+  // that rebuilds the `tasks` table (e.g. `ALTER TABLE` via copy-and-swap, which
+  // SQLite needs for operations it can't do in place) deletes every row as part of
+  // the rebuild and would fire this exact trigger for every bound issue — any such
+  // migration must re-point `issues.task_id` (or otherwise preserve the bindings)
+  // as part of the same migration, not rely on this file's routine-save path.
   upsertTask(task: TaskSnapshot): void {
     const row = taskToRow(task)
     this.db
@@ -150,7 +180,36 @@ export class SqliteStore implements WorkspacePersistence {
 
   deleteTask(taskId: TaskId): void {
     // Sessions cascade via the FK (§6.3); foreign_keys pragma is ON per connection.
+    // Any issue bound to this task has its `task_id` set to NULL by the same FK
+    // (I19) — the issue row itself is left untouched.
     this.db.prepare('DELETE FROM tasks WHERE id = ?').run(taskId)
+  }
+
+  // `ON CONFLICT(id) DO UPDATE`, same reasoning as `upsertTask` above: this issue
+  // row's own `id` is never the FK target, but mutating in place rather than
+  // delete+reinsert keeps the pattern consistent and avoids any accidental
+  // `task_id` churn on an unrelated column update.
+  upsertIssue(issue: IssueSnapshot): void {
+    const row = issueToRow(issue)
+    this.db
+      .prepare(
+        `INSERT INTO issues (id, name, description, project_path, status, task_id, created_at, updated_at)
+         VALUES (@id, @name, @description, @project_path, @status, @task_id, @created_at, @updated_at)
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name,
+           description = excluded.description,
+           project_path = excluded.project_path,
+           status = excluded.status,
+           task_id = excluded.task_id,
+           updated_at = excluded.updated_at`
+      )
+      .run(row)
+  }
+
+  deleteIssue(id: IssueId): void {
+    // The bound task, if any, is left untouched — the FK is on `issues.task_id`,
+    // not the other way around, so deleting an issue never cascades to a task.
+    this.db.prepare('DELETE FROM issues WHERE id = ?').run(id)
   }
 
   upsertSession(session: SessionSnapshot): void {

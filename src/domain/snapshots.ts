@@ -9,11 +9,12 @@
  * deliberate, tested seam rather than a shared import.
  */
 
-import type { TaskId, SessionId, TypeId, WindowId } from './ids'
+import type { TaskId, SessionId, TypeId, WindowId, IssueId } from './ids'
 import type { SessionState, TaskState } from './state'
 import type { TaskLifecycle, SessionLifecycle } from './lifecycle'
 import type { SessionConfig } from './session-config'
 import type { ScriptInvocationMeta } from './worktree-ref'
+import type { IssueStatus } from './issue'
 
 export interface WorktreeRefSnapshot {
   readonly path: string
@@ -68,7 +69,28 @@ export interface TaskSnapshot {
   readonly createdAt: number
 }
 
+export interface IssueSnapshot {
+  readonly id: IssueId
+  readonly name: string
+  readonly description: string
+  /** One of the configured Projects' paths, or absent ("Issues", §13.1). */
+  readonly projectPath?: string
+  readonly status: IssueStatus
+  /**
+   * The task this issue is bound to, if any. The binding is stored only here
+   * (I19) — a task never carries a reverse pointer.
+   */
+  readonly taskId?: TaskId
+  readonly createdAt: number
+  readonly updatedAt: number
+}
+
 export interface WorkspaceSnapshot {
   readonly tasks: readonly TaskSnapshot[]
   readonly activeTaskId?: TaskId
+  /**
+   * Optional so pre-Issues snapshot fixtures still compile; `Workspace.hydrate`
+   * treats an absent array as empty (I19).
+   */
+  readonly issues?: readonly IssueSnapshot[]
 }

@@ -23,6 +23,8 @@ import { TaskWorkspace } from './components/TaskWorkspace'
 import { SecondaryWorkspace } from './components/SecondaryWorkspace'
 import { Toaster } from './components/Toaster'
 import { NewTaskModal } from './components/NewTaskModal'
+import { DeleteTaskConfirm } from './components/DeleteTaskConfirm'
+import { IssuesDrawer } from './components/IssuesDrawer'
 import { DebugOverlay } from './components/DebugOverlay'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 
@@ -33,6 +35,22 @@ const shellStyle: React.CSSProperties = {
   background: 'var(--bg-app)',
   color: 'var(--text-primary)',
   fontFamily: 'var(--font-sans)'
+}
+
+/**
+ * Wraps `TaskWorkspace` + `IssuesDrawer` (PRD "Issues" → "Issues window"): the
+ * drawer is `position: absolute; inset: 0` against this box, so `position: relative`
+ * here scopes it to the session area only, never covering the `ProgressPanel`
+ * beside it. `overflow: hidden` + `minWidth: 0` keep the drawer's slide-in
+ * (`transform`, never `left`/`width`) and the workspace's own content from pushing
+ * this flex child wider than the space actually available.
+ */
+const workspaceAreaStyle: React.CSSProperties = {
+  position: 'relative',
+  flex: 1,
+  display: 'flex',
+  minWidth: 0,
+  overflow: 'hidden'
 }
 
 /**
@@ -168,17 +186,86 @@ function openSearchForActive(): void {
 
 /** The main window: progress panel + full workspace + task creation (§5.1). */
 function MainWindowApp(): React.JSX.Element {
-  const [showNewTask, setShowNewTask] = useState(false)
-  const openNewTask = useCallback(() => setShowNewTask(true), [])
+  // `null` = closed; `{}` = the plain "+ New Task" button; `{ issueId }` = "Create
+  // task" from the Issues drawer (PRD "Issues" → "Issues and tasks"), which locks
+  // and prefills `NewTaskModal` via `fromIssueId`.
+  const [newTaskFrom, setNewTaskFrom] = useState<{ issueId?: string } | null>(null)
+  // Preserve an already-open create-from-issue prefill: the keyboard
+  // shortcut and the "+ New Task" button both call this, and while the modal is
+  // already open from the Issues drawer with an `issueId` locked in, re-firing
+  // either must not clobber it back to the plain, unprefilled `{}` form.
+  const openNewTask = useCallback(() => setNewTaskFrom((prev) => prev ?? {}), [])
   useKeyboardShortcuts({ onNewTask: openNewTask, onSearch: openSearchForActive })
+
+  // The bound-task delete flow opened FROM the Issues drawer's own `BoundDeleteDialog`
+  // (PRD "Issues" → "Deleting"): the choice is already made there, so `DeleteTaskConfirm`
+  // is given a `preset` and skips its own choice step.
+  const [boundDelete, setBoundDelete] = useState<{
+    taskId: string
+    preset: 'task' | 'both'
+  } | null>(null)
+
+  const onCreateTaskFromIssue = useCallback((issueId: string) => setNewTaskFrom({ issueId }), [])
+  const onDeleteBoundTask = useCallback(
+    (taskId: string, alsoDeleteIssue: boolean) =>
+      setBoundDelete({ taskId, preset: alsoDeleteIssue ? 'both' : 'task' }),
+    []
+  )
+
+  const issuesDrawerOpen = useStore((s) => s.issuesDrawerOpen)
+  const workspaceWrapperRef = useRef<HTMLDivElement>(null)
+
+  // `inert` is not in @types/react 18.3 — reflect it onto the DOM node directly
+  // (mirrors `IssuesDrawer`'s own `inert` effect on itself). While the drawer
+  // covers the workspace (`position: absolute; inset: 0` on top of it),
+  // the workspace must be neither focusable nor keyboard-reachable underneath it.
+  // `TerminalPane` unconditionally calls `term.focus()`
+  // on mount and on tab activation; per spec, focusing an element inside an
+  // `inert` subtree is a no-op, so this alone neutralizes those calls for any
+  // pane currently hidden behind the drawer — no change needed inside
+  // `TerminalPane` itself. `aria-hidden` additionally pulls the whole subtree out
+  // of the accessibility tree while it's covered.
+  useEffect(() => {
+    const el = workspaceWrapperRef.current
+    if (!el) return
+    ;(el as HTMLElement & { inert: boolean }).inert = issuesDrawerOpen
+  }, [issuesDrawerOpen])
 
   return (
     <main style={shellStyle}>
       <ProgressPanel onNewTask={openNewTask} />
-      <TaskWorkspace />
+      <div style={workspaceAreaStyle}>
+        <div
+          ref={workspaceWrapperRef}
+          aria-hidden={issuesDrawerOpen}
+          style={{ display: 'flex', flex: 1, minWidth: 0 }}
+        >
+          <TaskWorkspace />
+        </div>
+        <IssuesDrawer
+          onCreateTaskFromIssue={onCreateTaskFromIssue}
+          onDeleteBoundTask={onDeleteBoundTask}
+        />
+      </div>
       <Toaster />
       <DebugOverlay />
-      {showNewTask ? <NewTaskModal onClose={() => setShowNewTask(false)} /> : null}
+      {/* Rendered as a sibling OUTSIDE `workspaceAreaStyle`/the drawer, not nested
+          inside it: the drawer's slide-in `transform` would otherwise make it the
+          containing block for these `position: fixed` overlays (`overlayStyle`),
+          confining them to the session area instead of the whole window — and its
+          `zIndex: 40` is already below `overlayStyle`'s 100, so no overlap either way. */}
+      {newTaskFrom ? (
+        <NewTaskModal fromIssueId={newTaskFrom.issueId} onClose={() => setNewTaskFrom(null)} />
+      ) : null}
+      {boundDelete ? (
+        <DeleteTaskConfirm
+          key={boundDelete.taskId}
+          taskId={boundDelete.taskId}
+          preset={boundDelete.preset}
+          onClose={() => setBoundDelete(null)}
+          onDone={() => setBoundDelete(null)}
+        />
+      ) : null}
     </main>
   )
 }

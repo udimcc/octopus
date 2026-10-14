@@ -1,9 +1,15 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { StrictMode } from 'react'
 import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { installStubBridge } from '../test-support/stub-bridge'
 import { NewTaskModal } from './NewTaskModal'
-import type { ProjectDTO, ProjectListItemDTO, ProjectWorktreeDTO } from '../../../shared/dto'
+import { useStore, initialData } from '../store/store'
+import type {
+  IssueDTO,
+  ProjectDTO,
+  ProjectListItemDTO,
+  ProjectWorktreeDTO
+} from '../../../shared/dto'
 
 const PROJECT_APP: ProjectListItemDTO = { path: '/repos/app', defaultBranch: 'main', taskCount: 0 }
 const PROJECT_OTHER: ProjectListItemDTO = {
@@ -41,7 +47,11 @@ describe('<NewTaskModal>', () => {
     window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP, PROJECT_OTHER])
     render(<NewTaskModal onClose={vi.fn()} />)
     await screen.findByRole('option', { name: 'app' })
-    expect(screen.queryByRole('option', { selected: true })).not.toBeInTheDocument()
+    // Scoped to the Projects listbox: the unrelated "Associated issue" <select>'s
+    // native "None" option is also `role="option"` and selected by default, which
+    // would otherwise make this assertion a false negative.
+    const projectList = screen.getByRole('listbox', { name: 'Projects' })
+    expect(within(projectList).queryByRole('option', { selected: true })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Create Task' })).toBeDisabled()
   })
 
@@ -413,6 +423,42 @@ describe('<NewTaskModal>', () => {
     await waitFor(() => expect(window.octopusAPI.tasks.create).toHaveBeenCalled())
   })
 
+  it('stops a session-cycle chord (Ctrl+Shift+ArrowRight) typed in the task-name field from reaching the window', () => {
+    render(<NewTaskModal onClose={vi.fn()} />)
+    const spy = vi.fn()
+    window.addEventListener('keydown', spy)
+    try {
+      fireEvent.keyDown(screen.getByLabelText('task name'), {
+        code: 'ArrowRight',
+        key: 'ArrowRight',
+        ctrlKey: true,
+        shiftKey: true,
+        bubbles: true
+      })
+      expect(spy).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener('keydown', spy)
+    }
+  })
+
+  it('stops a close-session chord (Ctrl+Shift+KeyW) typed in the task-name field from reaching the window', () => {
+    render(<NewTaskModal onClose={vi.fn()} />)
+    const spy = vi.fn()
+    window.addEventListener('keydown', spy)
+    try {
+      fireEvent.keyDown(screen.getByLabelText('task name'), {
+        code: 'KeyW',
+        key: 'w',
+        ctrlKey: true,
+        shiftKey: true,
+        bubbles: true
+      })
+      expect(spy).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener('keydown', spy)
+    }
+  })
+
   it('Enter on the sidebar delete button or Cancel never submits, even when the form is submittable', async () => {
     window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
     render(<NewTaskModal onClose={vi.fn()} />)
@@ -559,5 +605,286 @@ describe('<NewTaskModal>', () => {
 
     emit({ type: 'scriptProgress', taskId: 'task-1', line: 'Preparing worktree' })
     await waitFor(() => expect(screen.getByText('Preparing worktree')).toBeInTheDocument())
+  })
+
+  // ── Associated issue picker + "Create task" prefill (PRD "Issues") ───────────
+
+  describe('associated issue', () => {
+    function issue(id: string, over: Partial<IssueDTO> = {}): IssueDTO {
+      return {
+        id,
+        name: id,
+        description: '',
+        status: 'todo',
+        createdAt: 1000,
+        updatedAt: 1000,
+        ...over
+      }
+    }
+
+    function seedIssues(...list: IssueDTO[]): void {
+      useStore.setState({ issues: Object.fromEntries(list.map((i) => [i.id, i])) })
+    }
+
+    /** Opens the "Associated issue" dropdown and returns its entries ("None" first). */
+    function pickerOptions(): HTMLElement[] {
+      fireEvent.click(screen.getByLabelText('associated issue'))
+      return within(screen.getByRole('listbox', { name: 'Issues' })).getAllByRole('option')
+    }
+
+    /** Picks issue `id` (or "None" for `''`) through the dropdown, like a user would. */
+    function pickIssue(id: string): void {
+      const label = id === '' ? 'None' : useStore.getState().issues[id].name
+      const entry = pickerOptions().find((o) => o.textContent?.startsWith(label))
+      if (!entry) throw new Error(`no picker entry for "${label}"`)
+      fireEvent.click(entry)
+    }
+
+    beforeEach(() => {
+      useStore.setState(initialData())
+    })
+
+    afterEach(() => {
+      useStore.setState(initialData())
+    })
+
+    it('lists not-Done issues newest first with their status icon; bound ones are disabled', () => {
+      seedIssues(
+        issue('old', { name: 'Old', createdAt: 1000 }),
+        issue('new', { name: 'New', status: 'in_progress', createdAt: 3000 }),
+        issue('done', { name: 'Finished', status: 'done', createdAt: 4000 }),
+        issue('bound', { name: 'Bound', createdAt: 2000, taskId: 't9' })
+      )
+      render(<NewTaskModal onClose={vi.fn()} />)
+      const options = pickerOptions()
+      expect(options.map((o) => o.textContent)).toEqual([
+        'None',
+        'New',
+        'Bound(already linked)',
+        'Old'
+      ])
+      // The same SVG status icon as the issue window, not a text glyph.
+      expect(within(options[1]).getByRole('img', { name: 'In progress' })).toHaveAttribute(
+        'data-status',
+        'in_progress'
+      )
+      expect(options[1].querySelector('svg')).not.toBeNull()
+      expect(within(options[3]).getByRole('img', { name: 'Todo' })).toBeInTheDocument()
+      expect(options[2]).toBeDisabled()
+      expect(options[1]).toBeEnabled()
+      expect(options[3]).toBeEnabled()
+      // Every entry is left-aligned, overriding the global `button` centering.
+      for (const o of options) expect(o.style.justifyContent).toBe('flex-start')
+      expect(screen.getByLabelText('associated issue')).toHaveAttribute('data-value', '')
+    })
+
+    it('the closed picker shows the picked issue with its status icon', () => {
+      seedIssues(issue('i1', { name: 'Fix login bug', status: 'in_review' }))
+      render(<NewTaskModal onClose={vi.fn()} />)
+      const trigger = screen.getByLabelText('associated issue')
+      expect(trigger).toHaveTextContent('None')
+
+      pickIssue('i1')
+      expect(screen.queryByRole('listbox', { name: 'Issues' })).not.toBeInTheDocument()
+      expect(trigger).toHaveAttribute('data-value', 'i1')
+      expect(trigger).toHaveTextContent('Fix login bug')
+      expect(within(trigger).getByRole('img', { name: 'In review' })).toBeInTheDocument()
+    })
+
+    it('Escape in the open picker closes only the picker, not the modal', () => {
+      seedIssues(issue('i1'))
+      const onClose = vi.fn()
+      render(<NewTaskModal onClose={onClose} />)
+      pickerOptions()
+      const listbox = screen.getByRole('listbox', { name: 'Issues' })
+
+      fireEvent.keyDown(listbox, { key: 'Escape' })
+      expect(screen.queryByRole('listbox', { name: 'Issues' })).not.toBeInTheDocument()
+      expect(onClose).not.toHaveBeenCalled()
+      expect(screen.getByLabelText('associated issue')).toHaveFocus()
+    })
+
+    it('arrow keys move between pickable entries, skipping disabled ones', () => {
+      seedIssues(
+        issue('a', { name: 'A', createdAt: 3000 }),
+        issue('b', { name: 'B', createdAt: 2000, taskId: 't9' }),
+        issue('c', { name: 'C', createdAt: 1000 })
+      )
+      render(<NewTaskModal onClose={vi.fn()} />)
+      const [none, a, , c] = pickerOptions()
+      expect(none).toHaveFocus() // nothing picked yet → "None" is the current entry
+      const listbox = screen.getByRole('listbox', { name: 'Issues' })
+      fireEvent.keyDown(listbox, { key: 'ArrowDown' })
+      expect(a).toHaveFocus()
+      fireEvent.keyDown(listbox, { key: 'ArrowDown' })
+      expect(c).toHaveFocus() // B is already linked → skipped
+      fireEvent.keyDown(listbox, { key: 'ArrowUp' })
+      expect(a).toHaveFocus()
+    })
+
+    it('an outside mousedown closes the open picker without picking', () => {
+      seedIssues(issue('i1'))
+      render(<NewTaskModal onClose={vi.fn()} />)
+      pickerOptions()
+      fireEvent.mouseDown(screen.getByLabelText('task name'))
+      expect(screen.queryByRole('listbox', { name: 'Issues' })).not.toBeInTheDocument()
+      expect(screen.getByLabelText('associated issue')).toHaveAttribute('data-value', '')
+    })
+
+    it("picking an issue fills an empty name + branch and selects the issue's project", async () => {
+      window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP, PROJECT_OTHER])
+      seedIssues(issue('i1', { name: 'Fix login bug', projectPath: '/repos/other' }))
+      render(<NewTaskModal onClose={vi.fn()} />)
+      await screen.findByRole('option', { name: 'other' })
+
+      pickIssue('i1')
+      expect(screen.getByLabelText('task name')).toHaveValue('Fix login bug')
+      expect(screen.getByLabelText('new branch')).toHaveValue('fix_login_bug')
+      expect(screen.getByRole('option', { name: 'other' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByLabelText('source branch')).toHaveValue('develop')
+    })
+
+    it('picking an issue keeps a typed name and an already-selected project', async () => {
+      window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP, PROJECT_OTHER])
+      seedIssues(issue('i1', { name: 'Fix login bug', projectPath: '/repos/other' }))
+      render(<NewTaskModal onClose={vi.fn()} />)
+      await screen.findByRole('option', { name: 'app' })
+      fireEvent.click(screen.getByRole('option', { name: 'app' }))
+      fill('task name', 'My own name')
+
+      pickIssue('i1')
+      expect(screen.getByLabelText('task name')).toHaveValue('My own name')
+      expect(screen.getByRole('option', { name: 'app' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByRole('option', { name: 'other' })).toHaveAttribute(
+        'aria-selected',
+        'false'
+      )
+    })
+
+    it('submits issueId with the new-worktree payload when an issue is picked', async () => {
+      window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
+      seedIssues(issue('i1', { name: 'Fix login bug' }))
+      render(<NewTaskModal onClose={vi.fn()} />)
+      await screen.findByRole('option', { name: 'app' })
+      fireEvent.click(screen.getByRole('option', { name: 'app' }))
+      pickIssue('i1')
+      fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
+      expect(window.octopusAPI.tasks.create).toHaveBeenCalledWith({
+        mode: 'new',
+        name: 'Fix login bug',
+        repoDir: '/repos/app',
+        sourceBranch: 'main',
+        newBranch: 'fix_login_bug',
+        issueId: 'i1'
+      })
+    })
+
+    it('submits issueId with the no-repo payload when an issue is picked', async () => {
+      seedIssues(issue('i1', { name: 'Scratch issue' }))
+      render(<NewTaskModal onClose={vi.fn()} />)
+      fireEvent.click(screen.getByRole('tab', { name: 'No Repo' }))
+      pickIssue('i1')
+      fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
+      expect(window.octopusAPI.tasks.create).toHaveBeenCalledWith({
+        mode: 'none',
+        name: 'Scratch issue',
+        issueId: 'i1'
+      })
+    })
+
+    it('submits issueId with the existing-repo payload when an issue is picked', async () => {
+      window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
+      window.octopusAPI.projects.listWorktrees = vi.fn().mockResolvedValue([
+        { path: '/repos/app', branch: 'main' },
+        { path: '/repos/app-wt1', branch: 'feature/x' }
+      ])
+      seedIssues(issue('i1', { name: 'Fix login bug' }))
+      render(<NewTaskModal onClose={vi.fn()} />)
+      fireEvent.click(screen.getByRole('tab', { name: 'From Existing Repo' }))
+      await screen.findByRole('option', { name: 'app' })
+      fireEvent.click(screen.getByRole('option', { name: 'app' }))
+      const radio = await screen.findByRole('radio', { name: '/repos/app-wt1 (feature/x)' })
+      fireEvent.click(radio)
+      pickIssue('i1')
+      fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
+      expect(window.octopusAPI.tasks.create).toHaveBeenCalledWith({
+        mode: 'existing',
+        name: 'Fix login bug',
+        worktreeDir: '/repos/app-wt1',
+        issueId: 'i1'
+      })
+    })
+
+    it('clearing the picker back to None keeps the filled name and omits issueId', async () => {
+      seedIssues(issue('i1', { name: 'Scratch issue' }))
+      render(<NewTaskModal onClose={vi.fn()} />)
+      fireEvent.click(screen.getByRole('tab', { name: 'No Repo' }))
+      pickIssue('i1')
+      pickIssue('')
+      expect(screen.getByLabelText('task name')).toHaveValue('Scratch issue')
+      fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
+      expect(window.octopusAPI.tasks.create).toHaveBeenCalledWith({
+        mode: 'none',
+        name: 'Scratch issue'
+      })
+    })
+
+    it('fromIssueId locks the picker and prefills name, project, and branch', async () => {
+      window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP, PROJECT_OTHER])
+      seedIssues(issue('i1', { name: 'Fix login bug', projectPath: '/repos/other' }))
+      render(<NewTaskModal onClose={vi.fn()} fromIssueId="i1" />)
+
+      const picker = screen.getByLabelText('associated issue')
+      expect(picker).toBeDisabled()
+      await waitFor(() => expect(picker).toHaveAttribute('data-value', 'i1'))
+      expect(screen.getByLabelText('task name')).toHaveValue('Fix login bug')
+      expect(screen.getByRole('tab', { name: 'From New Worktree' })).toHaveAttribute(
+        'aria-selected',
+        'true'
+      )
+      await waitFor(() =>
+        expect(screen.getByRole('option', { name: 'other' })).toHaveAttribute(
+          'aria-selected',
+          'true'
+        )
+      )
+      expect(screen.getByLabelText('source branch')).toHaveValue('develop')
+      expect(screen.getByLabelText('new branch')).toHaveValue('fix_login_bug')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
+      expect(window.octopusAPI.tasks.create).toHaveBeenCalledWith({
+        mode: 'new',
+        name: 'Fix login bug',
+        repoDir: '/repos/other',
+        sourceBranch: 'develop',
+        newBranch: 'fix_login_bug',
+        issueId: 'i1'
+      })
+    })
+
+    it("fromIssueId leaves the project unselected when the issue's project is gone", async () => {
+      window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
+      seedIssues(issue('i1', { name: 'Fix login bug', projectPath: '/repos/removed' }))
+      render(<NewTaskModal onClose={vi.fn()} fromIssueId="i1" />)
+      await screen.findByRole('option', { name: 'app' })
+
+      await waitFor(() => expect(screen.getByLabelText('task name')).toHaveValue('Fix login bug'))
+      expect(screen.getByLabelText('associated issue')).toHaveAttribute('data-value', 'i1')
+      const projectList = screen.getByRole('listbox', { name: 'Projects' })
+      expect(within(projectList).queryByRole('option', { selected: true })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Create Task' })).toBeDisabled()
+    })
+
+    it('an unknown fromIssueId behaves as no prefill', async () => {
+      window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
+      seedIssues(issue('i1', { name: 'Other issue' }))
+      render(<NewTaskModal onClose={vi.fn()} fromIssueId="missing" />)
+      await screen.findByRole('option', { name: 'app' })
+
+      const picker = screen.getByLabelText('associated issue')
+      expect(picker).toBeEnabled()
+      expect(picker).toHaveAttribute('data-value', '')
+      expect(screen.getByLabelText('task name')).toHaveValue('')
+    })
   })
 })

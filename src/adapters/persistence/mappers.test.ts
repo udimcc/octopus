@@ -4,12 +4,16 @@ import {
   sessionToRow,
   rowToTaskSnapshot,
   rowToSessionSnapshot,
-  type SessionRow
+  issueToRow,
+  rowToIssueSnapshot,
+  type SessionRow,
+  type IssueRow
 } from './mappers'
-import { asTaskId, asSessionId, asTypeId, asWindowId } from '../../domain/ids'
+import { asTaskId, asSessionId, asTypeId, asWindowId, asIssueId } from '../../domain/ids'
 import { TaskState, SessionState } from '../../domain/state'
 import { TaskLifecycle, SessionLifecycle } from '../../domain/lifecycle'
-import type { TaskSnapshot, SessionSnapshot } from '../../domain/snapshots'
+import { IssueStatus } from '../../domain/issue'
+import type { TaskSnapshot, SessionSnapshot, IssueSnapshot } from '../../domain/snapshots'
 
 function sessionSnapshot(over: Partial<SessionSnapshot> = {}): SessionSnapshot {
   return {
@@ -265,6 +269,63 @@ describe('rowToTaskSnapshot (I13/I14, §6.3)', () => {
     expect(snap.worktree).toBeUndefined()
     expect(snap.lifecycle).toBe(TaskLifecycle.Ready)
     expect(snap.state).toBe(TaskState.Unknown)
+  })
+})
+
+function issueSnapshot(over: Partial<IssueSnapshot> = {}): IssueSnapshot {
+  return {
+    id: asIssueId('i1'),
+    name: 'issue',
+    description: 'desc',
+    projectPath: '/repo',
+    status: IssueStatus.InProgress,
+    taskId: asTaskId('t1'),
+    createdAt: 10,
+    updatedAt: 20,
+    ...over
+  }
+}
+
+describe('issueToRow / rowToIssueSnapshot (I19, v8)', () => {
+  it('round-trips a fully-populated issue', () => {
+    const row = issueToRow(issueSnapshot())
+    expect(row).toEqual({
+      id: 'i1',
+      name: 'issue',
+      description: 'desc',
+      project_path: '/repo',
+      status: 'in_progress',
+      task_id: 't1',
+      created_at: 10,
+      updated_at: 20
+    })
+    const restored = rowToIssueSnapshot(row)
+    expect(restored).toEqual(issueSnapshot())
+  })
+
+  it('round-trips a null project and null task as undefined', () => {
+    const original = issueSnapshot({ projectPath: undefined, taskId: undefined })
+    const row = issueToRow(original)
+    expect(row.project_path).toBeNull()
+    expect(row.task_id).toBeNull()
+    const restored = rowToIssueSnapshot(row)
+    expect(restored.projectPath).toBeUndefined()
+    expect(restored.taskId).toBeUndefined()
+    expect(restored).toEqual(original)
+  })
+
+  it('falls back to Todo for a corrupt/unrecognized status string', () => {
+    const row: IssueRow = {
+      id: 'i1',
+      name: 'issue',
+      description: '',
+      project_path: null,
+      status: 'bogus-not-a-real-status',
+      task_id: null,
+      created_at: 1,
+      updated_at: 1
+    }
+    expect(rowToIssueSnapshot(row).status).toBe(IssueStatus.Todo)
   })
 })
 

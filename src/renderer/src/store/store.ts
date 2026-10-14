@@ -23,7 +23,8 @@ import type {
   SessionTypeDTO,
   SettingsDTO,
   WorktreeRefDTO,
-  WindowDTO
+  WindowDTO,
+  IssueDTO
 } from '../../../shared/dto'
 import type { EventDTO } from '../../../shared/events'
 import { type DisplayState, DISPLAY_RANK } from './display-state'
@@ -148,7 +149,51 @@ export interface StoreData {
    */
   readonly focusFlashOn: boolean
   readonly focusFlashSeq: number
+  /** All locally-tracked issues ("Issues"), keyed by id — a projection of `WorkspaceStateDTO.issues`. */
+  readonly issues: Readonly<Record<string, IssueDTO>>
+  /**
+   * Whether the Issues drawer is open in THIS window ("Issues"). Renderer-local
+   * view-state, NEVER persisted and NEVER sent over the wire: it starts closed on
+   * every launch and survives a `hydrate()` re-hydration (see {@link useStore.hydrate}).
+   */
+  readonly issuesDrawerOpen: boolean
+  /** The issue shown in the drawer's right pane, if any. Renderer-local view-state. */
+  readonly selectedIssueId?: string
+  /**
+   * True while the right pane shows an unsaved "+ New Issue" draft (no `selectedIssueId`
+   * yet — the issue doesn't exist until Save). Renderer-local view-state.
+   */
+  readonly issueDraft: boolean
+  /** True while the right pane has unsaved edits (existing issue or draft). Renderer-local view-state. */
+  readonly issueEditDirty: boolean
+  /**
+   * The action the drawer is about to perform, held back by {@link issueEditDirty} until
+   * the user confirms discarding ("Discard unsaved changes?"). `null` when no prompt is
+   * showing. Renderer-local view-state.
+   */
+  readonly discardPrompt: DiscardPendingAction | null
+  /**
+   * Bumped on every REAL change to what the drawer's right pane is editing: a
+   * resolved selection change, a fresh draft start, or a discard that lands on one
+   * of those (even when the before/after `selectedIssueId`/`issueDraft` pair comes
+   * out unchanged — e.g. re-picking the issue already shown, or discarding a draft
+   * back into a fresh draft). `IssueDetail` keys its field-reset effect on this
+   * counter instead of on `[selectedIssueId, issueDraft]`, which doesn't change in
+   * those cases and so would otherwise leave stale text on screen.
+   * Renderer-local view-state; survives `hydrate()` like the other drawer fields.
+   */
+  readonly issueEditSession: number
 }
+
+/**
+ * A drawer action deferred behind the "Discard unsaved changes?" prompt while
+ * {@link StoreData.issueEditDirty} is set: closing the drawer, selecting a different
+ * issue, or starting a new one. `confirmDiscard` performs it; `cancelDiscard` drops it.
+ */
+export type DiscardPendingAction =
+  | { readonly kind: 'close' }
+  | { readonly kind: 'select'; readonly issueId: string }
+  | { readonly kind: 'new' }
 
 /** Duration of the focus flash (§5.4). Keep in sync with `.session-tab--focus-flash` in globals.css. */
 export const FOCUS_FLASH_MS = 1000
@@ -193,6 +238,41 @@ export interface StoreActions {
   toggleDebugOverlay(): void
   /** End focus flash `seq` (§5.4); ignored if a newer flash has started since. */
   endFocusFlash(seq: number): void
+  /**
+   * Open/close the Issues drawer in THIS window ("Issues"). Opening is unconditional.
+   * Closing is dirty-guarded: while {@link StoreData.issueEditDirty}, it raises
+   * {@link StoreData.discardPrompt} (`{kind:'close'}`) instead of closing. A successful
+   * close also clears {@link StoreData.issueDraft}. Shared with the `issuesDrawerToggle`
+   * wire event (the main-window relay from a secondary window's shortcut) via the same
+   * pure {@link toggleDrawerData}.
+   */
+  toggleIssuesDrawer(): void
+  /**
+   * Open the drawer. If already open and `issueId` is given, behaves like
+   * `selectIssue(issueId)` (dirty-guarded). If closed, opens directly onto `issueId`
+   * (or keeps the previous selection if omitted) — no dirty state can exist while closed.
+   */
+  openIssuesDrawer(issueId?: string): void
+  /** Select an issue in the drawer. Dirty-guarded: raises `discardPrompt {kind:'select', issueId}`. */
+  selectIssue(id: string): void
+  /** Start a "+ New Issue" draft. Dirty-guarded: raises `discardPrompt {kind:'new'}`. */
+  startNewIssue(): void
+  /** Mark the drawer's current edit (existing issue or draft) dirty/clean. */
+  setIssueEditDirty(dirty: boolean): void
+  /** Perform the pending `discardPrompt` action, discarding the dirty edit, and clear the prompt. */
+  confirmDiscard(): void
+  /** Drop the pending `discardPrompt` without acting ("Keep editing"). */
+  cancelDiscard(): void
+  /**
+   * Discard the "+ New Issue" draft directly ("Issues", `IssueDetail`'s own draft
+   * Cancel button). Unlike `toggleIssuesDrawer`/`selectIssue`/`startNewIssue`, this is
+   * never dirty-guarded: an explicit Cancel click already means "discard", so it
+   * never raises `discardPrompt`. Leaves `issuesDrawerOpen` and `selectedIssueId`
+   * untouched — the draft never had a `selectedIssueId` to begin with. Bumps
+   * `issueEditSession` like every other draft-ending path, so a late create reply
+   * for the cancelled draft is ignored rather than selecting the created issue.
+   */
+  cancelNewIssue(): void
 }
 
 export type Store = StoreData & StoreActions
@@ -211,7 +291,8 @@ const DEFAULT_SETTINGS: SettingsDTO = {
   closeSessionKey: 'Ctrl+Shift+KeyW',
   searchKey: 'Ctrl+Shift+KeyF',
   copyKey: 'Ctrl+Shift+KeyC',
-  pasteKey: 'Ctrl+Shift+KeyV'
+  pasteKey: 'Ctrl+Shift+KeyV',
+  issuesKey: 'Alt+Shift+KeyI'
 }
 
 /** The empty projection before hydration (also used to reset the store in tests). */
@@ -239,7 +320,14 @@ export function initialData(): StoreData {
     nextDebugSeq: 1,
     debugOverlayOpen: false,
     focusFlashOn: false,
-    focusFlashSeq: 0
+    focusFlashSeq: 0,
+    issues: {},
+    issuesDrawerOpen: false,
+    selectedIssueId: undefined,
+    issueDraft: false,
+    issueEditDirty: false,
+    discardPrompt: null,
+    issueEditSession: 1
   }
 }
 
@@ -314,6 +402,9 @@ function hydrateData(
     if (mark) activeSessionByTask[entry.id] = mark
   }
 
+  const issues: Record<string, IssueDTO> = {}
+  for (const issue of state.issues) issues[issue.id] = issue
+
   return {
     ...base,
     tasks,
@@ -326,7 +417,8 @@ function hydrateData(
     version: state.version,
     windowId: state.thisWindowId,
     windowRole: state.thisWindowRole,
-    windows: state.windows
+    windows: state.windows,
+    issues
   }
 }
 
@@ -385,6 +477,27 @@ export function isSessionFocused(data: StoreData, sessionId: string): boolean {
   if (session.windowId !== data.windowId) return false
   if (data.activeTaskId !== session.taskId) return false
   return activeSessionInWindow(data, session.taskId, data.windowId) === sessionId
+}
+
+/**
+ * The issue bound to `taskId`, if any ("Issues"). The binding is stored only on the
+ * issue (I19); this is the reverse lookup every reader (task row icon, delete-task
+ * flow, New-Task modal) goes through rather than scanning `issues` itself.
+ */
+export function issueForTask(data: StoreData, taskId: string): IssueDTO | undefined {
+  for (const issue of Object.values(data.issues)) {
+    if (issue.taskId === taskId) return issue
+  }
+  return undefined
+}
+
+/**
+ * Is `issue` bound to a task OTHER than `taskId` ("Issues")? Drives the "already
+ * linked" graying in `LinkTaskPicker` and the New-Task modal's issue picker.
+ * An issue bound to `taskId` itself (or unbound) is not "elsewhere".
+ */
+export function isIssueBoundElsewhere(issue: IssueDTO, taskId?: string): boolean {
+  return issue.taskId !== undefined && issue.taskId !== taskId
 }
 
 /**
@@ -541,6 +654,158 @@ function removeSession(data: StoreData, taskId: string, sessionId: string): Stor
 export type NotificationAdmit = (sessionId: string) => boolean
 
 const ADMIT_ALL: NotificationAdmit = () => true
+
+/**
+ * Guard a drawer action against unsaved edits ("Issues"). While
+ * {@link StoreData.issueEditDirty}, defer `pending` to {@link StoreData.discardPrompt}
+ * instead of running `perform`; otherwise run `perform` directly. Shared by every
+ * dirty-guarded drawer transition (close, select, new) so the discard-prompt policy
+ * lives in one place.
+ */
+function withDiscardGuard(
+  data: StoreData,
+  pending: DiscardPendingAction,
+  perform: (data: StoreData) => StoreData
+): StoreData {
+  if (data.issueEditDirty) {
+    return { ...data, discardPrompt: pending }
+  }
+  return perform(data)
+}
+
+/**
+ * Bump {@link StoreData.issueEditSession}. Called on every drawer
+ * transition that actually lands on a (possibly new) edit target: a resolved
+ * select, a fresh draft start, or a discard. Unconditional even when the
+ * resulting `selectedIssueId`/`issueDraft` pair comes out equal to what it
+ * already was (re-picking the shown issue, or discarding a draft back into a
+ * fresh draft) — `IssueDetail` keys its reset effect on this counter precisely
+ * so those cases still clear stale local state.
+ */
+function bumpSession(data: StoreData): StoreData {
+  return { ...data, issueEditSession: data.issueEditSession + 1 }
+}
+
+/**
+ * Toggle the drawer open/closed ("Issues"). Opening is unconditional. Closing is
+ * dirty-guarded via {@link withDiscardGuard} and clears {@link StoreData.issueDraft}, and
+ * bumps {@link StoreData.issueEditSession}: without it, a close that leaves
+ * `selectedIssueId` unchanged (nothing else resets it) would let a later reopen onto a
+ * DIFFERENT issue skip `IssueDetail`'s session-keyed reset — e.g. closing out of an edit,
+ * then opening straight onto another issue, would show that issue under the previous
+ * one's stale edit form. Pure, so both the `toggleIssuesDrawer` action and the
+ * `issuesDrawerToggle` wire event (the secondary-window shortcut relay) go through
+ * identical logic.
+ */
+function toggleDrawerData(data: StoreData): StoreData {
+  if (!data.issuesDrawerOpen) {
+    return { ...data, issuesDrawerOpen: true }
+  }
+  return withDiscardGuard(data, { kind: 'close' }, (d) =>
+    bumpSession({
+      ...d,
+      issuesDrawerOpen: false,
+      issueDraft: false
+    })
+  )
+}
+
+/**
+ * Perform (not guard) a selection: point the drawer at `issueId` and clear draft/dirty
+ * state. Bumps {@link StoreData.issueEditSession} unconditionally — even a
+ * reselect of the already-shown issue (filtered out by the callers below before this
+ * runs) would otherwise leave `IssueDetail` keyed on an unchanged `selectedIssueId`.
+ */
+function performSelect(data: StoreData, issueId: string): StoreData {
+  return bumpSession({
+    ...data,
+    selectedIssueId: issueId,
+    issueDraft: false,
+    issueEditDirty: false,
+    discardPrompt: null
+  })
+}
+
+/**
+ * Open the drawer onto `issueId` (or just open it, keeping the current selection, if
+ * omitted). If already open with a given `issueId`, this is a dirty-guarded select —
+ * and a no-op if `issueId` is already the clean selection shown (reselecting
+ * the issue already open must not re-run the reset effect). Opening a CLOSED drawer is
+ * unconditional (no dirty state can exist while closed) but still bumps
+ * {@link StoreData.issueEditSession}: the drawer being closed does not, by
+ * itself, guarantee `IssueDetail`'s own local edit UI (editing mode, busy/error flags,
+ * nested dialog steps) was ever reset — closing is now session-bumped too (see
+ * `toggleDrawerData`), but defending here as well covers any OTHER path that can close
+ * the drawer without going through that helper. Without this bump, reopening straight
+ * onto a bound task's issue (e.g. its row icon in the Progress panel) while a previous
+ * issue's edit form is still showing underneath lands on the new issue in the stale
+ * edit mode, with the previous issue's fields — Save would then write them onto the
+ * wrong issue.
+ */
+function openDrawerData(data: StoreData, issueId: string | undefined): StoreData {
+  if (!data.issuesDrawerOpen) {
+    return bumpSession({
+      ...data,
+      issuesDrawerOpen: true,
+      selectedIssueId: issueId ?? data.selectedIssueId
+    })
+  }
+  if (issueId === undefined) return data
+  if (!data.issueDraft && data.selectedIssueId === issueId) return data
+  return withDiscardGuard(data, { kind: 'select', issueId }, (d) => performSelect(d, issueId))
+}
+
+/**
+ * Select a different issue in the drawer. Dirty-guarded via {@link withDiscardGuard};
+ * a no-op if `issueId` is already the clean selection shown.
+ */
+function selectIssueData(data: StoreData, issueId: string): StoreData {
+  if (!data.issueDraft && data.selectedIssueId === issueId) return data
+  return withDiscardGuard(data, { kind: 'select', issueId }, (d) => performSelect(d, issueId))
+}
+
+/** Start a "+ New Issue" draft. Dirty-guarded via {@link withDiscardGuard}. */
+function startNewIssueData(data: StoreData): StoreData {
+  return withDiscardGuard(data, { kind: 'new' }, (d) =>
+    bumpSession({
+      ...d,
+      selectedIssueId: undefined,
+      issueDraft: true,
+      issueEditDirty: false,
+      discardPrompt: null
+    })
+  )
+}
+
+/**
+ * Perform the pending `discardPrompt` action (discarding the dirty edit) and clear it.
+ * Bumps {@link StoreData.issueEditSession} unconditionally: e.g. discarding a
+ * fresh draft back into another fresh draft (`kind: 'new'`) leaves `issueDraft`/
+ * `selectedIssueId` unchanged, so without the bump `IssueDetail`'s reset effect
+ * wouldn't fire and stale draft text would stay on screen.
+ */
+function confirmDiscardData(data: StoreData): StoreData {
+  const pending = data.discardPrompt
+  if (!pending) return data
+  const cleared: StoreData = bumpSession({
+    ...data,
+    issueEditDirty: false,
+    issueDraft: false,
+    discardPrompt: null
+  })
+  switch (pending.kind) {
+    case 'close':
+      return { ...cleared, issuesDrawerOpen: false }
+    case 'select':
+      return { ...cleared, selectedIssueId: pending.issueId }
+    case 'new':
+      return { ...cleared, selectedIssueId: undefined, issueDraft: true }
+    default: {
+      const _never: never = pending
+      return _never
+    }
+  }
+}
 
 /**
  * The pure event reducer. Returns the next `StoreData` for every wire event.
@@ -878,6 +1143,41 @@ export function reduceEvent(
     case 'windowClosed':
       return { ...data, windows: data.windows.filter((w) => w.id !== event.windowId) }
 
+    case 'issueUpserted':
+      return { ...data, issues: { ...data.issues, [event.issue.id]: event.issue } }
+
+    case 'issueDeleted': {
+      const issues = omit(data.issues, event.issueId)
+      // A pending discard prompt to SELECT this issue no longer makes sense once
+      // it's gone — clear it regardless of what's currently selected, so
+      // confirming it later can't try to select an issue that no longer exists.
+      const discardPrompt =
+        data.discardPrompt?.kind === 'select' && data.discardPrompt.issueId === event.issueId
+          ? null
+          : data.discardPrompt
+      if (data.selectedIssueId !== event.issueId) {
+        return { ...data, issues, discardPrompt }
+      }
+      // The deleted issue was showing in the drawer: drop the selection and any
+      // draft/dirty/discard state tied to it rather than leave the right pane
+      // pointing at an issue that no longer exists. Bumps `issueEditSession`
+      // so `IssueDetail`'s local edit UI (editing mode, busy/error flags, nested
+      // dialog steps) resets too, not just the store's own selection fields.
+      return bumpSession({
+        ...data,
+        issues,
+        selectedIssueId: undefined,
+        issueDraft: false,
+        issueEditDirty: false,
+        discardPrompt: null
+      })
+    }
+
+    case 'issuesDrawerToggle':
+      // Secondary-window shortcut relay ("Issues"): routed only to the main window,
+      // which runs the SAME dirty-guarded toggle as the local `toggleIssuesDrawer` action.
+      return toggleDrawerData(data)
+
     default: {
       // Exhaustiveness guard: a new EventDTO member must be handled above.
       const _never: never = event
@@ -913,12 +1213,43 @@ export const useStore = create<Store>((set, get) => ({
   // async `getState` lands, so resetting it to the default `true` would make every
   // window look focused (and push its mark as the focused session, §5.4).
   hydrate: (state) =>
-    set((data) => ({
-      ...hydrateData(state, data.activeSessionByTask),
-      windowFocused: data.windowFocused,
-      windowFocusedOnce: data.windowFocusedOnce,
-      focusFlashSeq: data.focusFlashSeq
-    })),
+    set((data) => {
+      const hydrated = hydrateData(state, data.activeSessionByTask)
+      // The selection can go stale across a re-hydration: e.g. another
+      // window deleted the selected issue while this window's `SettingsModal`
+      // round-trip was in flight. Drop it rather than leave the drawer pointing at
+      // an issue `hydrated.issues` no longer has.
+      const selectedIssueId =
+        data.selectedIssueId !== undefined && hydrated.issues[data.selectedIssueId]
+          ? data.selectedIssueId
+          : undefined
+      const droppedSelection = data.selectedIssueId !== undefined && selectedIssueId === undefined
+      // A pending discard prompt to SELECT an issue that's also gone no longer makes
+      // sense either (mirroring `issueDeleted`'s own clearing of it) — clear
+      // it so confirming it later can't try to select an issue that no longer exists.
+      const discardPrompt =
+        data.discardPrompt?.kind === 'select' && !hydrated.issues[data.discardPrompt.issueId]
+          ? null
+          : data.discardPrompt
+      return {
+        ...hydrated,
+        windowFocused: data.windowFocused,
+        windowFocusedOnce: data.windowFocusedOnce,
+        focusFlashSeq: data.focusFlashSeq,
+        // Drawer view-state is renderer-local and never carried on the wire (DTO has
+        // no such field): a re-hydration (e.g. after SettingsModal save) must not
+        // reset it, the same way the window-focus fields above survive.
+        issuesDrawerOpen: data.issuesDrawerOpen,
+        selectedIssueId,
+        issueDraft: data.issueDraft,
+        // Dropping a stale selection discards any dirty edit tied to it too,
+        // and bumps `issueEditSession` so `IssueDetail`'s local edit UI
+        // resets along with it rather than keep showing the vanished issue's fields.
+        issueEditDirty: droppedSelection ? false : data.issueEditDirty,
+        discardPrompt,
+        issueEditSession: droppedSelection ? data.issueEditSession + 1 : data.issueEditSession
+      }
+    }),
 
   applyEvent: (event) => set((data) => reduceEvent(data, event, notificationThrottle.admit)),
 
@@ -987,7 +1318,25 @@ export const useStore = create<Store>((set, get) => ({
   endFocusFlash: (seq) =>
     set((data) =>
       data.focusFlashOn && data.focusFlashSeq === seq ? { focusFlashOn: false } : data
-    )
+    ),
+
+  toggleIssuesDrawer: () => set(toggleDrawerData),
+
+  openIssuesDrawer: (issueId) => set((data) => openDrawerData(data, issueId)),
+
+  selectIssue: (id) => set((data) => selectIssueData(data, id)),
+
+  startNewIssue: () => set(startNewIssueData),
+
+  setIssueEditDirty: (dirty) =>
+    set((data) => (data.issueEditDirty === dirty ? data : { issueEditDirty: dirty })),
+
+  confirmDiscard: () => set(confirmDiscardData),
+
+  cancelDiscard: () => set({ discardPrompt: null }),
+
+  cancelNewIssue: () =>
+    set((data) => bumpSession({ ...data, issueDraft: false, issueEditDirty: false }))
 }))
 
 /** Return `map` with `sessionId` cleared, or `map` unchanged if it wasn't set (§9.5). */

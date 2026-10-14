@@ -369,3 +369,105 @@ button:focus-visible {
     animation: none;
   }
 }
+
+/* Issue status glyph (IssueStatusIcon, "Issues" §5.4) — static, no animation. */
+.issue-status-icon {
+  user-select: none;
+}
+
+/* Issue description markdown (IssueMarkdown, "Issues" §5.4). Minimal styling: the
+   drawer already sets the surrounding text color/size, this only shapes the GFM
+   elements react-markdown can emit (tables, code, blockquotes, task-list checkboxes). */
+.issue-markdown {
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-base);
+}
+
+.issue-markdown > :first-child {
+  margin-top: 0;
+}
+
+.issue-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.issue-markdown a {
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.issue-markdown a:hover {
+  color: var(--accent-hover);
+}
+
+.issue-markdown code {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-1);
+}
+
+.issue-markdown pre {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  overflow-x: auto;
+}
+
+.issue-markdown pre code {
+  background: none;
+  padding: 0;
+}
+
+.issue-markdown blockquote {
+  margin: 0;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-secondary);
+}
+
+.issue-markdown table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.issue-markdown th,
+.issue-markdown td {
+  border: 1px solid var(--border);
+  padding: var(--space-1) var(--space-2);
+  text-align: left;
+}
+
+.issue-markdown ul.contains-task-list {
+  list-style: none;
+  padding-left: var(--space-1);
+}
+
+/* Issues drawer (IssuesDrawer, "Issues" §5.4). Always mounted; opens/closes by
+   sliding via `transform` only (active/selected states stay inline, matching
+   `.task-row`) — no backdrop/blur/filter, same GPU-less-VDI reason as the modal
+   overlays' plain dim. */
+.issues-drawer {
+  transition: transform var(--transition-base);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .issues-drawer {
+    transition: none;
+  }
+}
+
+/* Issue list rows and group headers (IssueList, "Issues" §5.4) — hover tint,
+   same pattern as `.task-row`/`.menu-item` (selected/expanded state stays inline). */
+/* The base background is here, not inline, so the `:hover` tint can override it. */
+.issue-row,
+.issue-group-header {
+  background: transparent;
+}
+
+.issue-row:hover:not(:disabled):not([aria-pressed='true']),
+.issue-group-header:hover:not(:disabled) {
+  background: var(--bg-hover);
+}

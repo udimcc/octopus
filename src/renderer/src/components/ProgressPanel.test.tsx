@@ -49,6 +49,7 @@ function seed(tasks: TaskDTO[], activeTaskId?: string, groupTasksByRepo = false)
     tasks,
     activeTaskId,
     sessionTypes: [],
+    issues: [],
     settings: {
       worktree: { location: '' },
       terminal: {},
@@ -250,5 +251,34 @@ describe('<ProgressPanel>', () => {
         .applyEvent({ type: 'sessionStateChanged', sessionId: 's1', state: 'blocked' })
     })
     expect(rowIconLabel('Alpha')).toBe('Needs input')
+  })
+
+  // ── Issues button (PRD "Issues" → "Issues window" → "Opening and closing") ──
+
+  it('clicking the Issues button toggles the drawer open', () => {
+    seed([task('t1', { name: 'Alpha' })])
+    render(<ProgressPanel onNewTask={vi.fn()} />)
+    expect(useStore.getState().issuesDrawerOpen).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Issues' }))
+    expect(useStore.getState().issuesDrawerOpen).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Issues' }))
+    expect(useStore.getState().issuesDrawerOpen).toBe(false)
+  })
+
+  it('the Issues button aria-pressed reflects issuesDrawerOpen', () => {
+    seed([task('t1', { name: 'Alpha' })])
+    render(<ProgressPanel onNewTask={vi.fn()} />)
+    const button = screen.getByRole('button', { name: 'Issues' })
+    expect(button).toHaveAttribute('aria-pressed', 'false')
+
+    act(() => {
+      useStore.setState({ issuesDrawerOpen: true })
+    })
+    expect(button).toHaveAttribute('aria-pressed', 'true')
+
+    act(() => {
+      useStore.setState({ issuesDrawerOpen: false })
+    })
+    expect(button).toHaveAttribute('aria-pressed', 'false')
   })
 })

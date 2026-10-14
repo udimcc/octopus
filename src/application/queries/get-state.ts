@@ -13,6 +13,13 @@
  * Session-type providers carry functions (`createRuntime`), so they are projected
  * to a plain, serializable `SessionTypeView` here — the query never leaks a live
  * provider past the application boundary.
+ *
+ * **Issues ("Issues" §13.3, I19).** No extra wiring needed here: `issues` already
+ * rides along inside `workspace` — `Workspace.toSnapshot` includes
+ * `issues: this.issues().map((i) => i.toSnapshot())` (`src/domain/workspace.ts`),
+ * so `AppStateView.workspace.issues` is populated for every `getState` call.
+ * `main`'s DTO mapper is the one responsible for projecting that array onto the
+ * wire `WorkspaceStateDTO`.
  */
 
 import type { AppDependencies } from '../dependencies'

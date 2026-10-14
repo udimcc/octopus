@@ -2,11 +2,12 @@ import { describe, it, expect, vi } from 'vitest'
 import { SqliteStore } from './sqlite-store'
 import { IncompatibleDbError } from './errors'
 import type { SqliteDb, SqliteStatement } from './sqlite-db'
-import type { TaskRow, SessionRow } from './mappers'
-import { asTaskId, asSessionId, asTypeId } from '../../domain/ids'
+import type { TaskRow, SessionRow, IssueRow } from './mappers'
+import { asTaskId, asSessionId, asTypeId, asIssueId } from '../../domain/ids'
 import { TaskState, SessionState } from '../../domain/state'
 import { TaskLifecycle, SessionLifecycle } from '../../domain/lifecycle'
-import type { TaskSnapshot, SessionSnapshot } from '../../domain/snapshots'
+import type { TaskSnapshot, SessionSnapshot, IssueSnapshot } from '../../domain/snapshots'
+import { IssueStatus } from '../../domain/issue'
 
 /**
  * A scriptable fake `SqliteDb`. It cannot execute SQL, so it records every call
@@ -108,6 +109,20 @@ function sessionSnapshot(over: Partial<SessionSnapshot> = {}): SessionSnapshot {
   }
 }
 
+function issueSnapshot(over: Partial<IssueSnapshot> = {}): IssueSnapshot {
+  return {
+    id: asIssueId('i1'),
+    name: 'issue',
+    description: 'desc',
+    projectPath: '/repo',
+    status: IssueStatus.Todo,
+    taskId: asTaskId('t1'),
+    createdAt: 10,
+    updatedAt: 10,
+    ...over
+  }
+}
+
 describe('SqliteStore.create (§6.3)', () => {
   it('applies connection pragmas and creates the schema before returning', () => {
     const db = new FakeDb()
@@ -120,6 +135,7 @@ describe('SqliteStore.create (§6.3)', () => {
     expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS session_scrollback'))).toBe(
       true
     )
+    expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS issues'))).toBe(true)
     expect(db.pragmas.some((p) => p.startsWith('user_version ='))).toBe(true)
   })
 
@@ -130,7 +146,7 @@ describe('SqliteStore.create (§6.3)', () => {
     const db = new FakeDb()
     SqliteStore.create(db)
     expect(db.execed.some((s) => s.includes('ADD COLUMN base_ref'))).toBe(false)
-    expect(db.pragmas).toContain('user_version = 7')
+    expect(db.pragmas).toContain('user_version = 8')
   })
 
   it('runs the pending migrations on a pre-existing older DB (base_ref + session_scrollback)', () => {
@@ -140,7 +156,7 @@ describe('SqliteStore.create (§6.3)', () => {
     db.stub('sqlite_master', [{ name: 'tasks' }])
     SqliteStore.create(db)
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN base_ref'))).toBe(true)
-    expect(db.pragmas).toContain('user_version = 7')
+    expect(db.pragmas).toContain('user_version = 8')
   })
 
   it('runs ONLY the v3 migration on a v2 DB (skips the already-applied v2 ALTER)', () => {
@@ -157,7 +173,7 @@ describe('SqliteStore.create (§6.3)', () => {
     expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS session_scrollback'))).toBe(
       true
     )
-    expect(db.pragmas).toContain('user_version = 7')
+    expect(db.pragmas).toContain('user_version = 8')
   })
 
   it('runs ONLY the v4 migration on a v3 DB (adds window_id + windows, seeds main)', () => {
@@ -174,14 +190,15 @@ describe('SqliteStore.create (§6.3)', () => {
     )
     expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS windows'))).toBe(true)
     expect(db.execed.some((s) => s.includes('INSERT OR IGNORE INTO windows'))).toBe(true)
-    expect(db.pragmas).toContain('user_version = 7')
+    expect(db.pragmas).toContain('user_version = 8')
   })
 
-  it('runs the v5 + v6 + v7 migrations on a v4 DB (managed + back-fill, last_cwd, repo_less)', () => {
+  it('runs the v5 + v6 + v7 + v8 migrations on a v4 DB (managed + back-fill, last_cwd, repo_less, issues)', () => {
     // A pre-existing DB stamped at user_version 4 (pre-adopted-repo): the v5
     // migration (tasks.managed ALTER + base_ref-null back-fill), the v6 migration
-    // (sessions.last_cwd ALTER), and the v7 migration (tasks.repo_less ALTER) all
-    // fire; the earlier v2/v3/v4 statements are skipped by the fromVersion guard.
+    // (sessions.last_cwd ALTER), the v7 migration (tasks.repo_less ALTER), and now
+    // the v8 migration (issues table, I19) all fire; the earlier v2/v3/v4
+    // statements are skipped by the fromVersion guard.
     const db = new FakeDb()
     db.stub('sqlite_master', [{ name: 'tasks' }])
     db.stubPragma('user_version', [{ user_version: 4 }])
@@ -195,13 +212,15 @@ describe('SqliteStore.create (§6.3)', () => {
     ).toBe(true)
     expect(db.execed.some((s) => s.includes('ALTER TABLE sessions ADD COLUMN last_cwd'))).toBe(true)
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN repo_less'))).toBe(true)
-    expect(db.pragmas).toContain('user_version = 7')
+    expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues')).length).toBe(2)
+    expect(db.pragmas).toContain('user_version = 8')
   })
 
-  it('runs the v6 + v7 migrations on a v5 DB (last_cwd, then repo_less)', () => {
+  it('runs the v6 + v7 + v8 migrations on a v5 DB (last_cwd, repo_less, issues)', () => {
     // A pre-existing DB stamped at user_version 5 (pre-daemon): the v6 migration
-    // (sessions.last_cwd ALTER) AND the v7 migration (tasks.repo_less ALTER) both
-    // fire; the earlier v2–v5 statements are skipped by the fromVersion guard.
+    // (sessions.last_cwd ALTER), the v7 migration (tasks.repo_less ALTER), and the
+    // v8 migration (issues table, I19) all fire; the earlier v2–v5 statements are
+    // skipped by the fromVersion guard.
     const db = new FakeDb()
     db.stub('sqlite_master', [{ name: 'tasks' }])
     db.stubPragma('user_version', [{ user_version: 5 }])
@@ -209,12 +228,14 @@ describe('SqliteStore.create (§6.3)', () => {
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN managed'))).toBe(false)
     expect(db.execed.some((s) => s.includes('ALTER TABLE sessions ADD COLUMN last_cwd'))).toBe(true)
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN repo_less'))).toBe(true)
-    expect(db.pragmas).toContain('user_version = 7')
+    expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues')).length).toBe(2)
+    expect(db.pragmas).toContain('user_version = 8')
   })
 
-  it('runs ONLY the v7 migration on a v6 DB (adds repo_less)', () => {
-    // A pre-existing DB stamped at user_version 6 (pre-"No Repo"): only the v7
-    // migration fires — the tasks.repo_less ALTER. Earlier statements are skipped.
+  it('runs the v7 + v8 migrations on a v6 DB (adds repo_less, then issues)', () => {
+    // A pre-existing DB stamped at user_version 6 (pre-"No Repo"): the v7
+    // migration (tasks.repo_less ALTER) and the v8 migration (issues table, I19)
+    // both fire. Earlier statements are skipped.
     const db = new FakeDb()
     db.stub('sqlite_master', [{ name: 'tasks' }])
     db.stubPragma('user_version', [{ user_version: 6 }])
@@ -223,7 +244,8 @@ describe('SqliteStore.create (§6.3)', () => {
       false
     )
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN repo_less'))).toBe(true)
-    expect(db.pragmas).toContain('user_version = 7')
+    expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues')).length).toBe(2)
+    expect(db.pragmas).toContain('user_version = 8')
   })
 
   it('throws IncompatibleDbError on a DB newer than this binary, without touching it', () => {
@@ -233,7 +255,7 @@ describe('SqliteStore.create (§6.3)', () => {
     // silently downgraded and the next upgrade would re-run an applied migration.
     const db = new FakeDb()
     db.stub('sqlite_master', [{ name: 'tasks' }])
-    db.stubPragma('user_version', [{ user_version: 8 }])
+    db.stubPragma('user_version', [{ user_version: 9 }])
     expect(() => SqliteStore.create(db)).toThrow(IncompatibleDbError)
     // No schema statements ran and the version was NOT lowered.
     expect(db.execed.some((s) => s.includes('CREATE TABLE'))).toBe(false)
@@ -245,7 +267,7 @@ describe('SqliteStore.create (§6.3)', () => {
     // though fromVersion (0) < SCHEMA_VERSION; it bootstraps and stamps to current.
     const db = new FakeDb()
     expect(() => SqliteStore.create(db)).not.toThrow()
-    expect(db.pragmas).toContain('user_version = 7')
+    expect(db.pragmas).toContain('user_version = 8')
   })
 
   it('invokes beforeMigrate with fromVersion on an upgrade, but not on fresh/current DBs', () => {
@@ -267,10 +289,42 @@ describe('SqliteStore.create (§6.3)', () => {
     // Already-current DB: nothing to migrate, so no backup.
     const current = new FakeDb()
     current.stub('sqlite_master', [{ name: 'tasks' }])
-    current.stubPragma('user_version', [{ user_version: 7 }])
+    current.stubPragma('user_version', [{ user_version: 8 }])
     const onCurrent = vi.fn()
     SqliteStore.create(current, onCurrent)
     expect(onCurrent).not.toHaveBeenCalled()
+  })
+
+  it('creates the issues table exactly once on a fresh DB (no migration pass, I19)', () => {
+    // CREATE TABLE IF NOT EXISTS issues is unconditional in SCHEMA_STATEMENTS; on a
+    // fresh DB (no pre-existing tasks table) migrations never run at all, so it
+    // must appear exactly once — never twice, which would signal the migration
+    // pass ran when it shouldn't have (mirrors the v2/v3 "does NOT run migrations
+    // on a fresh DB" guard above, now for the v8 issues table).
+    const db = new FakeDb()
+    SqliteStore.create(db)
+    expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues')).length).toBe(1)
+  })
+
+  it('runs ONLY the v8 migration on a v7 DB (adds the issues table, I19)', () => {
+    // A pre-existing DB stamped at user_version 7 (pre-Issues): only the v8
+    // migration fires. All earlier ALTERs (base_ref/managed/last_cwd/repo_less)
+    // are already applied and must be skipped by the fromVersion guard. The
+    // issues-table CREATE runs TWICE — once unconditionally from SCHEMA_STATEMENTS,
+    // once from the v8 MIGRATIONS entry — both IF NOT EXISTS, so the double-run is
+    // expected and safe (same pattern as v3's session_scrollback table).
+    const db = new FakeDb()
+    db.stub('sqlite_master', [{ name: 'tasks' }])
+    db.stubPragma('user_version', [{ user_version: 7 }])
+    SqliteStore.create(db)
+    expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN base_ref'))).toBe(false)
+    expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN managed'))).toBe(false)
+    expect(db.execed.some((s) => s.includes('ALTER TABLE sessions ADD COLUMN last_cwd'))).toBe(
+      false
+    )
+    expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN repo_less'))).toBe(false)
+    expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues')).length).toBe(2)
+    expect(db.pragmas).toContain('user_version = 8')
   })
 })
 
@@ -323,6 +377,53 @@ describe('SqliteStore.load (§6.3)', () => {
     db.stub('FROM app_state', [{ value: 'ghost' }])
     expect(store.load().activeTaskId).toBeUndefined()
   })
+
+  it('includes issues, hydrated via rowToIssueSnapshot (I19)', () => {
+    // FakeDb returns stubbed rows verbatim in array order — it does not execute
+    // real SQL, so this only proves `load()` wires the query results into the
+    // snapshot through the mapper; the real `ORDER BY created_at DESC, id`
+    // ordering is exercised against the real binary in scripts/probe-sqlite-store.cjs.
+    const db = new FakeDb()
+    const store = SqliteStore.create(db)
+    const boundRow: IssueRow = {
+      id: 'i1',
+      name: 'bound issue',
+      description: 'desc',
+      project_path: '/repo',
+      status: 'in_progress',
+      task_id: 't1',
+      created_at: 20,
+      updated_at: 30
+    }
+    const unboundRow: IssueRow = {
+      id: 'i2',
+      name: 'unbound issue',
+      description: '',
+      project_path: null,
+      status: 'todo',
+      task_id: null,
+      created_at: 10,
+      updated_at: 10
+    }
+    db.stub('FROM tasks', [])
+    db.stub('FROM sessions', [])
+    db.stub('FROM issues', [boundRow, unboundRow])
+
+    const snap = store.load()
+    expect(snap.issues).toHaveLength(2)
+    expect(snap.issues?.[0]).toMatchObject({
+      id: 'i1',
+      name: 'bound issue',
+      projectPath: '/repo',
+      status: 'in_progress',
+      taskId: 't1'
+    })
+    expect(snap.issues?.[1]).toMatchObject({
+      id: 'i2',
+      projectPath: undefined,
+      taskId: undefined
+    })
+  })
 })
 
 describe('SqliteStore writes', () => {
@@ -338,6 +439,55 @@ describe('SqliteStore writes', () => {
       active_session_id: 's1',
       managed: 1
     })
+  })
+
+  it('upsertTask uses ON CONFLICT DO UPDATE, never INSERT OR REPLACE (I19 regression guard)', () => {
+    // REPLACE deletes-then-reinserts the row, which would fire issues.task_id's
+    // ON DELETE SET NULL and silently unbind any connected issue on every routine
+    // save (see the long comment above SqliteStore.upsertTask). Locking this in.
+    const db = new FakeDb()
+    const store = SqliteStore.create(db)
+    store.upsertTask(taskSnapshot())
+    const call = db.runs.find((r) => r.sql.includes('INSERT INTO tasks'))
+    expect(call).toBeDefined()
+    expect(call!.sql).toContain('ON CONFLICT(id) DO UPDATE')
+    expect(call!.sql).not.toContain('REPLACE')
+  })
+
+  it('upsertIssue binds the flattened row via ON CONFLICT DO UPDATE, never REPLACE (I19)', () => {
+    const db = new FakeDb()
+    const store = SqliteStore.create(db)
+    store.upsertIssue(issueSnapshot())
+    const call = db.runs.find((r) => r.sql.includes('INSERT INTO issues'))
+    expect(call).toBeDefined()
+    expect(call!.sql).toContain('ON CONFLICT(id) DO UPDATE')
+    expect(call!.sql).not.toContain('REPLACE')
+    expect(call!.params).toMatchObject({
+      id: 'i1',
+      name: 'issue',
+      description: 'desc',
+      project_path: '/repo',
+      status: 'todo',
+      task_id: 't1',
+      created_at: 10,
+      updated_at: 10
+    })
+  })
+
+  it('upsertIssue nulls an absent project/task', () => {
+    const db = new FakeDb()
+    const store = SqliteStore.create(db)
+    store.upsertIssue(issueSnapshot({ projectPath: undefined, taskId: undefined }))
+    const call = db.runs.find((r) => r.sql.includes('INSERT INTO issues'))
+    expect(call!.params).toMatchObject({ project_path: null, task_id: null })
+  })
+
+  it('deleteIssue issues a single DELETE on issues, never touching tasks', () => {
+    const db = new FakeDb()
+    const store = SqliteStore.create(db)
+    store.deleteIssue(asIssueId('i1'))
+    expect(db.runs.some((r) => r.sql.includes('DELETE FROM issues WHERE id = ?'))).toBe(true)
+    expect(db.runs.some((r) => r.sql.includes('DELETE FROM tasks'))).toBe(false)
   })
 
   it('upsertSession stores the serialized config', () => {

@@ -612,3 +612,158 @@ state back to the task. **Zero changes** to Domain, Application use cases, Termi
 - [ ] **Air-gapped** — all deps vendored; no runtime network access outside Jenkins polling (DESIGN §4).
 - [ ] **Performance targets** (DESIGN §11): PTY read→render <5 ms; state timings per phase 2; icon latency per phase 2.
 - [ ] **Risk mitigations R1–R7** tracked (DESIGN §11).
+
+---
+
+## Issues — orthogonal feature (DESIGN §13)
+
+Goal (PRD §Issues): a locally-stored work item (name, markdown description, optional project, 4-state
+status), optionally bound 1:1 to a task, managed from a drawer that slides in over the main window's
+session area. **Not gated by `CURRENT_VERSION`** and strictly additive — no change to `Task`, `Session`,
+the state lattice, or the aggregator (DESIGN §10, §13). New invariant **I19** (DESIGN §7, §13.1): the
+binding is 1:1 and stored only on the issue; any bind moves `todo → in_progress`; unbind never changes
+status.
+
+### Domain (pure) — DESIGN §13.1
+
+- [ ] `src/domain/ids.ts`: branded `IssueId` + `asIssueId`.
+- [ ] New `src/domain/issue.ts`: `IssueStatus` enum (`todo`/`in_progress`/`in_review`/`done`); `Issue`
+  aggregate (`create`/`fromSnapshot`/`rename`/`setDescription`/`setProject`/`setStatus`/`touch`/
+  `toSnapshot`); binding fields changed only through `Workspace`.
+- [ ] `src/domain/snapshots.ts`: `IssueSnapshot`; optional `issues?` on `WorkspaceSnapshot` (back-compat
+  with existing fixtures).
+- [ ] `src/domain/workspace.ts`, issues collection: `issues()`, `issue(id)`, `addIssue`, `removeIssue`,
+  `issueForTask(taskId)`.
+- [ ] `src/domain/workspace.ts`, binding (**I19**): `bindIssue(issueId, taskId)` — reject a task already
+  bound to a different issue; silently replace this issue's prior binding; `todo → in_progress` only from
+  `todo`. `unbindIssue(issueId)` — status unchanged.
+- [ ] `src/domain/workspace.ts`: `removeTask` clears the binding of any issue bound to it (status
+  unchanged); `clearIssueProject(projectPath)` matches via `canonProjectPath`; `hydrate` drops bindings to
+  tasks not present; `toSnapshot` emits `issues`.
+- [ ] Tests: `src/domain/issue.test.ts` (validation, status set, snapshot round trip); extend
+  `src/domain/workspace.test.ts` (reject double-bind, rebind replaces, todo→in_progress only from todo,
+  unbind keeps status, removeTask unbinds, `clearIssueProject`, hydrate drops dangling bindings).
+
+### Shared contract — DESIGN §13.3, §13.4
+
+- [ ] `src/shared/dto.ts`: `IssueStatusDTO`, `IssueDTO`, `CreateIssueInput`, `UpdateIssueInput`,
+  `DeleteIssueInput`, `BindIssueInput`, `UnbindIssueInput`, `OpenExternalInput`; `issueId?` on all three
+  `CreateTask*Input` variants; `alsoDeleteIssue?` on `DeleteTaskInput`; `issues: readonly IssueDTO[]` on
+  `WorkspaceStateDTO`; `issuesKey?` on `SettingsDTO`/`SettingsPatchDTO`; `issueId?` on `CommandAck`.
+- [ ] `src/shared/events.ts`: `IssueUpsertedEventDTO`, `IssueDeletedEventDTO`, `IssuesDrawerToggleEventDTO`
+  (synthesized in main, not a domain event); add all three to `EventDTO`.
+- [ ] `src/shared/ipc.ts`: `CHANNELS.issueCreate/issueUpdate/issueDelete/issueBind/issueUnbind/
+  shellOpenExternal` (request/reply); `issuesToggleDrawer` (fire-and-forget `send`); `OctopusAPI.issues`
+  and `.shell.openExternal` groups.
+- [ ] New `src/shared/external-url.ts`: pure `isSafeExternalUrl(url)` — `http:`/`https:` only, used by both
+  main (validates) and renderer (filters).
+- [ ] Tests: `src/shared/external-url.test.ts` (http, https, `javascript:`, `file:`, `mailto:`, relative,
+  malformed, whitespace).
+
+### Dependency
+
+- [ ] `npm install --save-exact react-markdown@10.1.0 remark-gfm@4.0.1` via the Artifactory proxy; no
+  `rehype-raw`. Confirm `npm run build` still bundles the ESM-only packages and the native-module
+  `postinstall` still passes.
+
+### Settings (backend side)
+
+- [ ] `src/ports/settings-store.ts` + `src/adapters/settings/json-settings-store.ts`: `issuesKey?` on
+  `Settings`/`SettingsPatch`, default `'Alt+Shift+KeyI'`.
+- [ ] Test: extend `json-settings-store.test.ts` (default, patch, persistence).
+
+### Persistence — schema v8 — DESIGN §13.2
+
+- [ ] `src/ports/workspace-persistence.ts`: `upsertIssue(issue)`, `deleteIssue(id)`; `load()` returns
+  `issues`.
+- [ ] `src/ports/id-generator.ts` + `src/adapters/id/uuid-id-generator.ts`: `newIssueId()`.
+- [ ] `src/adapters/persistence/schema.ts`: `SCHEMA_VERSION = 8`; `issues` DDL in `SCHEMA_STATEMENTS`
+  (`task_id TEXT UNIQUE REFERENCES tasks(id) ON DELETE SET NULL`); append-only `{ toVersion: 8 }` migration
+  — never edit v1–v7.
+- [ ] `src/adapters/persistence/mappers.ts`: `IssueRow`, `issueToRow`, `rowToIssueSnapshot`.
+- [ ] `src/adapters/persistence/sqlite-store.ts`: `load()` reads `issues`; `upsertIssue` via
+  `ON CONFLICT(id) DO UPDATE`; `deleteIssue`. **Keep `upsertTask` as `ON CONFLICT DO UPDATE` — never
+  `INSERT OR REPLACE`**: `REPLACE` deletes the row, firing `ON DELETE SET NULL` and silently unbinding the
+  issue (DESIGN §13.2).
+- [ ] `src/application/use-cases/test-fakes.ts`: `FakePersistence` gains `upsertedIssues`, `deletedIssues`,
+  a seeded `issues` map; its `deleteTask` mirrors `SET NULL`; the fake id generator gains `newIssueId()`.
+- [ ] Tests: `mappers.test.ts` (issue row round trip, null project/task); `sqlite-store.test.ts` (`FakeDb`:
+  `user_version` stamped 8, v8 migration runs from 7 and not on a fresh DB, `load` includes issues,
+  upsert/delete SQL).
+- [ ] `scripts/probe-sqlite-store.cjs` (`npm run probe:sqlite`, real binary): v7→v8 migration + backup hook;
+  issue round trip; deleting a task sets `issues.task_id` NULL; a second issue on the same `task_id` raises
+  the UNIQUE error; `upsertTask` on a bound task keeps `task_id`.
+
+### Application — commands + domain events — DESIGN §13.3
+
+- [ ] `src/ports/event-bus.ts`: `IssueUpsertedEvent`/`IssueDeletedEvent` on `DomainEvent`.
+- [ ] `src/application/commands.ts`: `CreateIssueInput`/`UpdateIssueInput`/`DeleteIssueInput`/
+  `BindIssueInput`/`UnbindIssueInput` (branded ids); `Command` union members `createIssue`/`updateIssue`/
+  `deleteIssue`/`bindIssue`/`unbindIssue`; `issueId?` on `CreateTaskInput`; `alsoDeleteIssue?` on
+  `DeleteTaskInput`; `issuesKey?` on `SettingsPatch`; `issueId?` on `CommandResult`.
+- [ ] Use cases: `createTask(..., issueId?)` binds in the same transaction as the Ready task (not at
+  Provisioning); a stale view (`issueId` already bound elsewhere or gone by the time the command reaches
+  the front of the single-writer loop — not a race during the provisioning await, which the loop
+  serializes) creates the task unbound with an error toast.
+  `deleteTask(..., alsoDeleteIssue?)` applies the issue delete only in the final delete transaction — a
+  dirty-gate cancel or delete failure leaves the issue untouched. `removeProject` clears `projectPath` on
+  referencing issues.
+- [ ] Tests: issue CRUD; bind rejected when the task is already bound; bind on Ready vs. failure vs.
+  concurrent bind; delete-both only on success (incl. the uncommitted-changes cancel); project removal
+  clearing issue projects.
+
+### Renderer store + drawer view-state — DESIGN §13.5
+
+- [ ] `src/renderer/src/store/store.ts`: `issues: Record<string, IssueDTO>` on `StoreData`/`initialData`;
+  hydrate from `state.issues`; `reduceEvent` for `issueUpserted`/`issueDeleted` (clear `selectedIssueId` on
+  delete of the selected issue) and `issuesDrawerToggle`; default `issuesKey: 'Alt+Shift+KeyI'`.
+- [ ] `src/renderer/src/store/store.ts`, drawer view-state (**renderer-local, unpersisted**, survives
+  settings re-hydrate): `issuesDrawerOpen`, `selectedIssueId`, `issueDraft`, `issueEditDirty`,
+  `discardPrompt`; actions `toggleIssuesDrawer`/`openIssuesDrawer`/`selectIssue`/`startNewIssue`/
+  `setIssueEditDirty`/`confirmDiscard`/`cancelDiscard`. While `issueEditDirty`, close/select/new raise
+  `discardPrompt` instead of acting.
+- [ ] Selectors `issueForTask(data, taskId)`, `isIssueBoundElsewhere`.
+- [ ] New `src/renderer/src/store/group-issues.ts`: pure `groupIssuesByStatus(issues)` — fixed group order
+  (Todo, In progress, In review, Done), newest first within each group.
+- [ ] Tests: extend `store.test.ts` (hydrate issues; upsert/delete reducers; toggle/open/select; the dirty
+  guard → discardPrompt → confirm/cancel; deleting the selected issue; re-hydrate keeps drawer state); new
+  `group-issues.test.ts`.
+
+### Preload bridge
+
+- [ ] `src/preload/index.ts`: `issues.create/update/delete/bind/unbind` via `ipcRenderer.invoke`;
+  `issues.toggleDrawer()` via `ipcRenderer.send`; `shell.openExternal(input)` via `invoke`.
+
+### UI components — DESIGN §13.4, §13.5
+
+- [ ] New `src/renderer/src/components/IssueStatusIcon.tsx`: inline SwiftShader-safe glyphs (○/◐/◉/✓), no
+  icon library, no animation; exports `ISSUE_STATUS_LABELS`/`ISSUE_STATUS_ORDER`.
+- [ ] New `src/renderer/src/components/IssueMarkdown.tsx`: `react-markdown` + `remark-gfm`, `skipHtml`;
+  `components.a` calls `window.octopusAPI.shell.openExternal` only when `isSafeExternalUrl` passes; `img`
+  renders as alt text.
+- [ ] New `src/renderer/src/components/BoundDeleteDialog.tsx`: Delete task only / Delete issue only /
+  Delete both / Cancel; Esc cancels; no backdrop blur or filter.
+- [ ] New `src/renderer/src/components/DiscardChangesPrompt.tsx`: Discard / Keep editing.
+- [ ] The Issues drawer itself (list + issue view split, **+ New Issue**, Edit/Save/Cancel, status
+  dropdown, Delete/Create task/Link task/Unlink task) and its wiring into `ProgressPanel` (Issues
+  button), the New-Task modal (Associated issue picker + prefill), the delete-task confirm (now
+  `BoundDeleteDialog` when bound), and the task row icon (hover name, click opens drawer on that issue).
+  Animates with a `transform` only — no blur/filter (VDI SwiftShader, DESIGN §13.5).
+- [ ] `src/renderer/src/test-support/stub-bridge.ts`: `issues`/`shell` groups; `issues: []` in the default
+  state.
+- [ ] Tests: `IssueStatusIcon.test.tsx` (glyph + label per status); `IssueMarkdown.test.tsx` (GFM tables and
+  task lists render; raw HTML does not; http/https links call `openExternal`; `javascript:`/`file:` do not
+  and nothing navigates); `BoundDeleteDialog.test.tsx`; `DiscardChangesPrompt.test.tsx`.
+
+### Issues Testing — DESIGN §13.6
+
+- [ ] **Invariant I19** upheld and unit-tested (DESIGN §7, §13.1).
+- [ ] Edge cases: `createTask(issueId)` dispatched with that issue already bound to a different task (or
+  already deleted) — e.g. queue a `bindIssue`/`deleteIssue` ahead of it in the command loop, or seed the
+  workspace with the issue already bound elsewhere before dispatching `createTask` — a stale-view case
+  reachable because the loop only serializes commands from the moment each is dispatched, not from when
+  the UI read the issue picker's list; delete-both then cancel at the uncommitted-changes step; Esc while
+  editing; unsafe link schemes; rolling back to a pre-v8 build (`IncompatibleDbError`, `.bak-v7`).
+- [ ] Existing-test updates: task create/delete, project removal, app state, SQLite store/mappers, command
+  loop, New-Task modal, delete-task confirm, Progress panel, Settings, keyboard shortcuts, store, terminal
+  pass-through.

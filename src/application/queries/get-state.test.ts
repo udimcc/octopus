@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { getState } from './get-state'
 import { createTask } from '../use-cases/create-task'
+import { createIssue } from '../use-cases/create-issue'
 import { makeDeps, taskInput } from '../use-cases/test-fakes'
 import { TaskState } from '../../domain/state'
 
@@ -35,5 +36,17 @@ describe('getState read-model (§5.2)', () => {
     expect(view.workspace.tasks).toEqual([])
     expect(view.workspace.activeTaskId).toBeUndefined()
     expect(view.sessionTypes.map((t) => t.typeId)).toEqual(['terminal'])
+    expect(view.workspace.issues).toEqual([])
+  })
+
+  it('includes issues on view.workspace.issues after creating one (Issues §13.3, I19)', () => {
+    const fd = makeDeps()
+    const issueId = createIssue(fd.deps, { name: 'Fix', description: 'd' }).issueId!
+
+    const view = getState(fd.deps)
+
+    expect(view.workspace.issues).toHaveLength(1)
+    expect(view.workspace.issues![0].id).toBe(issueId)
+    expect(view.workspace.issues![0].name).toBe('Fix')
   })
 })

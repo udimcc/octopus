@@ -30,11 +30,14 @@
  * directory, captured from the daemon's `/proc/<pid>/cwd` on quit/roster-refresh so
  * a fresh spawn after a daemon-less restart lands where the user left off, §6.2);
  * 6 → 7 to add the `tasks.repo_less` column ("No Repo" tasks, §5.4 — a permanently
- * worktree-less task; its row stores `worktree = ''` and `repo_less = 1`).
+ * worktree-less task; its row stores `worktree = ''` and `repo_less = 1`); 7 → 8
+ * (I19) to add the `issues` table — a locally-tracked work item optionally bound
+ * 1:1 to a task via the UNIQUE, nullable `issues.task_id`, `ON DELETE SET NULL` so
+ * deleting a task frees its issue instead of orphaning the FK.
  * `SqliteStore` runs the guarded migrations when an older DB opens (see
  * {@link MIGRATIONS}).
  */
-export const SCHEMA_VERSION = 7
+export const SCHEMA_VERSION = 8
 
 /**
  * Connection pragmas applied on every open. `foreign_keys` is per-connection
@@ -103,7 +106,22 @@ export const SCHEMA_STATEMENTS: readonly string[] = Object.freeze([
      data TEXT NOT NULL
    )`,
   // Fetching a task's sessions in tab order is the hot read on load (§6.3).
-  `CREATE INDEX IF NOT EXISTS idx_sessions_task ON sessions(task_id, position)`
+  `CREATE INDEX IF NOT EXISTS idx_sessions_task ON sessions(task_id, position)`,
+  // Issues (I19): a locally-tracked work item, optionally bound 1:1 to a task.
+  // `task_id` is UNIQUE (one task per issue) and nullable (an unbound issue), with
+  // `ON DELETE SET NULL` so deleting a task frees the issue's binding rather than
+  // deleting the issue or violating the FK. The binding is stored only here — a
+  // task row never carries a reverse pointer.
+  `CREATE TABLE IF NOT EXISTS issues (
+     id TEXT PRIMARY KEY,
+     name TEXT NOT NULL,
+     description TEXT NOT NULL DEFAULT '',
+     project_path TEXT,
+     status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo','in_progress','in_review','done')),
+     task_id TEXT UNIQUE REFERENCES tasks(id) ON DELETE SET NULL,
+     created_at INTEGER NOT NULL,
+     updated_at INTEGER NOT NULL
+   )`
 ])
 
 /** `app_state` key holding the single active-task pointer (§6.3). */
@@ -192,5 +210,23 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   {
     toVersion: 7,
     statements: Object.freeze(['ALTER TABLE tasks ADD COLUMN repo_less INTEGER NOT NULL DEFAULT 0'])
+  },
+  // v8 (I19): the `issues` table. Identical DDL to the fresh-DB bootstrap above —
+  // `CREATE TABLE IF NOT EXISTS` is safe to re-run and matches it exactly, same
+  // pattern as the v3 `session_scrollback` migration.
+  {
+    toVersion: 8,
+    statements: Object.freeze([
+      `CREATE TABLE IF NOT EXISTS issues (
+         id TEXT PRIMARY KEY,
+         name TEXT NOT NULL,
+         description TEXT NOT NULL DEFAULT '',
+         project_path TEXT,
+         status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo','in_progress','in_review','done')),
+         task_id TEXT UNIQUE REFERENCES tasks(id) ON DELETE SET NULL,
+         created_at INTEGER NOT NULL,
+         updated_at INTEGER NOT NULL
+       )`
+    ])
   }
 ])

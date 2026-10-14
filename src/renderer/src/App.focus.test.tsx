@@ -52,6 +52,7 @@ const STATE: WindowedWorkspaceStateDTO = {
   ],
   activeTaskId: 't1',
   sessionTypes: [],
+  issues: [],
   settings: {
     worktree: { location: '' },
     terminal: {},

@@ -41,7 +41,13 @@ import type {
   AddProjectInput,
   RemoveProjectInput,
   SetProjectDefaultBranchInput,
-  ListProjectWorktreesInput
+  ListProjectWorktreesInput,
+  CreateIssueInput,
+  UpdateIssueInput,
+  DeleteIssueInput,
+  BindIssueInput,
+  UnbindIssueInput,
+  OpenExternalInput
 } from './dto'
 import type { EventDTO } from './events'
 
@@ -108,6 +114,28 @@ export const CHANNELS = {
   projectRemove: 'project:remove',
   projectSetDefaultBranch: 'project:setDefaultBranch',
   projectListWorktrees: 'project:listWorktrees',
+
+  // Issue commands (UI → backend, request/reply) ("Issues", §13.4).
+  issueCreate: 'issue:create',
+  issueUpdate: 'issue:update',
+  issueDelete: 'issue:delete',
+  issueBind: 'issue:bind',
+  issueUnbind: 'issue:unbind',
+
+  /**
+   * Toggle the Issues drawer (renderer → main, fire-and-forget, "Issues", §13.4). Sent
+   * by a SECONDARY window's shortcut (there is no drawer to toggle locally); main relays
+   * an `issuesDrawerToggle` event to the main window, then raises and focuses it. The
+   * main window itself toggles its own drawer locally and never sends this.
+   */
+  issuesToggleDrawer: 'issue:toggleDrawer',
+
+  /**
+   * Open a URL in the system browser (request/reply), after checking it via
+   * `openExternalSafely` (`toSafeExternalUrl`) main-side. Resolves to whether it was
+   * opened.
+   */
+  shellOpenExternal: 'shell:openExternal',
 
   // PTY I/O (UI → backend, fire-and-forget: high-frequency, no reply).
   ptyWrite: 'pty:write',
@@ -309,6 +337,44 @@ export interface OctopusAPI {
     read(): Promise<string>
     /** Replace the clipboard's plain text. */
     write(text: string): Promise<void>
+  }
+
+  /**
+   * Issues ("Issues", §13.4): locally-tracked work items, optionally bound 1:1 to a
+   * task. There is no `issues.list`: the full set rides `app:getState().issues` and
+   * stays current via `issueUpserted`/`issueDeleted` events, like `tasks`.
+   */
+  issues: {
+    /** Create an issue; the ack carries the new `issueId`. */
+    create(input: CreateIssueInput): Promise<CommandAck>
+    /** Patch an issue (`projectPath: null` clears the project). */
+    update(input: UpdateIssueInput): Promise<CommandAck>
+    /** Delete an issue. Idempotent; leaves a bound task untouched. */
+    delete(input: DeleteIssueInput): Promise<CommandAck>
+    /**
+     * Bind an issue to a task (1:1), replacing the issue's prior binding, if
+     * any. Rejected (`CommandAck.error`) if the task is already linked to
+     * a different issue (I19).
+     */
+    bind(input: BindIssueInput): Promise<CommandAck>
+    /** Unbind an issue from its task. Status is unchanged. */
+    unbind(input: UnbindIssueInput): Promise<CommandAck>
+    /**
+     * Fire-and-forget toggle of the Issues drawer. No reply: in the main window the
+     * caller toggles its own store directly instead of calling this; a secondary
+     * window calls it to raise the main window and relay the toggle there.
+     */
+    toggleDrawer(): void
+  }
+
+  /** Opening links outside the app ("Issues", §13.4): markdown descriptions, terminal web links. */
+  shell: {
+    /**
+     * Open a URL in the system browser after checking it via `openExternalSafely`
+     * (`toSafeExternalUrl`) main-side (defense in depth against a renderer-side bypass).
+     * Resolves to whether it opened.
+     */
+    openExternal(input: OpenExternalInput): Promise<boolean>
   }
 
   /** Subscribe to the backend event stream; returns an unsubscribe fn (§5.2). */

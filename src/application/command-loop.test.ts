@@ -310,3 +310,112 @@ describe('project commands dispatch (§5.4, §6.3)', () => {
     }
   })
 })
+
+describe('issue commands dispatch (Issues §13.3, I19)', () => {
+  it('createIssue routes to the use case and returns its CommandResult', async () => {
+    const fd = makeDeps()
+    const loop = new CommandLoop(fd.deps)
+
+    const res = await loop.dispatch({
+      kind: 'createIssue',
+      input: { name: 'Fix the thing', description: '' }
+    })
+
+    expect(res.ok).toBe(true)
+    expect(res.issueId).toBeDefined()
+    expect(fd.workspace.issue(res.issueId!)).toBeDefined()
+  })
+
+  it('bindIssue routes to the use case and returns its CommandResult', async () => {
+    const fd = makeDeps({ snapshot: twoTaskSnapshot() })
+    const loop = new CommandLoop(fd.deps)
+    const created = await loop.dispatch({
+      kind: 'createIssue',
+      input: { name: 'Fix', description: '' }
+    })
+
+    const res = await loop.dispatch({
+      kind: 'bindIssue',
+      input: { issueId: created.issueId!, taskId: asTaskId('task-1') }
+    })
+
+    expect(res).toEqual({ ok: true })
+    expect(fd.workspace.issue(created.issueId!)!.taskId).toBe(asTaskId('task-1'))
+  })
+
+  it('a domain error from createIssue (empty name) is caught and becomes { ok: false, error } rather than throwing', async () => {
+    const fd = makeDeps()
+    const loop = new CommandLoop(fd.deps)
+
+    const res = await loop.dispatch({
+      kind: 'createIssue',
+      input: { name: '   ', description: '' }
+    })
+
+    expect(res.ok).toBe(false)
+    expect(res.error).toMatch(/must not be empty/)
+  })
+
+  it('m11: updateIssue routes to the use case and returns its CommandResult', async () => {
+    const fd = makeDeps()
+    const loop = new CommandLoop(fd.deps)
+    const created = await loop.dispatch({
+      kind: 'createIssue',
+      input: { name: 'Fix', description: '' }
+    })
+
+    const res = await loop.dispatch({
+      kind: 'updateIssue',
+      input: { issueId: created.issueId!, name: 'Renamed' }
+    })
+
+    expect(res).toEqual({ ok: true })
+    expect(fd.workspace.issue(created.issueId!)!.name).toBe('Renamed')
+  })
+
+  it('m11: deleteIssue routes to the use case and returns its CommandResult', async () => {
+    const fd = makeDeps()
+    const loop = new CommandLoop(fd.deps)
+    const created = await loop.dispatch({
+      kind: 'createIssue',
+      input: { name: 'Fix', description: '' }
+    })
+
+    const res = await loop.dispatch({ kind: 'deleteIssue', input: { issueId: created.issueId! } })
+
+    expect(res).toEqual({ ok: true })
+    expect(fd.workspace.issue(created.issueId!)).toBeUndefined()
+  })
+
+  it('m11: unbindIssue routes to the use case and returns its CommandResult', async () => {
+    const fd = makeDeps({ snapshot: twoTaskSnapshot() })
+    const loop = new CommandLoop(fd.deps)
+    const created = await loop.dispatch({
+      kind: 'createIssue',
+      input: { name: 'Fix', description: '' }
+    })
+    await loop.dispatch({
+      kind: 'bindIssue',
+      input: { issueId: created.issueId!, taskId: asTaskId('task-1') }
+    })
+
+    const res = await loop.dispatch({ kind: 'unbindIssue', input: { issueId: created.issueId! } })
+
+    expect(res).toEqual({ ok: true })
+    expect(fd.workspace.issue(created.issueId!)!.taskId).toBeUndefined()
+  })
+})
+
+describe('createTask dispatch failure propagation (m11)', () => {
+  it('a persist failure in createTask surfaces as { ok: false, error } through the loop, never rejecting', async () => {
+    const fd = makeDeps()
+    const loop = new CommandLoop(fd.deps)
+    fd.persistence.upsertTask = () => {
+      throw new Error('disk full')
+    }
+
+    const res = await loop.dispatch({ kind: 'createTask', input: { mode: 'none', name: 'x' } })
+
+    expect(res).toEqual({ ok: false, error: 'disk full' })
+  })
+})

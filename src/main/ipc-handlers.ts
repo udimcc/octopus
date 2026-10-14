@@ -51,7 +51,14 @@ import type {
   SetProjectDefaultBranchInput,
   ListProjectWorktreesInput,
   ProjectListItemDTO,
-  ProjectWorktreeDTO
+  ProjectWorktreeDTO,
+  CreateIssueInput,
+  UpdateIssueInput,
+  DeleteIssueInput,
+  BindIssueInput,
+  UnbindIssueInput,
+  OpenExternalInput,
+  IssueStatusDTO
 } from '../shared/dto'
 import type { CommandLoop } from '../application/command-loop'
 import type { Clipboard } from '../ports/clipboard'
@@ -67,10 +74,34 @@ import {
   asSessionId,
   asTypeId,
   asWindowId,
+  asIssueId,
   MAIN_WINDOW_ID,
   type WindowId
 } from '../domain/ids'
+import { parseIssueStatus, type IssueStatus } from '../domain/issue'
 import { toWindowedWorkspaceStateDTO, toSessionConfig } from './dto-mappers'
+import { openExternalSafely } from './window'
+
+/**
+ * Validate a wire issue-status string against the domain enum (§13.4), shared with
+ * `mappers.ts`'s defense of a corrupt DB row (`domain/issue.ts`). Returns the parsed
+ * status, or `{ error }` if `status` was present but didn't match one of
+ * `IssueStatusDTO`'s values — a malformed/stale-client payload, rejected here rather
+ * than silently treated as absent (the command's own default, `todo`).
+ */
+function parseIssueStatusInput(status: IssueStatusDTO | undefined): {
+  readonly status?: IssueStatus
+  readonly error?: string
+} {
+  if (status === undefined) {
+    return {}
+  }
+  const parsed = parseIssueStatus(status)
+  if (parsed === undefined) {
+    return { error: `Invalid issue status: ${String(status)}` }
+  }
+  return { status: parsed }
+}
 
 function ack(result: CommandResult): CommandAck {
   return {
@@ -84,7 +115,9 @@ function ack(result: CommandResult): CommandAck {
     project: result.project && {
       path: result.project.path,
       defaultBranch: result.project.defaultBranch
-    }
+    },
+    // Id of an issue just created by `createIssue` ("Issues", §13.4).
+    issueId: result.issueId
   }
 }
 
@@ -111,6 +144,14 @@ export interface IpcHandlerHooks {
    * loop or domain bus — it is a pure renderer view-model sync, like the §9.5 toast.
    */
   readonly broadcastSessionSeen?: (sessionId: string) => void
+  /**
+   * Toggle the Issues drawer (§13.4). The main window toggles its own drawer
+   * locally and never calls this; a SECONDARY window's shortcut sends
+   * `issue:toggleDrawer`, and this hook relays an `issuesDrawerToggle` event to the
+   * main window, then raises/focuses it — never broadcast. Supplied by the
+   * composition root (only it owns `BrowserWindow`/the window registry).
+   */
+  readonly toggleIssuesDrawer?: () => void
 }
 
 /** Resolve the WindowId of the calling renderer (`e.sender`), defaulting to main. */
@@ -133,8 +174,15 @@ export function registerIpcHandlers(
   // ── Task commands ─────────────────────────────────────────────────────────
   ipcMain.handle(CHANNELS.taskCreate, async (_e, input: CreateTaskInput): Promise<CommandAck> => {
     // The DTO and the application command share the same `mode`-discriminated
-    // shape (all string fields, no branded ids), so forward it verbatim.
-    const result = await loop.dispatch({ kind: 'createTask', input })
+    // shape (all string fields, no branded ids), so forward it verbatim EXCEPT
+    // `issueId`, which must be rebranded to the domain `IssueId` (§13.4).
+    const result = await loop.dispatch({
+      kind: 'createTask',
+      input: {
+        ...input,
+        issueId: input.issueId !== undefined ? asIssueId(input.issueId) : undefined
+      }
+    })
     return ack(result)
   })
 
@@ -144,7 +192,9 @@ export function registerIpcHandlers(
       input: {
         taskId: asTaskId(input.taskId),
         force: input.force,
-        confirmedDirty: input.confirmedDirty
+        confirmedDirty: input.confirmedDirty,
+        // "Delete both" (§13.4): applied only in the task's final delete transaction.
+        alsoDeleteIssue: input.alsoDeleteIssue
       }
     })
     return ack(result)
@@ -350,6 +400,100 @@ export function registerIpcHandlers(
     CHANNELS.projectListWorktrees,
     async (_e, input: ListProjectWorktreesInput): Promise<readonly ProjectWorktreeDTO[]> =>
       listProjectWorktrees(deps, input.projectPath)
+  )
+
+  // ── Issue commands ("Issues", §13.4) ────────────────────────────────────────
+  ipcMain.handle(CHANNELS.issueCreate, async (_e, input: CreateIssueInput): Promise<CommandAck> => {
+    if (typeof input.name !== 'string' || typeof input.description !== 'string') {
+      return ack({ ok: false, error: 'Invalid issue name or description' })
+    }
+    const status = parseIssueStatusInput(input.status)
+    if (status.error) {
+      return ack({ ok: false, error: status.error })
+    }
+    const result = await loop.dispatch({
+      kind: 'createIssue',
+      input: {
+        name: input.name,
+        description: input.description,
+        projectPath: input.projectPath,
+        status: status.status
+      }
+    })
+    return ack(result)
+  })
+
+  ipcMain.handle(CHANNELS.issueUpdate, async (_e, input: UpdateIssueInput): Promise<CommandAck> => {
+    if (input.name !== undefined && typeof input.name !== 'string') {
+      return ack({ ok: false, error: 'Invalid issue name' })
+    }
+    if (input.description !== undefined && typeof input.description !== 'string') {
+      return ack({ ok: false, error: 'Invalid issue description' })
+    }
+    const status = parseIssueStatusInput(input.status)
+    if (status.error) {
+      return ack({ ok: false, error: status.error })
+    }
+    const result = await loop.dispatch({
+      kind: 'updateIssue',
+      input: {
+        issueId: asIssueId(input.issueId),
+        name: input.name,
+        description: input.description,
+        // `null` explicitly clears the project; `undefined`/omitted leaves it as is.
+        projectPath: input.projectPath,
+        status: status.status
+      }
+    })
+    return ack(result)
+  })
+
+  ipcMain.handle(CHANNELS.issueDelete, async (_e, input: DeleteIssueInput): Promise<CommandAck> => {
+    const result = await loop.dispatch({
+      kind: 'deleteIssue',
+      input: { issueId: asIssueId(input.issueId) }
+    })
+    return ack(result)
+  })
+
+  ipcMain.handle(CHANNELS.issueBind, async (_e, input: BindIssueInput): Promise<CommandAck> => {
+    const result = await loop.dispatch({
+      kind: 'bindIssue',
+      input: { issueId: asIssueId(input.issueId), taskId: asTaskId(input.taskId) }
+    })
+    return ack(result)
+  })
+
+  ipcMain.handle(CHANNELS.issueUnbind, async (_e, input: UnbindIssueInput): Promise<CommandAck> => {
+    const result = await loop.dispatch({
+      kind: 'unbindIssue',
+      input: { issueId: asIssueId(input.issueId) }
+    })
+    return ack(result)
+  })
+
+  // Secondary-window drawer-toggle relay (§13.4): raise/focus the main window and
+  // relay the toggle there; the main window toggles its own store locally and never
+  // sends this. Fire-and-forget, like `session:markSeen`.
+  ipcMain.on(CHANNELS.issuesToggleDrawer, () => {
+    hooks.toggleIssuesDrawer?.()
+  })
+
+  // Open a URL in the system browser (§13.4): a validated command, not a bare
+  // `shell.openExternal` passthrough. `openExternalSafely` (shared with
+  // `window.ts`'s `setWindowOpenHandler`) re-validates/normalizes the URL here too
+  // (defense in depth beyond the renderer's own pre-check) and only http/https
+  // ever reaches Electron's `shell.openExternal`; anything else, or a
+  // rejected/throwing open, is a silent `false` rather than a thrown error (a
+  // failed open is logged — see `openExternalSafely`).
+  ipcMain.handle(
+    CHANNELS.shellOpenExternal,
+    async (_e, input: OpenExternalInput): Promise<boolean> => {
+      if (typeof input !== 'object' || input === null || typeof input.url !== 'string') {
+        return false
+      }
+      return openExternalSafely(input.url)
+    }
   )
 
   // ── App-level ─────────────────────────────────────────────────────────────

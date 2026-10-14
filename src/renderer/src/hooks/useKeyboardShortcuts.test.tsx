@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { useKeyboardShortcuts, type KeyboardShortcutHandlers } from './useKeyboardShortcuts'
+import { DeleteTaskConfirm } from '../components/DeleteTaskConfirm'
 import { useStore, initialData } from '../store/store'
 import { installStubBridge } from '../test-support/stub-bridge'
 import type { SessionDTO, TaskDTO, WindowDTO } from '../../../shared/dto'
@@ -68,6 +69,7 @@ function seed(
     tasks,
     activeTaskId,
     sessionTypes: [],
+    issues: [],
     settings: {
       worktree: { location: '' },
       terminal: {},
@@ -80,7 +82,8 @@ function seed(
       newSessionKey: 'Ctrl+Shift+KeyN',
       newTaskKey: 'Ctrl+Shift+KeyT',
       closeSessionKey: 'Ctrl+Shift+KeyW',
-      searchKey: 'Ctrl+Shift+KeyF'
+      searchKey: 'Ctrl+Shift+KeyF',
+      issuesKey: 'Alt+Shift+KeyI'
     },
     version: 1,
     thisWindowId,
@@ -89,9 +92,18 @@ function seed(
   })
 }
 
-/** Fire a Ctrl+Shift chord by `code` (layout-independent). */
-function chord(code: string, extra: Partial<KeyboardEventInit> = {}): void {
-  fireEvent.keyDown(window, { code, ctrlKey: true, shiftKey: true, ...extra })
+/**
+ * Fire a Ctrl+Shift chord by `code` (layout-independent). Returns the same boolean
+ * `dispatchEvent`/`fireEvent` does: `false` iff `preventDefault()` was called, so
+ * callers can assert a chord was CONSUMED even when it's a suppressed no-op.
+ */
+function chord(code: string, extra: Partial<KeyboardEventInit> = {}): boolean {
+  return fireEvent.keyDown(window, { code, ctrlKey: true, shiftKey: true, ...extra })
+}
+
+/** Fire the default Alt+Shift+I "toggle Issues drawer" chord. */
+function issuesChord(): boolean {
+  return fireEvent.keyDown(window, { code: 'KeyI', altKey: true, shiftKey: true })
 }
 
 describe('useKeyboardShortcuts (§5.4 — Shift-gated)', () => {
@@ -370,5 +382,145 @@ describe('useKeyboardShortcuts (§5.4 — Shift-gated)', () => {
     render(<Host onNewTask={vi.fn()} onSearch={onSearch} />)
     chord('KeyF')
     expect(onSearch).toHaveBeenCalled()
+  })
+
+  it('Alt+Shift+I toggles the Issues drawer locally in the main window (default binding)', () => {
+    seed([task('t1')], 't1', 'main')
+    render(<Host onNewTask={vi.fn()} />)
+    expect(useStore.getState().issuesDrawerOpen).toBe(false)
+    issuesChord()
+    expect(useStore.getState().issuesDrawerOpen).toBe(true)
+    expect(window.octopusAPI.issues.toggleDrawer).not.toHaveBeenCalled()
+    // And it closes again on a second press.
+    issuesChord()
+    expect(useStore.getState().issuesDrawerOpen).toBe(false)
+  })
+
+  it('Alt+Shift+I relays to main over IPC from a secondary window, with no local drawer', () => {
+    seed([task('t1')], 't1', 'win-2', [win('main'), win('win-2')])
+    render(<Host onNewTask={vi.fn()} />)
+    issuesChord()
+    expect(window.octopusAPI.issues.toggleDrawer).toHaveBeenCalledTimes(1)
+    // A secondary window has no drawer of its own to toggle.
+    expect(useStore.getState().issuesDrawerOpen).toBe(false)
+  })
+
+  it('honors a non-default issuesKey binding, both to open and close the drawer', () => {
+    seed([task('t1')], 't1', 'main')
+    useStore.setState((s) => ({ settings: { ...s.settings, issuesKey: 'Alt+KeyQ' } }))
+    render(<Host onNewTask={vi.fn()} />)
+    expect(useStore.getState().issuesDrawerOpen).toBe(false)
+    fireEvent.keyDown(window, { code: 'KeyQ', altKey: true })
+    expect(useStore.getState().issuesDrawerOpen).toBe(true)
+    // The default Alt+Shift+I is no longer bound once overridden.
+    issuesChord()
+    expect(useStore.getState().issuesDrawerOpen).toBe(true)
+    fireEvent.keyDown(window, { code: 'KeyQ', altKey: true })
+    expect(useStore.getState().issuesDrawerOpen).toBe(false)
+  })
+
+  describe('Escape fallback (drawer open, focus outside its DOM subtree)', () => {
+    it('is a no-op (and does not call preventDefault) when the drawer is CLOSED in the main window', () => {
+      seed([task('t1')], 't1', 'main')
+      render(<Host onNewTask={vi.fn()} />)
+      expect(useStore.getState().issuesDrawerOpen).toBe(false)
+      expect(fireEvent.keyDown(window, { key: 'Escape' })).toBe(true)
+      expect(useStore.getState().issuesDrawerOpen).toBe(false)
+    })
+
+    it("closes the main window's open drawer", () => {
+      seed([task('t1')], 't1', 'main')
+      useStore.setState({ issuesDrawerOpen: true })
+      render(<Host onNewTask={vi.fn()} />)
+      fireEvent.keyDown(window, { key: 'Escape' })
+      expect(useStore.getState().issuesDrawerOpen).toBe(false)
+    })
+
+    it('is a no-op while any [aria-modal="true"] element exists in the DOM', () => {
+      seed([task('t1')], 't1', 'main')
+      useStore.setState({ issuesDrawerOpen: true })
+      render(<Host onNewTask={vi.fn()} />)
+      const modal = document.createElement('div')
+      modal.setAttribute('aria-modal', 'true')
+      document.body.appendChild(modal)
+      try {
+        fireEvent.keyDown(window, { key: 'Escape' })
+        expect(useStore.getState().issuesDrawerOpen).toBe(true)
+      } finally {
+        modal.remove()
+      }
+    })
+
+    it('is a no-op in a secondary window even with issuesDrawerOpen set', () => {
+      seed([task('t1')], 't1', 'win-2', [win('main'), win('win-2')])
+      useStore.setState({ issuesDrawerOpen: true })
+      render(<Host onNewTask={vi.fn()} />)
+      fireEvent.keyDown(window, { key: 'Escape' })
+      expect(useStore.getState().issuesDrawerOpen).toBe(true)
+    })
+
+    // Not just a state check: a real App-level modal (`DeleteTaskConfirm`, same
+    // `stopPropagation` as `NewTaskModal`/`SettingsModal`) sits over the drawer and
+    // must swallow Escape itself before it ever reaches this hook's `window`
+    // listener — a state-only assertion would still pass if that modal's own
+    // `e.stopPropagation()` (DeleteTaskConfirm.tsx:~251) were deleted, since the
+    // `[aria-modal="true"]` DOM check here would still bail independently.
+    it('never reaches the window listener when an App-level modal is open over the drawer', () => {
+      const t = task('t1')
+      seed([t], 't1', 'main')
+      useStore.setState({ issuesDrawerOpen: true })
+      render(
+        <>
+          <Host onNewTask={vi.fn()} />
+          <DeleteTaskConfirm taskId="t1" onClose={vi.fn()} />
+        </>
+      )
+      const spy = vi.fn()
+      window.addEventListener('keydown', spy)
+      try {
+        fireEvent.keyDown(screen.getByRole('dialog', { name: 'Delete Task' }), { key: 'Escape' })
+        expect(spy).not.toHaveBeenCalled()
+        expect(useStore.getState().issuesDrawerOpen).toBe(true)
+      } finally {
+        window.removeEventListener('keydown', spy)
+      }
+    })
+  })
+
+  describe('drawer-open chord suppression', () => {
+    it('suppresses newSession/newTask/closeSession/search (but still consumes the chord); navigation chords still act', () => {
+      const t1 = task('t1', {
+        lifecycle: 'ready',
+        sessions: [session('s1')],
+        activeSessionId: 's1'
+      })
+      const t2 = task('t2', { position: 1 })
+      seed([t1, t2], 't1', 'main')
+      useStore.setState({ issuesDrawerOpen: true })
+      const onNewTask = vi.fn()
+      const onSearch = vi.fn()
+      render(<Host onNewTask={onNewTask} onSearch={onSearch} />)
+
+      expect(chord('KeyN')).toBe(false) // preventDefault still ran
+      expect(window.octopusAPI.sessions.create).not.toHaveBeenCalled()
+
+      expect(chord('KeyT')).toBe(false)
+      expect(onNewTask).not.toHaveBeenCalled()
+
+      expect(chord('KeyW')).toBe(false)
+      expect(window.octopusAPI.sessions.close).not.toHaveBeenCalled()
+
+      expect(chord('KeyF')).toBe(false)
+      expect(onSearch).not.toHaveBeenCalled()
+
+      // Session/task navigation chords are exempt and still act while the drawer
+      // covers the workspace.
+      expect(chord('ArrowDown')).toBe(false)
+      expect(useStore.getState().activeTaskId).toBe('t2')
+      expect(window.octopusAPI.tasks.switch).toHaveBeenCalledWith({ taskId: 't2' })
+      // issuesKey itself is also exempt (it IS the drawer toggle).
+      expect(issuesChord()).toBe(false)
+      expect(useStore.getState().issuesDrawerOpen).toBe(false)
+    })
   })
 })
