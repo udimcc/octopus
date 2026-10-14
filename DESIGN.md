@@ -470,16 +470,16 @@ restore complexity). The serialize-and-replay path is kept available for a futur
   (the dirty gate still fires for adopted repos, even though nothing is removed from disk).
 - **Status icons (phase 2):** shape **and** color (accessibility), rendered per session on its tab
   (`SessionStatusIcon`) and per task in the progress panel (`TaskStatusIcon`). Icons follow the §3.3
-  vocabulary: **Idle** = hollow/pause, gray; **Working** = spinner/filled, blue;
+  vocabulary: **Idle** = hollow/pause, gray; **Working** = rotating part-circle spinner, yellow;
   **NeedsInput** = warning triangle, amber; **Unknown** = no icon at all (transparent, never a
   placeholder glyph — an un-evaluated session must not draw attention). Tooltips give the plain-text label +
   reason (e.g. "Needs input — Claude is asking permission to run a tool").
   - **Ready-for-review highlight (§3.4, §9.5):** an *idle* session flagged ready-for-review shows a distinct
-    **static accent dot** in place of the plain gray idle icon — visually the Working dot **without** the
-    pulse, so "done, wants your eyes" reads apart from "still running" at a glance. On a task the same accent
+    **static accent dot** in place of the plain gray idle icon — distinct from the rotating yellow Working
+    arc, so "done, wants your eyes" reads apart from "still running" at a glance. On a task the same accent
     decorates the rollup icon. It is the "which of my agents finished?" scan signal, resolved through the
     single display-state priority (`NeedsInput > Review > Working > Idle`, §3.4): a session that has resumed
-    `Working` shows the pulsing Working dot, never the static review dot. Clearing is on **focus** of that
+    `Working` shows the spinning Working arc, never the static review dot. Clearing is on **focus** of that
     session (opening its tab in its window). Because it is a renderer view-model flag it survives task switches
     (still in the store) but not an app restart (a restored session starts un-flagged — a finished-long-ago
     agent is just idle).

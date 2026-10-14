@@ -97,12 +97,13 @@ reflects the **display state** (states + ready-for-review folded together):
 |---|---|---|---|---|
 | **Needs input** | ▲ | red | static | "Needs input" |
 | **Ready for review** | ● | teal (accent) | static | "Ready for review" |
-| **Working** | ● | blue | gentle pulse | "Working" |
+| **Working** | ◜ part-circle (¾ arc) | yellow | rotating ("thinking") | "Working" |
 | **Idle** | ○ | muted | static | "Idle" |
 | **Unknown / none** | _(none)_ | — | — | renders nothing |
 
-- **Working vs. Ready for review** are the _same_ dot — the pulse is the only thing that
-  distinguishes "still running" (pulsing) from "done, wants your eyes" (static).
+- **Working vs. Ready for review** differ in shape, color and motion — a rotating yellow arc means
+  "still running", a static teal dot means "done, wants your eyes". With reduced motion the arc
+  stops rotating but stays distinguishable by shape and color.
 - **Unknown** renders **nothing** so a not-yet-evaluated session never masks a more urgent one.
 - Each icon exposes its label as a tooltip / accessible name.
 

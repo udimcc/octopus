@@ -38,6 +38,7 @@ export const color = {
   accentSubtle: 'var(--accent-subtle)',
   onAccent: 'var(--on-accent)',
   statusWorking: 'var(--status-working)',
+  statusThinking: 'var(--status-thinking)',
 
   /* Semantic */
   errorBg: 'var(--error-bg)',
@@ -65,9 +66,11 @@ export const color = {
  * `GROUP_COLOR_PALETTE_SIZE`, which the renderer cannot import); assigned once at
  * group creation and stable until the group dissolves. Chosen to read clearly
  * against the dark theme's surfaces and to stay visually distinct from the
- * status-icon colors (`color.accent` teal, `color.statusWorking` blue,
- * `color.errorText` salmon, `color.muted` gray) so the group line is never
- * mistaken for a status cue.
+ * status-icon colors (`color.accent` teal, `color.statusWorking` blue (Issue
+ * "In progress"), `color.errorText` salmon, `color.muted` gray) so the group line is never
+ * mistaken for a status cue. Exception: amber is close in hue to the
+ * `color.statusThinking` yellow Working spinner, but a rotating arc is not
+ * confusable with a static group line.
  */
 export const GROUP_COLOR_PALETTE = [
   '#f97316' /* orange */,
@@ -117,7 +120,7 @@ export const fontSize = {
  * A full-viewport centered modal backdrop (shared by the modals/dialogs). A plain
  * translucent dim, no `backdrop-filter`: on the GPU-less VDI (SwiftShader) a backdrop
  * blur is re-rendered in software over the whole window on every frame that changes
- * inside or beneath the modal (a tab switch, a button transition, a pulsing status
+ * inside or beneath the modal (a tab switch, a button transition, a spinning status
  * icon behind it), which made the New-Task modal visibly lag.
  */
 export const overlayStyle: React.CSSProperties = {

@@ -43,8 +43,10 @@
   --accent-flash: rgba(45, 212, 191, 0.45);
   --on-accent: #04211d;
 
-  /* Working-status dot — blue, distinct from the teal accent (§9.5). */
+  /* Issue "In progress" icon — blue, distinct from the teal accent. */
   --status-working: #4f8cff;
+  /* Session/task Working spinner — yellow ("thinking"), distinct from the teal accent (§9.5). */
+  --status-thinking: #facc15;
 
   /* Semantic */
   --error-fg: #ff9a92;
@@ -318,29 +320,27 @@ button:focus-visible {
   color: var(--error-fg);
 }
 
-/* Session/task status icon (§5.4, §9). The "working" glyph gently pulses to read as
-   in-progress; other states are static. `prefers-reduced-motion` disables the pulse.
-   No transform/filter — a plain opacity fade is cheap under SwiftShader (no GPU). */
+/* Session/task status icon (§5.4, §9). The "working" part-circle rotates to read as
+   thinking/in-progress; other states are static. `prefers-reduced-motion` stops the
+   rotation (the arc's shape and color still tell it apart from the review dot). The
+   rotated element is a ~1em icon, so even a software-composited (SwiftShader) frame
+   only repaints a few hundred pixels; its own stacking context is confined to the icon. */
 .status-icon {
   user-select: none;
 }
 
-.status-pulse {
-  animation: status-pulse 1.4s ease-in-out infinite;
+.status-spin {
+  animation: status-spin 1s linear infinite;
 }
 
-@keyframes status-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.35;
+@keyframes status-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .status-pulse {
+  .status-spin {
     animation: none;
   }
 }
@@ -350,7 +350,7 @@ button:focus-visible {
    when the mark didn't change. The animation overrides the tab's inline background while
    it runs and ends on the same --bg-app, so there is no jump. Duration = FOCUS_FLASH_MS
    (store.ts). background-color only (no transform/filter) — cheap under SwiftShader.
-   `prefers-reduced-motion` disables it, like the status pulse. */
+   `prefers-reduced-motion` disables it, like the status spinner. */
 .session-tab--focus-flash {
   animation: session-tab-focus-flash 1s ease-out;
 }

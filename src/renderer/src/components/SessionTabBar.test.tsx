@@ -171,7 +171,7 @@ describe('<SessionTabBar>', () => {
   it('a working session with a stale review flag shows the Working icon, not review (§9.5)', () => {
     // The gating flows through `sessionDisplayState`: even though s1 still carries a
     // ready-for-review flag (raised earlier on working→waiting), its CURRENT state is
-    // working, so the tab must show the pulsing Working icon — the bug this fixes.
+    // working, so the tab must show the spinning Working icon — the bug this fixes.
     seed({ sessions: [session('s1', { title: 'sh', state: 'working' })] })
     useStore.setState({ hasUnseenFinishedTurn: { s1: true } })
     render(<SessionTabBar taskId="t1" />)

@@ -61,6 +61,9 @@ All notable changes to Octopus are documented here. The format is based on
   from the task name as you type, but words are now joined with `_` instead of `-`
   (`Add Feature 1` → `add_feature_1`; `feature/…` namespaces are kept). The field
   stays editable. Worktree folder names are unchanged.
+- **Working status icon is a yellow spinner.** A session or task that is working now shows a rotating
+  yellow part-circle ("thinking") instead of a pulsing blue dot. All session and task status icons
+  are 30% larger.
 
 ### Fixed
 
