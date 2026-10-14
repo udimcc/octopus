@@ -78,6 +78,12 @@ not by withholding the raise.
 - **Defense-in-depth:** the session **leaves Idle** again (starts Working, or goes to Needs input) —
   the "just finished, unseen" premise no longer holds.
 
+**Split panes.** When a task is split into several visible panes, **only the focused pane** counts as
+"on screen". A pane that is visible but not focused still raises and shows the cue, and the cue clears
+when the user focuses that pane (a click in it, or a pane-focus shortcut), globally like any other
+focus. This keeps "on screen" a single, unambiguous session per window, and a finish in a side pane
+you aren't working in is still flagged for you.
+
 **Validity / supersession:** because the highlight is gated to the Idle branch at display time, if the
 agent starts working again before the user looks, the current state (Working / Needs input) is shown
 instead — a running session never displays the static review dot.
@@ -139,6 +145,8 @@ changed even while looking elsewhere.
   Unknown, and no-ops.
 - **Suppressed when already looking.** No toast if the user is currently viewing that exact session
   (focused window, active task, active tab). If I can see Claude myself, I don't need a toast.
+  With split panes, "active tab" means the **focused pane** only; a visible but unfocused pane still
+  gets the toast (same rule as the ready-for-review cue).
 - **Throttled per session.** A burst of changes for one session collapses to **one** toast: the first
   change shows immediately, further changes are dropped for a short cooldown (~6 s). The cooldown is
   anchored to the toast actually shown, so a suppressed change never "uses up" the window.

@@ -10,12 +10,13 @@
  * `mappers.ts`; this class is just prepared statements + the schema bootstrap.
  */
 
-import type { TaskId, SessionId, WindowId, IssueId } from '../../domain/ids'
+import type { TaskId, SessionId, WindowId, IssueId, GroupId } from '../../domain/ids'
 import type {
   WorkspaceSnapshot,
   TaskSnapshot,
   SessionSnapshot,
-  IssueSnapshot
+  IssueSnapshot,
+  GroupSnapshot
 } from '../../domain/snapshots'
 import type { WorkspacePersistence, WindowRecord } from '../../ports/workspace-persistence'
 import type { SqliteDb } from './sqlite-db'
@@ -31,13 +32,15 @@ import {
   sessionToRow,
   windowToRow,
   issueToRow,
+  groupToRow,
   rowToTaskSnapshot,
   rowToWindowRecord,
   rowToIssueSnapshot,
   type TaskRow,
   type SessionRow,
   type WindowRow,
-  type IssueRow
+  type IssueRow,
+  type GroupRow
 } from './mappers'
 import { IncompatibleDbError } from './errors'
 
@@ -113,11 +116,25 @@ export class SqliteStore implements WorkspacePersistence {
 
   load(): WorkspaceSnapshot {
     const taskRows = this.db.prepare('SELECT * FROM tasks ORDER BY position ASC').all() as TaskRow[]
+    // `created_at` is a tiebreak for a `position` collision (review C1 — a stale
+    // DB written before the tail-placement fix could have one): without it the
+    // scan order for tied rows is unspecified, so which session a group's
+    // contiguity check sees first could vary between loads.
     const sessionRows = this.db
-      .prepare('SELECT * FROM sessions ORDER BY task_id ASC, position ASC')
+      .prepare('SELECT * FROM sessions ORDER BY task_id ASC, position ASC, created_at ASC')
       .all() as SessionRow[]
+    // Groups travel inside the task DTO (§5.7), not a separate channel, so they
+    // load with their task here, same as sessions. `session_groups` has no
+    // `position` column (groups aren't ordered among themselves — only their
+    // MEMBER sessions are), so `rowid` is the tiebreak (review I1): without an
+    // ORDER BY at all, which of two conflicting groups (e.g. a duplicate-leaf
+    // race) "wins" first-use in `Task.restoreGroups` was scan-order-dependent —
+    // unspecified by SQLite and not reproducible across reloads.
+    const groupRows = this.db
+      .prepare('SELECT * FROM session_groups ORDER BY task_id ASC, rowid ASC')
+      .all() as GroupRow[]
 
-    // Bucket sessions by task once, preserving the position-ordered scan.
+    // Bucket sessions and groups by task once, preserving the position-ordered scan.
     const byTask = new Map<string, SessionRow[]>()
     for (const row of sessionRows) {
       const bucket = byTask.get(row.task_id)
@@ -127,8 +144,19 @@ export class SqliteStore implements WorkspacePersistence {
         byTask.set(row.task_id, [row])
       }
     }
+    const groupsByTask = new Map<string, GroupRow[]>()
+    for (const row of groupRows) {
+      const bucket = groupsByTask.get(row.task_id)
+      if (bucket) {
+        bucket.push(row)
+      } else {
+        groupsByTask.set(row.task_id, [row])
+      }
+    }
 
-    const tasks = taskRows.map((row) => rowToTaskSnapshot(row, byTask.get(row.id) ?? []))
+    const tasks = taskRows.map((row) =>
+      rowToTaskSnapshot(row, byTask.get(row.id) ?? [], groupsByTask.get(row.id) ?? [])
+    )
     const activeTaskId = this.readActiveTask()
     // Guard the active pointer against a task that no longer exists (I9); hydrate
     // enforces this too, but keeping the snapshot clean avoids surprises.
@@ -303,6 +331,24 @@ export class SqliteStore implements WorkspacePersistence {
     // Sessions are NOT cascaded: the close-window use case reassigns them to the
     // main window (or closes them) BEFORE this runs (§6.7), so no orphan rows.
     this.db.prepare('DELETE FROM windows WHERE id = ?').run(id)
+  }
+
+  upsertGroup(taskId: TaskId, group: GroupSnapshot): void {
+    const row = groupToRow(taskId, group)
+    this.db
+      .prepare(
+        `INSERT INTO session_groups (id, task_id, layout, color)
+         VALUES (@id, @task_id, @layout, @color)
+         ON CONFLICT(id) DO UPDATE SET
+           task_id = excluded.task_id,
+           layout = excluded.layout,
+           color = excluded.color`
+      )
+      .run(row)
+  }
+
+  deleteGroup(groupId: GroupId): void {
+    this.db.prepare('DELETE FROM session_groups WHERE id = ?').run(groupId)
   }
 
   transaction<T>(fn: () => T): T {

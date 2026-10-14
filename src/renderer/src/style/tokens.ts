@@ -59,6 +59,25 @@ export const color = {
   modalBg: 'var(--bg-surface)'
 } as const
 
+/**
+ * Fixed 6-color palette for split-pane groups (DESIGN §5.7, split-groups design).
+ * `GroupDTO.colorIndex` indexes this array (mirrors the domain's
+ * `GROUP_COLOR_PALETTE_SIZE`, which the renderer cannot import); assigned once at
+ * group creation and stable until the group dissolves. Chosen to read clearly
+ * against the dark theme's surfaces and to stay visually distinct from the
+ * status-icon colors (`color.accent` teal, `color.statusWorking` blue,
+ * `color.errorText` salmon, `color.muted` gray) so the group line is never
+ * mistaken for a status cue.
+ */
+export const GROUP_COLOR_PALETTE = [
+  '#f97316' /* orange */,
+  '#eab308' /* amber */,
+  '#84cc16' /* lime */,
+  '#8b5cf6' /* violet */,
+  '#d946ef' /* fuchsia */,
+  '#f472b6' /* pink */
+] as const
+
 export const space = {
   x1: 'var(--space-1)',
   x2: 'var(--space-2)',

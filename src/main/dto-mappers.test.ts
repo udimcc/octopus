@@ -6,6 +6,7 @@ import {
   toIssueDTO,
   toSettingsDTO,
   toWorkspaceStateDTO,
+  toWindowedWorkspaceStateDTO,
   toEventDTO,
   toSessionConfig
 } from './dto-mappers'
@@ -22,7 +23,7 @@ import type { SessionConfigDTO } from '../shared/dto'
 import { SessionLifecycle, TaskLifecycle } from '../domain/lifecycle'
 import { SessionState, TaskState } from '../domain/state'
 import { IssueStatus } from '../domain/issue'
-import { asTaskId, asSessionId, asTypeId, asWindowId, asIssueId } from '../domain/ids'
+import { asTaskId, asSessionId, asTypeId, asWindowId, asIssueId, asGroupId } from '../domain/ids'
 
 const worktree: WorktreeRefSnapshot = {
   path: '/wt/t1',
@@ -134,7 +135,13 @@ describe('snapshot → DTO mappers (§5.2)', () => {
       sessionPrevKey: 'ArrowDown',
       copyKey: 'Ctrl+Shift+KeyC',
       pasteKey: 'Ctrl+Shift+KeyV',
-      issuesKey: 'Alt+Shift+KeyI'
+      issuesKey: 'Alt+Shift+KeyI',
+      splitRightKey: 'Ctrl+Shift+KeyE',
+      splitDownKey: 'Ctrl+Shift+KeyO',
+      focusPaneLeftKey: 'Ctrl+Shift+KeyH',
+      focusPaneRightKey: 'Ctrl+Shift+KeyL',
+      focusPaneUpKey: 'Ctrl+Shift+KeyK',
+      focusPaneDownKey: 'Ctrl+Shift+KeyJ'
     }
     expect(toSettingsDTO(settings)).toEqual({
       worktree: { location: '/home/u/octopus_repos' },
@@ -146,7 +153,13 @@ describe('snapshot → DTO mappers (§5.2)', () => {
       sessionPrevKey: 'ArrowDown',
       copyKey: 'Ctrl+Shift+KeyC',
       pasteKey: 'Ctrl+Shift+KeyV',
-      issuesKey: 'Alt+Shift+KeyI'
+      issuesKey: 'Alt+Shift+KeyI',
+      splitRightKey: 'Ctrl+Shift+KeyE',
+      splitDownKey: 'Ctrl+Shift+KeyO',
+      focusPaneLeftKey: 'Ctrl+Shift+KeyH',
+      focusPaneRightKey: 'Ctrl+Shift+KeyL',
+      focusPaneUpKey: 'Ctrl+Shift+KeyK',
+      focusPaneDownKey: 'Ctrl+Shift+KeyJ'
     })
   })
 
@@ -203,6 +216,89 @@ describe('snapshot → DTO mappers (§5.2)', () => {
       windows: []
     }
     expect(toWorkspaceStateDTO(view).issues).toEqual([])
+  })
+
+  it('toWindowedWorkspaceStateDTO carries thisWindowId/role and the window list (§6.7)', () => {
+    const view: AppStateView = {
+      workspace: { tasks: [task], activeTaskId: asTaskId('t1') },
+      sessionTypes: [],
+      settings: {
+        worktree: { location: '/home/u/octopus_repos' },
+        terminal: {},
+        defaultSessionTypeId: 'terminal',
+        groupTasksByRepo: true
+      },
+      version: 1,
+      windows: []
+    }
+    const dto = toWindowedWorkspaceStateDTO(view, 'win-2', 'secondary')
+    expect(dto.thisWindowId).toBe('win-2')
+    expect(dto.thisWindowRole).toBe('secondary')
+    expect(dto.windows).toEqual([])
+    expect(dto.initialMark).toBeUndefined()
+    // Groups now travel inside each task's TaskDTO.groups (§5.7) — no
+    // separate per-window splitLayouts channel.
+    expect(dto).not.toHaveProperty('splitLayouts')
+  })
+
+  it('toWindowedWorkspaceStateDTO passes initialMark straight through, one-shot (§5.7, §6.7)', () => {
+    const view: AppStateView = {
+      workspace: { tasks: [task], activeTaskId: asTaskId('t1') },
+      sessionTypes: [],
+      settings: {
+        worktree: { location: '/home/u/octopus_repos' },
+        terminal: {},
+        defaultSessionTypeId: 'terminal',
+        groupTasksByRepo: true
+      },
+      version: 1,
+      windows: []
+    }
+    const dto = toWindowedWorkspaceStateDTO(view, 'win-2', 'secondary', {
+      taskId: 't1',
+      sessionId: 's1'
+    })
+    expect(dto.initialMark).toEqual({ taskId: 't1', sessionId: 's1' })
+  })
+
+  it('toTaskDTO maps a 2-member group, including the split tree and color (§5.7)', () => {
+    const grouped: TaskSnapshot = {
+      ...task,
+      groups: [
+        {
+          id: asGroupId('group-1'),
+          tree: {
+            kind: 'split',
+            dir: 'row',
+            ratio: 0.5,
+            a: { kind: 'leaf', sessionId: asSessionId('s1') },
+            b: { kind: 'leaf', sessionId: asSessionId('s2') }
+          },
+          colorIndex: 2
+        }
+      ]
+    }
+    const dto = toTaskDTO(grouped)
+    expect(dto.groups).toEqual([
+      {
+        id: 'group-1',
+        colorIndex: 2,
+        layout: {
+          kind: 'split',
+          dir: 'row',
+          ratio: 0.5,
+          a: { kind: 'leaf', sessionId: 's1' },
+          b: { kind: 'leaf', sessionId: 's2' }
+        }
+      }
+    ])
+  })
+
+  it('toTaskDTO defaults groups to [] when the snapshot predates the field', () => {
+    const { groups, ...withoutGroups } = { ...task, groups: undefined }
+    expect(groups).toBeUndefined()
+    const dto = toTaskDTO(withoutGroups as TaskSnapshot)
+    expect(dto.groups).toEqual([])
   })
 })
 
@@ -266,6 +362,44 @@ describe('toEventDTO (§6.5) — total over the DomainEvent union', () => {
             taskId: 't1',
             orderedSessionIds: ['s1', 's2']
           })
+      },
+      {
+        event: {
+          type: 'groupsChanged',
+          taskId: asTaskId('t1'),
+          groups: [
+            {
+              id: asGroupId('group-1'),
+              tree: {
+                kind: 'split',
+                dir: 'row',
+                ratio: 0.5,
+                a: { kind: 'leaf', sessionId: asSessionId('s1') },
+                b: { kind: 'leaf', sessionId: asSessionId('s2') }
+              },
+              colorIndex: 0
+            }
+          ]
+        },
+        expect: (d) => {
+          expect(d.type).toBe('groupsChanged')
+          if (d.type === 'groupsChanged') {
+            expect(d.taskId).toBe('t1')
+            expect(d.groups).toEqual([
+              {
+                id: 'group-1',
+                colorIndex: 0,
+                layout: {
+                  kind: 'split',
+                  dir: 'row',
+                  ratio: 0.5,
+                  a: { kind: 'leaf', sessionId: 's1' },
+                  b: { kind: 'leaf', sessionId: 's2' }
+                }
+              }
+            ])
+          }
+        }
       },
       {
         event: { type: 'taskCreated', task },
@@ -417,8 +551,8 @@ describe('toEventDTO (§6.5) — total over the DomainEvent union', () => {
     }
   })
 
-  it('covers 20 DomainEvent variants (guards against an unmapped addition)', () => {
+  it('covers 21 DomainEvent variants (guards against an unmapped addition)', () => {
     const distinct = new Set(cases.map((c) => c.event.type))
-    expect(distinct.size).toBe(20)
+    expect(distinct.size).toBe(21)
   })
 })

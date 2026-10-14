@@ -33,6 +33,22 @@ All notable changes to Octopus are documented here. The format is based on
   The first launch after upgrading seeds one project per repository already in use by an
   existing task, so an existing setup starts with a populated list instead of an empty
   one.
+- **Split panes (groups).** A window can show several sessions of the same task side by side
+  or stacked, tmux-style, as a **group**: a fixed combination you build on purpose
+  that stays together no matter which of its sessions you're focused on or where else you
+  work. `Ctrl+Shift+E` splits the focused pane to the right and `Ctrl+Shift+O` splits it
+  downward, each with a new terminal already joined. A tab's right-click menu can also put
+  that existing session into the focused pane's group ("Split right" / "Split down"), or take
+  it back out ("Remove from group"). Click a pane or use `Ctrl+Shift+H/J/K/L` to move focus —
+  switching tabs only ever moves which pane you're looking at, never changes a group. Each
+  group gets a colored line across its tabs; drag that line to reorder the whole group, or
+  drag it out to move the group to another window — every member moves together. Right-click
+  the line to ungroup. Drag the gap between panes to resize. A group dissolves automatically
+  when it would drop to one member. A pane can't be split below about 20 columns × 5 rows.
+  Only the focused pane counts as "being looked at", so a side pane still gets the
+  ready-for-review dot and the state-change toast. The database schema moves to version 9
+  (backed up before migrating); an older build refuses to open it with a dialog rather than
+  corrupting it (see "Rollback safety").
 - **Focus flash on the session tab.** When a window gains focus (the session shortcut
   walking into another window, a mouse click into it, or Alt+Tab), its marked tab fades
   from a strong accent tint to the normal active-tab background over 1 second, to show

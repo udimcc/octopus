@@ -105,6 +105,20 @@ export interface Settings {
   readonly copyKey?: string
   readonly pasteKey?: string
   readonly issuesKey?: string
+  /**
+   * Split-pane chords (DESIGN §5.7), each bound independently like the chords
+   * above (no "opposite" inference): split the focused pane right / down with a
+   * NEW terminal, and move pane focus left / right / up / down. Defaults:
+   * split right/down 'Ctrl+Shift+KeyE' / 'Ctrl+Shift+KeyO'; focus pane
+   * left/right/up/down 'Ctrl+Shift+KeyH' / 'Ctrl+Shift+KeyL' /
+   * 'Ctrl+Shift+KeyK' / 'Ctrl+Shift+KeyJ'.
+   */
+  readonly splitRightKey?: string
+  readonly splitDownKey?: string
+  readonly focusPaneLeftKey?: string
+  readonly focusPaneRightKey?: string
+  readonly focusPaneUpKey?: string
+  readonly focusPaneDownKey?: string
 }
 
 /** A deep-partial patch for `save` (nested objects merged, not replaced). */
@@ -127,6 +141,12 @@ export interface SettingsPatch {
   readonly copyKey?: string
   readonly pasteKey?: string
   readonly issuesKey?: string
+  readonly splitRightKey?: string
+  readonly splitDownKey?: string
+  readonly focusPaneLeftKey?: string
+  readonly focusPaneRightKey?: string
+  readonly focusPaneUpKey?: string
+  readonly focusPaneDownKey?: string
 }
 
 export interface SettingsStore {

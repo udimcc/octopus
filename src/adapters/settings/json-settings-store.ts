@@ -58,7 +58,14 @@ export const DEFAULT_SETTINGS: Settings = Object.freeze({
   searchKey: 'Ctrl+Shift+KeyF',
   copyKey: 'Ctrl+Shift+KeyC',
   pasteKey: 'Ctrl+Shift+KeyV',
-  issuesKey: 'Alt+Shift+KeyI'
+  issuesKey: 'Alt+Shift+KeyI',
+  // Split panes (DESIGN §5.7).
+  splitRightKey: 'Ctrl+Shift+KeyE',
+  splitDownKey: 'Ctrl+Shift+KeyO',
+  focusPaneLeftKey: 'Ctrl+Shift+KeyH',
+  focusPaneRightKey: 'Ctrl+Shift+KeyL',
+  focusPaneUpKey: 'Ctrl+Shift+KeyK',
+  focusPaneDownKey: 'Ctrl+Shift+KeyJ'
 }) as Settings
 
 /**
@@ -153,7 +160,13 @@ export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
     searchKey: pickString(patch.searchKey, base.searchKey),
     copyKey: pickString(patch.copyKey, base.copyKey),
     pasteKey: pickString(patch.pasteKey, base.pasteKey),
-    issuesKey: pickString(patch.issuesKey, base.issuesKey)
+    issuesKey: pickString(patch.issuesKey, base.issuesKey),
+    splitRightKey: pickString(patch.splitRightKey, base.splitRightKey),
+    splitDownKey: pickString(patch.splitDownKey, base.splitDownKey),
+    focusPaneLeftKey: pickString(patch.focusPaneLeftKey, base.focusPaneLeftKey),
+    focusPaneRightKey: pickString(patch.focusPaneRightKey, base.focusPaneRightKey),
+    focusPaneUpKey: pickString(patch.focusPaneUpKey, base.focusPaneUpKey),
+    focusPaneDownKey: pickString(patch.focusPaneDownKey, base.focusPaneDownKey)
   }
 }
 

@@ -42,6 +42,7 @@ function task(id: string, over: Partial<TaskDTO> = {}): TaskDTO {
     sessions: [],
     position: 0,
     createdAt: 1000,
+    groups: [],
     ...over
   }
 }

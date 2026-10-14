@@ -150,6 +150,22 @@ describe('parseSettings (§6.3)', () => {
     const merged = mergeSettings(DEFAULT_SETTINGS, { issuesKey: 42 as unknown as string })
     expect(merged.issuesKey).toBe('Alt+Shift+KeyI')
   })
+
+  it('defaults the split-pane chords (DESIGN §5.7)', () => {
+    expect(DEFAULT_SETTINGS.splitRightKey).toBe('Ctrl+Shift+KeyE')
+    expect(DEFAULT_SETTINGS.splitDownKey).toBe('Ctrl+Shift+KeyO')
+    expect(DEFAULT_SETTINGS.focusPaneLeftKey).toBe('Ctrl+Shift+KeyH')
+    expect(DEFAULT_SETTINGS.focusPaneRightKey).toBe('Ctrl+Shift+KeyL')
+    expect(DEFAULT_SETTINGS.focusPaneUpKey).toBe('Ctrl+Shift+KeyK')
+    expect(DEFAULT_SETTINGS.focusPaneDownKey).toBe('Ctrl+Shift+KeyJ')
+    const s = parseSettings('{}')
+    expect(s.splitRightKey).toBe('Ctrl+Shift+KeyE')
+    expect(s.splitDownKey).toBe('Ctrl+Shift+KeyO')
+    expect(s.focusPaneLeftKey).toBe('Ctrl+Shift+KeyH')
+    expect(s.focusPaneRightKey).toBe('Ctrl+Shift+KeyL')
+    expect(s.focusPaneUpKey).toBe('Ctrl+Shift+KeyK')
+    expect(s.focusPaneDownKey).toBe('Ctrl+Shift+KeyJ')
+  })
 })
 
 describe('mergeSettings (deep-merge, §6.4)', () => {
@@ -183,6 +199,34 @@ describe('mergeSettings (deep-merge, §6.4)', () => {
     })
     expect(merged.defaultSessionTypeId).toBe('terminal')
     expect(merged.worktreeCreateTimeoutMs).toBeUndefined()
+  })
+
+  it('merges a split-pane chord patch, leaving the other split-pane keys untouched', () => {
+    const merged = mergeSettings(DEFAULT_SETTINGS, {
+      splitRightKey: 'Alt+KeyR',
+      focusPaneUpKey: 'Alt+KeyK'
+    })
+    expect(merged.splitRightKey).toBe('Alt+KeyR')
+    expect(merged.focusPaneUpKey).toBe('Alt+KeyK')
+    // Siblings preserved.
+    expect(merged.splitDownKey).toBe('Ctrl+Shift+KeyO')
+    expect(merged.focusPaneLeftKey).toBe('Ctrl+Shift+KeyH')
+    expect(merged.focusPaneRightKey).toBe('Ctrl+Shift+KeyL')
+    expect(merged.focusPaneDownKey).toBe('Ctrl+Shift+KeyJ')
+
+    // A second patch touching only one key doesn't disturb the first patch's key.
+    const next = mergeSettings(merged, { focusPaneDownKey: 'Alt+KeyJ' })
+    expect(next.splitRightKey).toBe('Alt+KeyR')
+    expect(next.focusPaneDownKey).toBe('Alt+KeyJ')
+  })
+
+  it('ignores wrong-typed split-pane chord values, keeping the base', () => {
+    const merged = mergeSettings(DEFAULT_SETTINGS, {
+      splitRightKey: 123 as unknown as string,
+      focusPaneLeftKey: null as unknown as string
+    })
+    expect(merged.splitRightKey).toBe('Ctrl+Shift+KeyE')
+    expect(merged.focusPaneLeftKey).toBe('Ctrl+Shift+KeyH')
   })
 
   it('groupTasksByRepo defaults to true and toggles to false through a patch', () => {
@@ -337,6 +381,21 @@ describe('JsonSettingsStore (I16 — no secrets, atomic write)', () => {
     const onDisk = parseSettings(readFileSync(path, 'utf8'))
     expect(onDisk.worktree).toEqual({ location: '/opt/worktrees' })
     expect(onDisk.terminal.shell).toBe('/bin/zsh')
+  })
+
+  it('persists a split-pane chord save and reloads it from disk (§5.7)', () => {
+    const store = new JsonSettingsStore(path)
+    store.load()
+    const saved = store.save({ splitRightKey: 'Alt+KeyR', focusPaneDownKey: 'Alt+KeyJ' })
+    expect(saved.splitRightKey).toBe('Alt+KeyR')
+    expect(saved.focusPaneDownKey).toBe('Alt+KeyJ')
+    // Untouched split-pane keys keep their default.
+    expect(saved.splitDownKey).toBe('Ctrl+Shift+KeyO')
+
+    const reopened = new JsonSettingsStore(path)
+    const loaded = reopened.load()
+    expect(loaded.splitRightKey).toBe('Alt+KeyR')
+    expect(loaded.focusPaneDownKey).toBe('Alt+KeyJ')
   })
 
   it('degrades a corrupt file to defaults on load', () => {

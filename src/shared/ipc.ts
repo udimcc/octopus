@@ -30,6 +30,11 @@ import type {
   SessionCwdInput,
   RefreshSessionStateInput,
   MarkSessionSeenInput,
+  JoinGroupInput,
+  LeaveGroupInput,
+  UngroupInput,
+  ReorderGroupInput,
+  ResizeGroupInput,
   CreateWindowInput,
   CloseWindowInput,
   MoveSessionInput,
@@ -102,6 +107,13 @@ export const CHANNELS = {
    * routed through the command loop so it orders against close/create.
    */
   sessionRefreshState: 'session:refreshState',
+
+  // Group commands (UI → backend, request/reply) (DESIGN §5.7).
+  groupJoin: 'group:join',
+  groupLeave: 'group:leave',
+  groupUngroup: 'group:ungroup',
+  groupReorder: 'group:reorder',
+  groupResize: 'group:resize',
 
   // Window commands (UI → backend, request/reply) (V1.5, §6.7).
   windowCreate: 'window:create',
@@ -254,6 +266,25 @@ export interface OctopusAPI {
      * no event, no window raise (use `switch` for a user-driven switch).
      */
     focus(input: FocusSessionInput): void
+  }
+
+  /**
+   * Split-pane group commands (DESIGN §5.7). Unlike `sessions.focus`/`markSeen`,
+   * these mutate the `Task` aggregate, so — like other mutating commands — each
+   * resolves to a `CommandAck` and the result arrives as a `groupsChanged` event
+   * (plus `sessionReordered` when membership changes order), not in the ack.
+   */
+  groups: {
+    /** Join a session into the anchor's group next to its pane, forming one if lone. */
+    join(input: JoinGroupInput): Promise<CommandAck>
+    /** Remove a session from its group; it becomes lone. Dissolves a group of 2. */
+    leave(input: LeaveGroupInput): Promise<CommandAck>
+    /** Dissolve a group entirely; every member becomes lone, tabs stay in place. */
+    ungroup(input: UngroupInput): Promise<CommandAck>
+    /** Move a group's whole block of tabs so its first member lands at `toIndex`. */
+    reorder(input: ReorderGroupInput): Promise<CommandAck>
+    /** Set a group's split ratio at `path` (sent once, on drag release). */
+    resize(input: ResizeGroupInput): Promise<CommandAck>
   }
 
   /** Multi-window control (V1.5, §5.6, §6.7). */

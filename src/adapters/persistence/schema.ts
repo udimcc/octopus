@@ -33,11 +33,17 @@
  * worktree-less task; its row stores `worktree = ''` and `repo_less = 1`); 7 → 8
  * (I19) to add the `issues` table — a locally-tracked work item optionally bound
  * 1:1 to a task via the UNIQUE, nullable `issues.task_id`, `ON DELETE SET NULL` so
- * deleting a task frees its issue instead of orphaning the FK.
+ * deleting a task frees its issue instead of orphaning the FK; 8 → 9 to add the
+ * `session_groups` table (DESIGN §5.7, §6.3 — split groups: 2+ sessions of one
+ * task, in one window, sharing a layout tree and a palette color; one row per
+ * group, `layout` an opaque JSON blob of the domain's `GroupTree` the backend never
+ * interprets, membership is the tree's leaves). An unshipped dev build stamped v8
+ * with a `split_layouts` table (the first, per-task-per-window split-pane version)
+ * and no `issues` table; v9 drops the former and creates the latter if missing.
  * `SqliteStore` runs the guarded migrations when an older DB opens (see
  * {@link MIGRATIONS}).
  */
-export const SCHEMA_VERSION = 8
+export const SCHEMA_VERSION = 9
 
 /**
  * Connection pragmas applied on every open. `foreign_keys` is per-connection
@@ -121,7 +127,26 @@ export const SCHEMA_STATEMENTS: readonly string[] = Object.freeze([
      task_id TEXT UNIQUE REFERENCES tasks(id) ON DELETE SET NULL,
      created_at INTEGER NOT NULL,
      updated_at INTEGER NOT NULL
-   )`
+   )`,
+  // Split groups (DESIGN §5.7): 2+ sessions of one task, in one window, sharing a
+  // layout tree and a palette color. `layout` is an opaque JSON blob (the domain's
+  // `GroupTree`, leaves are member session ids) the backend never interprets, like
+  // window bounds being presentation-only. `task_id` cascades: deleting the task
+  // drops its groups with no explicit cleanup, mirroring `session_scrollback`'s
+  // cascade-on-session-delete above. `color` is the palette index
+  // (`0..GROUP_COLOR_PALETTE_SIZE-1`, §5.7); the backend assigns and persists it.
+  `CREATE TABLE IF NOT EXISTS session_groups (
+     id TEXT PRIMARY KEY,
+     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     layout TEXT NOT NULL,
+     color INTEGER NOT NULL
+   )`,
+  // Fetching a task's groups is a hot read on load too: `SqliteStore.load`
+  // orders this table by `task_id` (then `rowid` as a tiebreak, since groups
+  // have no `position`-like column of their own, unlike `idx_sessions_task`'s
+  // sessions), so this index serves that scan the same way idx_sessions_task
+  // serves the sessions one.
+  `CREATE INDEX IF NOT EXISTS idx_session_groups_task ON session_groups(task_id)`
 ])
 
 /** `app_state` key holding the single active-task pointer (§6.3). */
@@ -227,6 +252,35 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
          created_at INTEGER NOT NULL,
          updated_at INTEGER NOT NULL
        )`
+    ])
+  },
+  // v9 (DESIGN §5.7): split groups. The CREATEs mirror the fresh-DB DDL above
+  // exactly, so they are safe to re-run under the `user_version` guard. No existing
+  // row needs to migrate — an older DB simply has no groups yet, which is exactly
+  // "no splits" for every task. The `issues` CREATE re-runs v8's DDL to heal an
+  // unshipped dev DB that a split-pane build stamped v8 without that table, and the
+  // DROP sheds that build's `split_layouts` table; both no-op on a real v8 DB.
+  {
+    toVersion: 9,
+    statements: Object.freeze([
+      `CREATE TABLE IF NOT EXISTS issues (
+         id TEXT PRIMARY KEY,
+         name TEXT NOT NULL,
+         description TEXT NOT NULL DEFAULT '',
+         project_path TEXT,
+         status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo','in_progress','in_review','done')),
+         task_id TEXT UNIQUE REFERENCES tasks(id) ON DELETE SET NULL,
+         created_at INTEGER NOT NULL,
+         updated_at INTEGER NOT NULL
+       )`,
+      `CREATE TABLE IF NOT EXISTS session_groups (
+         id TEXT PRIMARY KEY,
+         task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+         layout TEXT NOT NULL,
+         color INTEGER NOT NULL
+       )`,
+      `CREATE INDEX IF NOT EXISTS idx_session_groups_task ON session_groups(task_id)`,
+      'DROP TABLE IF EXISTS split_layouts'
     ])
   }
 ])

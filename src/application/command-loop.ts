@@ -32,6 +32,11 @@ import { focusSession } from './use-cases/focus-session'
 import { closeSession } from './use-cases/close-session'
 import { renameSession } from './use-cases/rename-session'
 import { reorderSession } from './use-cases/reorder-session'
+import { joinGroup } from './use-cases/join-group'
+import { leaveGroup } from './use-cases/leave-group'
+import { ungroup } from './use-cases/ungroup'
+import { reorderGroup } from './use-cases/reorder-group'
+import { resizeGroup } from './use-cases/resize-group'
 import { writeToPty, resizePty } from './use-cases/pty-io'
 import { updateSettings } from './use-cases/update-settings'
 import { handleRuntimeExit } from './use-cases/handle-runtime-exit'
@@ -133,6 +138,21 @@ export class CommandLoop {
         return OK
       case 'reorderSession':
         reorderSession(this.deps, command.input)
+        return OK
+      case 'joinGroup':
+        joinGroup(this.deps, command.input)
+        return OK
+      case 'leaveGroup':
+        leaveGroup(this.deps, command.input)
+        return OK
+      case 'ungroup':
+        ungroup(this.deps, command.input)
+        return OK
+      case 'reorderGroup':
+        reorderGroup(this.deps, command.input)
+        return OK
+      case 'resizeGroup':
+        resizeGroup(this.deps, command.input)
         return OK
       case 'writeToPty':
         writeToPty(this.deps, command.input)

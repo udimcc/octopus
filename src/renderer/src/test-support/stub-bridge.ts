@@ -51,60 +51,64 @@ export function makeStubBridge(options?: {
 }): StubBridge {
   const listeners = new Set<(event: EventDTO) => void>()
   const ackImpl = options?.ack ?? (() => ({ ok: true }) as CommandAck)
-  // Always resolve to a Promise so callers can `.then(...)` even when a test's
-  // custom ack returns a plain object.
-  const ack = vi.fn(() => Promise.resolve(ackImpl()))
-  // Separate mocks (not the shared `ack` tasks.create/etc. use) so a test can
-  // assert on one project mutation's call count/args without it being muddied
-  // by other command dispatches that happen to share the same default ack.
-  const projectAdd = vi.fn(() => Promise.resolve(ackImpl()))
-  const projectRemove = vi.fn(() => Promise.resolve(ackImpl()))
-  const projectSetDefaultBranch = vi.fn(() => Promise.resolve(ackImpl()))
-  // Separate mocks (not the shared `ack`) for the same reason as the project ones
-  // above — a test can assert on one issue mutation without it being muddied by
-  // other command dispatches that happen to share the same default ack.
-  const issueCreate = vi.fn(() => Promise.resolve(ackImpl()))
-  const issueUpdate = vi.fn(() => Promise.resolve(ackImpl()))
-  const issueDelete = vi.fn(() => Promise.resolve(ackImpl()))
-  const issueBind = vi.fn(() => Promise.resolve(ackImpl()))
-  const issueUnbind = vi.fn(() => Promise.resolve(ackImpl()))
+  // A FRESH `vi.fn` per command channel — each resolves to a Promise so callers can
+  // `.then(...)` even when a test's custom ack returns a plain object. One shared `vi.fn`
+  // backing every channel would hide a miswire (e.g. "Remove from group" wired to
+  // `sessions.close` would still pass `expect(sessions.close).toHaveBeenCalled()`, since
+  // it's literally the same mock object as every other channel) — see split-groups design
+  // review. `ackImpl` is still shared so a test's custom ack (e.g. `{ ok: false }`) applies
+  // uniformly across channels without re-specifying it per call.
+  const newAck = (): ReturnType<typeof vi.fn> => vi.fn(() => Promise.resolve(ackImpl()))
   const state = options?.state ?? EMPTY_STATE
   const windowId = options?.windowId ?? state.thisWindowId
 
   const api: OctopusAPI = {
     ping: vi.fn().mockResolvedValue('pong'),
-    tasks: { create: ack, delete: ack, rename: ack, reorder: ack, switch: ack },
+    tasks: {
+      create: newAck(),
+      delete: newAck(),
+      rename: newAck(),
+      reorder: newAck(),
+      switch: newAck()
+    },
     sessions: {
-      create: ack,
-      close: ack,
-      switch: ack,
-      rename: ack,
-      reorder: ack,
-      move: ack,
+      create: newAck(),
+      close: newAck(),
+      switch: newAck(),
+      rename: newAck(),
+      reorder: newAck(),
+      move: newAck(),
       cwd: vi.fn().mockResolvedValue(null),
       refreshState: vi.fn(),
       markSeen: vi.fn(),
       focus: vi.fn()
     },
+    groups: {
+      join: newAck(),
+      leave: newAck(),
+      ungroup: newAck(),
+      reorder: newAck(),
+      resize: newAck()
+    },
     windows: {
-      create: ack,
-      close: ack,
-      createWithSession: ack,
+      create: newAck(),
+      close: newAck(),
+      createWithSession: newAck(),
       windowAtPoint: vi.fn().mockResolvedValue(null)
     },
     pty: { write: vi.fn(), resize: vi.fn() },
     app: {
       getState: vi.fn().mockResolvedValue(state),
-      updateSettings: ack,
+      updateSettings: newAck(),
       getWindowId: vi.fn(() => windowId),
       getVersion: vi.fn().mockResolvedValue('0.0.0-test')
     },
     dialog: { pickDirectory: vi.fn().mockResolvedValue(undefined) },
     projects: {
       list: vi.fn().mockResolvedValue([]),
-      add: projectAdd,
-      remove: projectRemove,
-      setDefaultBranch: projectSetDefaultBranch,
+      add: newAck(),
+      remove: newAck(),
+      setDefaultBranch: newAck(),
       listWorktrees: vi.fn().mockResolvedValue([])
     },
     clipboard: {
@@ -112,11 +116,11 @@ export function makeStubBridge(options?: {
       write: vi.fn().mockResolvedValue(undefined)
     },
     issues: {
-      create: issueCreate,
-      update: issueUpdate,
-      delete: issueDelete,
-      bind: issueBind,
-      unbind: issueUnbind,
+      create: newAck(),
+      update: newAck(),
+      delete: newAck(),
+      bind: newAck(),
+      unbind: newAck(),
       toggleDrawer: vi.fn()
     },
     shell: {

@@ -80,6 +80,29 @@ export interface TaskDTO {
   readonly activeSessionId?: string
   readonly position: number
   readonly createdAt: number
+  /**
+   * This task's split-pane groups (DESIGN §5.7), backend-owned (`Task` aggregate).
+   * ALWAYS present — empty when the task has no grouped sessions — rather than
+   * optional: the renderer never has to distinguish "not loaded yet" from "no
+   * groups", so every reducer and selector treats it as a plain array. A session
+   * is a member of at most one group (`GroupDTO.layout`'s leaves); a session
+   * absent from every group is lone and shows alone (§3.7).
+   */
+  readonly groups: readonly GroupDTO[]
+}
+
+/**
+ * One split-pane group (DESIGN §5.7): 2+ sessions of `TaskDTO`'s task, in one
+ * window, with their own layout tree and a persisted color. `layout`'s leaves
+ * ARE the membership — there is no separate member list. `colorIndex` indexes
+ * the renderer's fixed group-color palette (`src/renderer/src/style/tokens.ts`,
+ * added in a later wave); assigned once at group creation and stable until the
+ * group dissolves.
+ */
+export interface GroupDTO {
+  readonly id: string
+  readonly layout: SplitNode
+  readonly colorIndex: number
 }
 
 /** A session type as shown in the New-Session dropdown (§5.4, §8). */
@@ -126,6 +149,17 @@ export interface SettingsDTO {
   readonly pasteKey?: string
   /** Toggle the Issues drawer ("Issues", §13.5); default `'Alt+Shift+KeyI'`. */
   readonly issuesKey?: string
+  /**
+   * Split-pane chords (DESIGN §5.7), each bound independently like the chords
+   * above: split the focused pane right / down with a new terminal, and move
+   * pane focus left / right / up / down.
+   */
+  readonly splitRightKey?: string
+  readonly splitDownKey?: string
+  readonly focusPaneLeftKey?: string
+  readonly focusPaneRightKey?: string
+  readonly focusPaneUpKey?: string
+  readonly focusPaneDownKey?: string
 }
 
 /** A deep-partial settings patch (nested objects merged, not replaced). */
@@ -153,6 +187,12 @@ export interface SettingsPatchDTO {
   readonly pasteKey?: string
   /** Toggle the Issues drawer ("Issues", §13.5); default `'Alt+Shift+KeyI'`. */
   readonly issuesKey?: string
+  readonly splitRightKey?: string
+  readonly splitDownKey?: string
+  readonly focusPaneLeftKey?: string
+  readonly focusPaneRightKey?: string
+  readonly focusPaneUpKey?: string
+  readonly focusPaneDownKey?: string
 }
 
 /** Full workspace snapshot for renderer hydration on startup (§5.2). */
@@ -167,6 +207,39 @@ export interface WorkspaceStateDTO {
   /** All locally-tracked issues ("Issues", §13.1). No guaranteed order; the renderer sorts for display. */
   readonly issues: readonly IssueDTO[]
 }
+
+/**
+ * Recursive split-pane layout tree (DESIGN §5.7 Split panes). A `leaf` names the
+ * session shown in that pane; a `split` divides its area in two along `dir`
+ * ('row' = children side by side, a left/b right — "split right"; 'col' =
+ * stacked, a top/b bottom — "split down") at `ratio` (a's share, clamped
+ * 0.1–0.9). This is now the layout of a backend-owned `GroupDTO` (above) rather
+ * than an opaque per-window blob: the domain mutates its own tree type (it
+ * cannot import `shared`) and `main`'s mapper translates to/from this shape at
+ * the boundary. Geometry derived from a tree — boxes, neighbor lookup, the
+ * minimum-size check, a drag's local ratio preview — stays a pure renderer
+ * module (`renderer/src/store/split-layout.ts`); the renderer never mutates the
+ * tree itself, it only sends `groups.resize`/`groups.join`/etc.
+ */
+export type SplitDirection = 'row' | 'col'
+
+export type SplitNode =
+  | { readonly kind: 'leaf'; readonly sessionId: string }
+  | {
+      readonly kind: 'split'
+      readonly dir: SplitDirection
+      readonly ratio: number
+      readonly a: SplitNode
+      readonly b: SplitNode
+    }
+
+/**
+ * A root-to-split-node path within a {@link SplitNode} tree: 'a' or 'b' at each
+ * level, identifying one split node (for `ResizeGroupInput.path`). Mirrors
+ * `renderer/src/store/split-layout.ts`'s `SplitPath` exactly, declared here so
+ * the renderer can eventually import this one instead of its own copy.
+ */
+export type SplitPath = readonly ('a' | 'b')[]
 
 /** A persisted OS window on the wire (V1.5, §6.7). Mirror of `WindowRecord`. */
 export interface WindowDTO {
@@ -193,6 +266,15 @@ export interface WindowedWorkspaceStateDTO extends WorkspaceStateDTO {
   readonly thisWindowId: string
   readonly thisWindowRole: 'main' | 'secondary'
   readonly windows: readonly WindowDTO[]
+  /**
+   * Set only for a window created to show a detached session
+   * (`windows.createWithSession`): the session this window should mark first on
+   * hydrate, overriding the task's persisted focused session. One-shot: returned
+   * by the window's first `getState` only — `main` deletes its registry entry
+   * right after reading it, so a later re-hydrate (SettingsModal, or a renderer
+   * crash-reload) does not replay the detach-time session.
+   */
+  readonly initialMark?: { readonly taskId: string; readonly sessionId: string }
 }
 
 // ── Projects (§5.4, §6.3) ──────────────────────────────────────────────────────
@@ -393,6 +475,17 @@ export interface CreateSessionInput {
   readonly title?: string
   /** Optional config; omitted → the provider's `defaultConfig(worktree)` (§8). */
   readonly config?: SessionConfigDTO
+  /**
+   * Split intent (DESIGN §5.7): create the session already joined into
+   * `anchorSessionId`'s group, next to its pane, along `dir` — forming a new
+   * group if the anchor is currently lone. Lets the split shortcuts create the
+   * terminal and join it in one command, instead of create-then-join as two
+   * round trips with a renderer-held "pending split" in between.
+   */
+  readonly split?: {
+    readonly anchorSessionId: string
+    readonly dir: SplitDirection
+  }
 }
 
 export interface CloseSessionInput {
@@ -444,6 +537,56 @@ export interface ReorderSessionInput {
   readonly taskId: string
   readonly sessionId: string
   readonly toIndex: number
+}
+
+// ── Group command inputs (DESIGN §5.7) ────────────────────────────────────────
+
+/**
+ * Join `sessionId` into `anchorSessionId`'s group, next to its pane, along `dir`
+ * (forming a new group if the anchor is currently lone). If `sessionId` already
+ * belongs to another group it leaves that group first (dissolving it if that
+ * drops it to 1 member) — a session is in at most one group.
+ */
+export interface JoinGroupInput {
+  readonly sessionId: string
+  readonly anchorSessionId: string
+  readonly dir: SplitDirection
+}
+
+/**
+ * Remove `sessionId` from its group; it becomes lone again, its tab placed
+ * right after the group. A group left with one member dissolves. `sessionId`
+ * must currently be in a group — the backend's `Task.leave` throws
+ * `InvariantViolationError` otherwise, which the command loop turns into
+ * `{ ok: false }` rather than a no-op (see `application/use-cases/leave-group.ts`).
+ */
+export interface LeaveGroupInput {
+  readonly sessionId: string
+}
+
+/** Dissolve `groupId` entirely: every member becomes lone, tabs stay in place. */
+export interface UngroupInput {
+  readonly taskId: string
+  readonly groupId: string
+}
+
+/**
+ * Move `groupId`'s whole block of member tabs so its first member lands at
+ * `toIndex` in the task's full session order (members stay contiguous and in
+ * their existing relative order).
+ */
+export interface ReorderGroupInput {
+  readonly taskId: string
+  readonly groupId: string
+  readonly toIndex: number
+}
+
+/** Set the ratio of `groupId`'s split node at `path` (sent once, on drag release). */
+export interface ResizeGroupInput {
+  readonly taskId: string
+  readonly groupId: string
+  readonly path: SplitPath
+  readonly ratio: number
 }
 
 // ── Window command inputs (V1.5, §5.6, §6.7) ──────────────────────────────────

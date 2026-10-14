@@ -46,6 +46,14 @@ function listenerFor(channel: string): (event: unknown, input: unknown) => void 
   return call[1] as (event: unknown, input: unknown) => void
 }
 
+/**
+ * Minimal deps: `registerIpcHandlers` subscribes to the bus at registration (to drop a
+ * pending `initialMark` when its window closes, §5.7); nothing here reads anything else.
+ */
+function noDeps(): AppDependencies {
+  return { bus: { subscribe: vi.fn() } } as unknown as AppDependencies
+}
+
 /** A fake command loop that records every dispatched command and acks `{ ok: true }`. */
 function fakeLoop(): { loop: CommandLoop; dispatched: Command[] } {
   const dispatched: Command[] = []
@@ -91,7 +99,7 @@ describe('issue status validation at the IPC edge ("Issues", §13.4)', () => {
     const fake = fakeLoop()
     loop = fake.loop
     dispatched = fake.dispatched
-    registerIpcHandlers(loop, {} as unknown as AppDependencies, hooks)
+    registerIpcHandlers(loop, noDeps(), hooks)
   })
 
   describe('issue:create', () => {
@@ -236,7 +244,7 @@ describe('ipc-handlers field forwarding and command mapping (I4)', () => {
 
   it('ack() copies issueId through from a CommandResult that sets it', async () => {
     const { loop } = scriptedLoop([{ ok: true, issueId: asIssueId('issue-42') }])
-    registerIpcHandlers(loop, {} as unknown as AppDependencies, hooks)
+    registerIpcHandlers(loop, noDeps(), hooks)
     const create = handlerFor(CHANNELS.issueCreate)
 
     const result = (await create({}, { name: 'n', description: 'd' })) as {
@@ -249,7 +257,7 @@ describe('ipc-handlers field forwarding and command mapping (I4)', () => {
 
   it('taskCreate maps a provided issueId string to a branded IssueId in the dispatched command', async () => {
     const { loop, dispatched } = fakeLoop()
-    registerIpcHandlers(loop, {} as unknown as AppDependencies, hooks)
+    registerIpcHandlers(loop, noDeps(), hooks)
     const create = handlerFor(CHANNELS.taskCreate)
 
     await create({}, { mode: 'none', name: 'n', issueId: 'issue-7' })
@@ -260,7 +268,7 @@ describe('ipc-handlers field forwarding and command mapping (I4)', () => {
 
   it('taskCreate leaves issueId undefined when omitted, rather than coercing it to a branded value', async () => {
     const { loop, dispatched } = fakeLoop()
-    registerIpcHandlers(loop, {} as unknown as AppDependencies, hooks)
+    registerIpcHandlers(loop, noDeps(), hooks)
     const create = handlerFor(CHANNELS.taskCreate)
 
     await create({}, { mode: 'none', name: 'n' })
@@ -271,7 +279,7 @@ describe('ipc-handlers field forwarding and command mapping (I4)', () => {
 
   it('taskDelete forwards alsoDeleteIssue through to the dispatched command input', async () => {
     const { loop, dispatched } = fakeLoop()
-    registerIpcHandlers(loop, {} as unknown as AppDependencies, hooks)
+    registerIpcHandlers(loop, noDeps(), hooks)
     const del = handlerFor(CHANNELS.taskDelete)
 
     await del({}, { taskId: 't1', alsoDeleteIssue: true })
@@ -284,7 +292,7 @@ describe('ipc-handlers field forwarding and command mapping (I4)', () => {
 
   it('issueDelete maps issueId to the dispatched deleteIssue command', async () => {
     const { loop, dispatched } = fakeLoop()
-    registerIpcHandlers(loop, {} as unknown as AppDependencies, hooks)
+    registerIpcHandlers(loop, noDeps(), hooks)
     const del = handlerFor(CHANNELS.issueDelete)
 
     await del({}, { issueId: 'issue-1' })
@@ -294,7 +302,7 @@ describe('ipc-handlers field forwarding and command mapping (I4)', () => {
 
   it('issueBind maps issueId and taskId to the dispatched bindIssue command', async () => {
     const { loop, dispatched } = fakeLoop()
-    registerIpcHandlers(loop, {} as unknown as AppDependencies, hooks)
+    registerIpcHandlers(loop, noDeps(), hooks)
     const bind = handlerFor(CHANNELS.issueBind)
 
     await bind({}, { issueId: 'issue-1', taskId: 'task-1' })
@@ -308,7 +316,7 @@ describe('ipc-handlers field forwarding and command mapping (I4)', () => {
   // command shape, including `null` vs `undefined` on `projectPath`.
   it('issueUpdate forwards an explicit projectPath: null through, not undefined', async () => {
     const { loop, dispatched } = fakeLoop()
-    registerIpcHandlers(loop, {} as unknown as AppDependencies, hooks)
+    registerIpcHandlers(loop, noDeps(), hooks)
     const update = handlerFor(CHANNELS.issueUpdate)
 
     await update({}, { issueId: 'i1', name: 'n', description: 'd', projectPath: null })
@@ -329,7 +337,7 @@ describe('ipc-handlers field forwarding and command mapping (I4)', () => {
 
   it('issueUpdate leaves projectPath undefined (not null) when omitted', async () => {
     const { loop, dispatched } = fakeLoop()
-    registerIpcHandlers(loop, {} as unknown as AppDependencies, hooks)
+    registerIpcHandlers(loop, noDeps(), hooks)
     const update = handlerFor(CHANNELS.issueUpdate)
 
     await update({}, { issueId: 'i1', name: 'n', description: 'd' })
@@ -350,7 +358,7 @@ describe('ipc-handlers field forwarding and command mapping (I4)', () => {
 
   it('issueCreate forwards name/description/projectPath/status exactly', async () => {
     const { loop, dispatched } = fakeLoop()
-    registerIpcHandlers(loop, {} as unknown as AppDependencies, hooks)
+    registerIpcHandlers(loop, noDeps(), hooks)
     const create = handlerFor(CHANNELS.issueCreate)
 
     await create({}, { name: 'n', description: 'd', projectPath: '/repo', status: 'todo' })
@@ -365,7 +373,7 @@ describe('ipc-handlers field forwarding and command mapping (I4)', () => {
 
   it('issueUnbind maps issueId to the dispatched unbindIssue command', async () => {
     const { loop, dispatched } = fakeLoop()
-    registerIpcHandlers(loop, {} as unknown as AppDependencies, hooks)
+    registerIpcHandlers(loop, noDeps(), hooks)
     const unbind = handlerFor(CHANNELS.issueUnbind)
 
     await unbind({}, { issueId: 'issue-1' })
@@ -376,7 +384,7 @@ describe('ipc-handlers field forwarding and command mapping (I4)', () => {
   it('issuesToggleDrawer listener calls the toggleIssuesDrawer hook', () => {
     const { loop } = fakeLoop()
     const toggleIssuesDrawer = vi.fn()
-    registerIpcHandlers(loop, {} as unknown as AppDependencies, { ...hooks, toggleIssuesDrawer })
+    registerIpcHandlers(loop, noDeps(), { ...hooks, toggleIssuesDrawer })
     const listener = listenerFor(CHANNELS.issuesToggleDrawer)
 
     listener({}, undefined)
@@ -386,7 +394,7 @@ describe('ipc-handlers field forwarding and command mapping (I4)', () => {
 
   it('shellOpenExternal calls through to openExternalSafely, opening a valid https URL', async () => {
     const { loop } = fakeLoop()
-    registerIpcHandlers(loop, {} as unknown as AppDependencies, hooks)
+    registerIpcHandlers(loop, noDeps(), hooks)
     ;(shell.openExternal as Mock).mockClear()
     ;(shell.openExternal as Mock).mockResolvedValueOnce(undefined)
     const openExternalHandler = handlerFor(CHANNELS.shellOpenExternal)
@@ -399,7 +407,7 @@ describe('ipc-handlers field forwarding and command mapping (I4)', () => {
 
   it('shellOpenExternal never reaches shell.openExternal for a non-http(s) URL', async () => {
     const { loop } = fakeLoop()
-    registerIpcHandlers(loop, {} as unknown as AppDependencies, hooks)
+    registerIpcHandlers(loop, noDeps(), hooks)
     ;(shell.openExternal as Mock).mockClear()
     const openExternalHandler = handlerFor(CHANNELS.shellOpenExternal)
 
@@ -419,7 +427,7 @@ describe('ipc-handlers field forwarding and command mapping (I4)', () => {
     'shellOpenExternal returns false and never calls shell.openExternal for %s',
     async (_label, payload) => {
       const { loop } = fakeLoop()
-      registerIpcHandlers(loop, {} as unknown as AppDependencies, hooks)
+      registerIpcHandlers(loop, noDeps(), hooks)
       ;(shell.openExternal as Mock).mockClear()
       const openExternalHandler = handlerFor(CHANNELS.shellOpenExternal)
 

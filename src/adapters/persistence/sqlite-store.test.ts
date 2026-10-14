@@ -1,13 +1,24 @@
 import { describe, it, expect, vi } from 'vitest'
 import { SqliteStore } from './sqlite-store'
 import { IncompatibleDbError } from './errors'
+import { SCHEMA_STATEMENTS, MIGRATIONS } from './schema'
 import type { SqliteDb, SqliteStatement } from './sqlite-db'
 import type { TaskRow, SessionRow, IssueRow } from './mappers'
-import { asTaskId, asSessionId, asTypeId, asIssueId } from '../../domain/ids'
+import { asTaskId, asSessionId, asTypeId, asIssueId, asGroupId } from '../../domain/ids'
 import { TaskState, SessionState } from '../../domain/state'
 import { TaskLifecycle, SessionLifecycle } from '../../domain/lifecycle'
-import type { TaskSnapshot, SessionSnapshot, IssueSnapshot } from '../../domain/snapshots'
+import type {
+  TaskSnapshot,
+  SessionSnapshot,
+  IssueSnapshot,
+  GroupSnapshot
+} from '../../domain/snapshots'
 import { IssueStatus } from '../../domain/issue'
+
+/** Collapse all whitespace runs to a single space, for whitespace-tolerant DDL comparison. */
+function normalizeDdl(sql: string): string {
+  return sql.replace(/\s+/g, ' ').trim()
+}
 
 /**
  * A scriptable fake `SqliteDb`. It cannot execute SQL, so it records every call
@@ -68,7 +79,12 @@ class FakeDb implements SqliteDb {
     }
     return {
       run,
-      all: () => canned,
+      // Record `all` calls too (not just `run`), so a read's bound params (e.g.
+      // `loadSplitLayouts(windowId)`'s scoping param) are assertable like a write's.
+      all: (...params: unknown[]) => {
+        this.runs.push({ sql, params: params.length === 1 ? params[0] : params })
+        return canned
+      },
       get: () => canned[0]
     }
   }
@@ -123,6 +139,15 @@ function issueSnapshot(over: Partial<IssueSnapshot> = {}): IssueSnapshot {
   }
 }
 
+function groupSnapshot(over: Partial<GroupSnapshot> = {}): GroupSnapshot {
+  return {
+    id: asGroupId('g1'),
+    tree: { kind: 'leaf', sessionId: asSessionId('s1') },
+    colorIndex: 0,
+    ...over
+  }
+}
+
 describe('SqliteStore.create (§6.3)', () => {
   it('applies connection pragmas and creates the schema before returning', () => {
     const db = new FakeDb()
@@ -136,6 +161,13 @@ describe('SqliteStore.create (§6.3)', () => {
       true
     )
     expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS issues'))).toBe(true)
+    // §5.7: a fresh DB has the session_groups table from the start, same as every
+    // other table — no migration needed for a brand-new install, and so no v9
+    // `DROP TABLE IF EXISTS split_layouts` either (that table never existed here).
+    expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS session_groups'))).toBe(
+      true
+    )
+    expect(db.execed.some((s) => s.includes('split_layouts'))).toBe(false)
     expect(db.pragmas.some((p) => p.startsWith('user_version ='))).toBe(true)
   })
 
@@ -146,7 +178,7 @@ describe('SqliteStore.create (§6.3)', () => {
     const db = new FakeDb()
     SqliteStore.create(db)
     expect(db.execed.some((s) => s.includes('ADD COLUMN base_ref'))).toBe(false)
-    expect(db.pragmas).toContain('user_version = 8')
+    expect(db.pragmas).toContain('user_version = 9')
   })
 
   it('runs the pending migrations on a pre-existing older DB (base_ref + session_scrollback)', () => {
@@ -156,7 +188,7 @@ describe('SqliteStore.create (§6.3)', () => {
     db.stub('sqlite_master', [{ name: 'tasks' }])
     SqliteStore.create(db)
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN base_ref'))).toBe(true)
-    expect(db.pragmas).toContain('user_version = 8')
+    expect(db.pragmas).toContain('user_version = 9')
   })
 
   it('runs ONLY the v3 migration on a v2 DB (skips the already-applied v2 ALTER)', () => {
@@ -173,7 +205,7 @@ describe('SqliteStore.create (§6.3)', () => {
     expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS session_scrollback'))).toBe(
       true
     )
-    expect(db.pragmas).toContain('user_version = 8')
+    expect(db.pragmas).toContain('user_version = 9')
   })
 
   it('runs ONLY the v4 migration on a v3 DB (adds window_id + windows, seeds main)', () => {
@@ -190,10 +222,10 @@ describe('SqliteStore.create (§6.3)', () => {
     )
     expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS windows'))).toBe(true)
     expect(db.execed.some((s) => s.includes('INSERT OR IGNORE INTO windows'))).toBe(true)
-    expect(db.pragmas).toContain('user_version = 8')
+    expect(db.pragmas).toContain('user_version = 9')
   })
 
-  it('runs the v5 + v6 + v7 + v8 migrations on a v4 DB (managed + back-fill, last_cwd, repo_less, issues)', () => {
+  it('runs the v5 + v6 + v7 + v8 + v9 migrations on a v4 DB (managed + back-fill, last_cwd, repo_less, issues, session_groups)', () => {
     // A pre-existing DB stamped at user_version 4 (pre-adopted-repo): the v5
     // migration (tasks.managed ALTER + base_ref-null back-fill), the v6 migration
     // (sessions.last_cwd ALTER), the v7 migration (tasks.repo_less ALTER), and now
@@ -212,11 +244,12 @@ describe('SqliteStore.create (§6.3)', () => {
     ).toBe(true)
     expect(db.execed.some((s) => s.includes('ALTER TABLE sessions ADD COLUMN last_cwd'))).toBe(true)
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN repo_less'))).toBe(true)
-    expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues')).length).toBe(2)
-    expect(db.pragmas).toContain('user_version = 8')
+    // Bootstrap + v8 + v9's healing re-run, all IF NOT EXISTS.
+    expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues')).length).toBe(3)
+    expect(db.pragmas).toContain('user_version = 9')
   })
 
-  it('runs the v6 + v7 + v8 migrations on a v5 DB (last_cwd, repo_less, issues)', () => {
+  it('runs the v6 + v7 + v8 + v9 migrations on a v5 DB (last_cwd, repo_less, issues, session_groups)', () => {
     // A pre-existing DB stamped at user_version 5 (pre-daemon): the v6 migration
     // (sessions.last_cwd ALTER), the v7 migration (tasks.repo_less ALTER), and the
     // v8 migration (issues table, I19) all fire; the earlier v2–v5 statements are
@@ -228,11 +261,12 @@ describe('SqliteStore.create (§6.3)', () => {
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN managed'))).toBe(false)
     expect(db.execed.some((s) => s.includes('ALTER TABLE sessions ADD COLUMN last_cwd'))).toBe(true)
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN repo_less'))).toBe(true)
-    expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues')).length).toBe(2)
-    expect(db.pragmas).toContain('user_version = 8')
+    // Bootstrap + v8 + v9's healing re-run, all IF NOT EXISTS.
+    expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues')).length).toBe(3)
+    expect(db.pragmas).toContain('user_version = 9')
   })
 
-  it('runs the v7 + v8 migrations on a v6 DB (adds repo_less, then issues)', () => {
+  it('runs the v7 + v8 + v9 migrations on a v6 DB (adds repo_less, issues, session_groups)', () => {
     // A pre-existing DB stamped at user_version 6 (pre-"No Repo"): the v7
     // migration (tasks.repo_less ALTER) and the v8 migration (issues table, I19)
     // both fire. Earlier statements are skipped.
@@ -244,8 +278,9 @@ describe('SqliteStore.create (§6.3)', () => {
       false
     )
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN repo_less'))).toBe(true)
-    expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues')).length).toBe(2)
-    expect(db.pragmas).toContain('user_version = 8')
+    // Bootstrap + v8 + v9's healing re-run, all IF NOT EXISTS.
+    expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues')).length).toBe(3)
+    expect(db.pragmas).toContain('user_version = 9')
   })
 
   it('throws IncompatibleDbError on a DB newer than this binary, without touching it', () => {
@@ -255,7 +290,7 @@ describe('SqliteStore.create (§6.3)', () => {
     // silently downgraded and the next upgrade would re-run an applied migration.
     const db = new FakeDb()
     db.stub('sqlite_master', [{ name: 'tasks' }])
-    db.stubPragma('user_version', [{ user_version: 9 }])
+    db.stubPragma('user_version', [{ user_version: 10 }])
     expect(() => SqliteStore.create(db)).toThrow(IncompatibleDbError)
     // No schema statements ran and the version was NOT lowered.
     expect(db.execed.some((s) => s.includes('CREATE TABLE'))).toBe(false)
@@ -267,7 +302,7 @@ describe('SqliteStore.create (§6.3)', () => {
     // though fromVersion (0) < SCHEMA_VERSION; it bootstraps and stamps to current.
     const db = new FakeDb()
     expect(() => SqliteStore.create(db)).not.toThrow()
-    expect(db.pragmas).toContain('user_version = 8')
+    expect(db.pragmas).toContain('user_version = 9')
   })
 
   it('invokes beforeMigrate with fromVersion on an upgrade, but not on fresh/current DBs', () => {
@@ -289,7 +324,7 @@ describe('SqliteStore.create (§6.3)', () => {
     // Already-current DB: nothing to migrate, so no backup.
     const current = new FakeDb()
     current.stub('sqlite_master', [{ name: 'tasks' }])
-    current.stubPragma('user_version', [{ user_version: 8 }])
+    current.stubPragma('user_version', [{ user_version: 9 }])
     const onCurrent = vi.fn()
     SqliteStore.create(current, onCurrent)
     expect(onCurrent).not.toHaveBeenCalled()
@@ -306,13 +341,14 @@ describe('SqliteStore.create (§6.3)', () => {
     expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues')).length).toBe(1)
   })
 
-  it('runs ONLY the v8 migration on a v7 DB (adds the issues table, I19)', () => {
-    // A pre-existing DB stamped at user_version 7 (pre-Issues): only the v8
-    // migration fires. All earlier ALTERs (base_ref/managed/last_cwd/repo_less)
+  it('runs the v8 + v9 migrations on a v7 DB (adds the issues table, I19, then session_groups)', () => {
+    // A pre-existing DB stamped at user_version 7 (pre-Issues): only the v8 and v9
+    // migrations fire. All earlier ALTERs (base_ref/managed/last_cwd/repo_less)
     // are already applied and must be skipped by the fromVersion guard. The
-    // issues-table CREATE runs TWICE — once unconditionally from SCHEMA_STATEMENTS,
-    // once from the v8 MIGRATIONS entry — both IF NOT EXISTS, so the double-run is
-    // expected and safe (same pattern as v3's session_scrollback table).
+    // issues-table CREATE runs THREE times — once unconditionally from
+    // SCHEMA_STATEMENTS, once from the v8 MIGRATIONS entry, once from v9's healing
+    // re-run — all IF NOT EXISTS, so the repeat is expected and safe (same pattern
+    // as v3's session_scrollback table).
     const db = new FakeDb()
     db.stub('sqlite_master', [{ name: 'tasks' }])
     db.stubPragma('user_version', [{ user_version: 7 }])
@@ -323,8 +359,8 @@ describe('SqliteStore.create (§6.3)', () => {
       false
     )
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN repo_less'))).toBe(false)
-    expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues')).length).toBe(2)
-    expect(db.pragmas).toContain('user_version = 8')
+    expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues')).length).toBe(3)
+    expect(db.pragmas).toContain('user_version = 9')
   })
 })
 
@@ -423,6 +459,45 @@ describe('SqliteStore.load (§6.3)', () => {
       projectPath: undefined,
       taskId: undefined
     })
+    expect(db.pragmas).toContain('user_version = 9')
+  })
+
+  it('runs ONLY the v9 migration on a v8 DB (session_groups, §5.7)', () => {
+    // A DB stamped at user_version 8 (pre-groups): only the v9 migration fires.
+    // `CREATE TABLE IF NOT EXISTS session_groups` also runs unconditionally from
+    // SCHEMA_STATEMENTS on every open, so assert it ran TWICE (bootstrap + migration)
+    // to actually exercise the migration path. v9 also re-runs the `issues` CREATE
+    // (healing an unshipped split-pane dev DB stamped v8 without that table) and
+    // drops that build's `split_layouts` table.
+    const db = new FakeDb()
+    db.stub('sqlite_master', [{ name: 'tasks' }])
+    db.stubPragma('user_version', [{ user_version: 8 }])
+    SqliteStore.create(db)
+    expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN repo_less'))).toBe(false)
+    expect(
+      db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS session_groups'))
+    ).toHaveLength(2)
+    expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues'))).toHaveLength(2)
+    expect(db.execed.some((s) => s.includes('DROP TABLE IF EXISTS split_layouts'))).toBe(true)
+    const v9Migration = MIGRATIONS.find((m) => m.toVersion === 9)
+    expect(v9Migration).toBeDefined()
+    expect(
+      v9Migration!.statements.some((s) => s.includes('CREATE TABLE IF NOT EXISTS session_groups'))
+    ).toBe(true)
+    expect(db.pragmas).toContain('user_version = 9')
+  })
+
+  it('a current v9 DB runs no migration, so no split_layouts DROP', () => {
+    const db = new FakeDb()
+    db.stub('sqlite_master', [{ name: 'tasks' }])
+    db.stubPragma('user_version', [{ user_version: 9 }])
+    SqliteStore.create(db)
+    expect(db.execed.some((s) => s.includes('split_layouts'))).toBe(false)
+    expect(
+      MIGRATIONS.every((m) =>
+        m.statements.every((s) => !s.includes('CREATE TABLE IF NOT EXISTS split_layouts'))
+      )
+    ).toBe(true)
   })
 })
 
@@ -534,6 +609,287 @@ describe('SqliteStore writes', () => {
 
     const empty = SqliteStore.create(new FakeDb())
     expect(empty.loadScrollback(asSessionId('gone'))).toBeUndefined()
+  })
+})
+
+describe('SqliteStore split groups (DESIGN §5.7, §6.3)', () => {
+  it('upsertGroup inserts the (id, task_id, layout, color) row', () => {
+    const db = new FakeDb()
+    const store = SqliteStore.create(db)
+    store.upsertGroup(asTaskId('t1'), groupSnapshot())
+    const call = db.runs.find((r) => r.sql.includes('INSERT INTO session_groups'))
+    expect(call).toBeDefined()
+    expect(call!.sql).toContain('ON CONFLICT(id) DO UPDATE')
+    expect(call!.params).toMatchObject({
+      id: 'g1',
+      task_id: 't1',
+      layout: JSON.stringify({ kind: 'leaf', sessionId: 's1' }),
+      color: 0
+    })
+  })
+
+  it('upsertGroup called again with a reshaped tree/color re-upserts (update path)', () => {
+    const db = new FakeDb()
+    const store = SqliteStore.create(db)
+    store.upsertGroup(asTaskId('t1'), groupSnapshot())
+    store.upsertGroup(
+      asTaskId('t1'),
+      groupSnapshot({
+        tree: {
+          kind: 'split',
+          dir: 'row',
+          ratio: 0.5,
+          a: { kind: 'leaf', sessionId: asSessionId('s1') },
+          b: { kind: 'leaf', sessionId: asSessionId('s2') }
+        },
+        colorIndex: 2
+      })
+    )
+    const upserts = db.runs.filter((r) => r.sql.includes('INSERT INTO session_groups'))
+    expect(upserts).toHaveLength(2)
+    expect((upserts[1]!.params as { color: number }).color).toBe(2)
+    expect((upserts[1]!.params as { layout: string }).layout).toContain('"sessionId":"s2"')
+  })
+
+  it('the ON CONFLICT clause updates BOTH layout and color (review P3/P3b)', () => {
+    // `FakeDb.prepare().run()` echoes whatever params it's given regardless of
+    // whether the SQL text is well-formed — the "re-upsert" test above would
+    // keep passing even if the ON CONFLICT clause dropped `layout = excluded.layout`
+    // or `color = excluded.color` entirely, since it only inspects `.params`.
+    // Assert the actual SQL text instead.
+    const db = new FakeDb()
+    const store = SqliteStore.create(db)
+    store.upsertGroup(asTaskId('t1'), groupSnapshot())
+    const call = db.runs.find((r) => r.sql.includes('INSERT INTO session_groups'))
+    expect(call).toBeDefined()
+    const sql = normalizeDdl(call!.sql)
+    expect(sql).toContain('layout = excluded.layout')
+    expect(sql).toContain('color = excluded.color')
+  })
+
+  it('deleteGroup deletes by id (ungroup / dissolve-at-1 / member removed)', () => {
+    const db = new FakeDb()
+    const store = SqliteStore.create(db)
+    store.deleteGroup(asGroupId('g1'))
+    const call = db.runs.find((r) => r.sql.includes('DELETE FROM session_groups'))
+    expect(call).toBeDefined()
+    expect(call!.sql).toContain('WHERE id = ?')
+    expect(call!.params).toEqual('g1')
+  })
+
+  it('deleteTask relies on the FK cascade to drop its session_groups rows too', () => {
+    // Mirrors the "deleteTask relies on the FK cascade" test above (sessions):
+    // deleting a task issues a single DELETE on `tasks`, with no explicit cleanup
+    // of `session_groups` — the row's `task_id` FK (ON DELETE CASCADE) must do it.
+    const db = new FakeDb()
+    const store = SqliteStore.create(db)
+    store.deleteTask(asTaskId('t1'))
+    expect(db.runs.some((r) => r.sql.includes('DELETE FROM tasks'))).toBe(true)
+    expect(db.runs.some((r) => r.sql.includes('DELETE FROM session_groups'))).toBe(false)
+  })
+
+  it('the session_groups DDL actually declares ON DELETE CASCADE on the task FK (fresh-bootstrap DDL)', () => {
+    // The "relies on the FK cascade" test above only asserts that NO explicit
+    // cleanup DELETE runs — it would pass even if `ON DELETE CASCADE` were removed
+    // from the schema entirely, since FakeDb can't execute real SQL/FK semantics
+    // and the real better-sqlite3 binary can't load under host Node. Assert on the
+    // DDL text itself instead.
+    const ddl = SCHEMA_STATEMENTS.find((s) =>
+      s.includes('CREATE TABLE IF NOT EXISTS session_groups')
+    )
+    expect(ddl).toBeDefined()
+    const normalized = normalizeDdl(ddl!)
+    expect(normalized).toContain('task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE')
+  })
+
+  it('the v9 migration DDL for session_groups matches the fresh-bootstrap DDL exactly (modulo whitespace)', () => {
+    // Guards against the migration DDL drifting from the bootstrap DDL (e.g. a
+    // cascade present in one but not the other, which would make an upgraded DB
+    // behave differently from a fresh install).
+    const bootstrapDdl = SCHEMA_STATEMENTS.find((s) =>
+      s.includes('CREATE TABLE IF NOT EXISTS session_groups')
+    )
+    const migration = MIGRATIONS.find((m) => m.toVersion === 9)
+    expect(bootstrapDdl).toBeDefined()
+    expect(migration).toBeDefined()
+    const migrationDdl = migration!.statements.find((s) =>
+      s.includes('CREATE TABLE IF NOT EXISTS session_groups')
+    )
+    expect(migrationDdl).toBeDefined()
+    expect(normalizeDdl(migrationDdl!)).toBe(normalizeDdl(bootstrapDdl!))
+    const normalized = normalizeDdl(migrationDdl!)
+    expect(normalized).toContain('task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE')
+  })
+
+  it('declares an index on session_groups(task_id) (review P4)', () => {
+    // Without this index, `load`'s per-task group bucketing degrades to a full
+    // table scan on every open as `session_groups` grows — assert the DDL is
+    // actually present in SCHEMA_STATEMENTS rather than trusting it stays there.
+    const idx = SCHEMA_STATEMENTS.find((s) => s.includes('idx_session_groups_task'))
+    expect(idx).toBeDefined()
+    expect(normalizeDdl(idx!)).toContain('ON session_groups(task_id)')
+  })
+
+  it('buckets groups per task — a second task with no groups of its own gets none of the first task’s (review P5)', () => {
+    // The bucketing map keys by `row.task_id` (`groupsByTask.get(row.id) ?? []`
+    // per task). A mutant that hands every task the full unbucketed `groupRows`
+    // list instead would still pass a single-task test; it takes a SECOND task
+    // with its own (empty) groups to see the leak.
+    const db = new FakeDb()
+    const store = SqliteStore.create(db)
+    const taskRow = (id: string, position: number): TaskRow => ({
+      id,
+      name: id,
+      worktree: `/wt/${id}`,
+      branch: null,
+      base_ref: null,
+      repo_root: '/repo',
+      created_at: 10,
+      position,
+      active_session_id: null,
+      managed: 1,
+      repo_less: 0
+    })
+    const sessionRow = (id: string, taskId: string, position: number): SessionRow => ({
+      id,
+      task_id: taskId,
+      type: 'terminal',
+      label: id,
+      shell: null,
+      config: JSON.stringify({ kind: 'terminal' }),
+      position,
+      state: 'unknown',
+      created_at: 10,
+      exited_at: null,
+      window_id: 'main'
+    })
+    const groupRow = {
+      id: 'g1',
+      task_id: 't1',
+      layout: JSON.stringify({
+        kind: 'split',
+        dir: 'row',
+        ratio: 0.5,
+        a: { kind: 'leaf', sessionId: 's1' },
+        b: { kind: 'leaf', sessionId: 's2' }
+      }),
+      color: 0
+    }
+    db.stub('FROM tasks', [taskRow('t1', 0), taskRow('t2', 1)])
+    db.stub('FROM sessions', [
+      sessionRow('s1', 't1', 0),
+      sessionRow('s2', 't1', 1),
+      sessionRow('s3', 't2', 0)
+    ])
+    db.stub('FROM session_groups', [groupRow])
+    db.stub('FROM app_state', [])
+
+    const snap = store.load()
+    const t1 = snap.tasks.find((t) => t.id === asTaskId('t1'))!
+    const t2 = snap.tasks.find((t) => t.id === asTaskId('t2'))!
+    expect(t1.groups).toHaveLength(1)
+    expect(t2.groups).toEqual([])
+  })
+
+  it('load attaches each task’s groups, ordered by task then rowid', () => {
+    const db = new FakeDb()
+    const store = SqliteStore.create(db)
+    const taskRow: TaskRow = {
+      id: 't1',
+      name: 'task',
+      worktree: '/wt',
+      branch: null,
+      base_ref: null,
+      repo_root: '/repo',
+      created_at: 10,
+      position: 0,
+      active_session_id: 's1',
+      managed: 1,
+      repo_less: 0
+    }
+    const sessionRows: SessionRow[] = [
+      {
+        id: 's1',
+        task_id: 't1',
+        type: 'terminal',
+        label: 'a',
+        shell: null,
+        config: JSON.stringify({ kind: 'terminal' }),
+        position: 0,
+        state: 'unknown',
+        created_at: 10,
+        exited_at: null,
+        window_id: 'main'
+      },
+      {
+        id: 's2',
+        task_id: 't1',
+        type: 'terminal',
+        label: 'b',
+        shell: null,
+        config: JSON.stringify({ kind: 'terminal' }),
+        position: 1,
+        state: 'unknown',
+        created_at: 10,
+        exited_at: null,
+        window_id: 'main'
+      }
+    ]
+    const groupRow = {
+      id: 'g1',
+      task_id: 't1',
+      layout: JSON.stringify({
+        kind: 'split',
+        dir: 'row',
+        ratio: 0.5,
+        a: { kind: 'leaf', sessionId: 's1' },
+        b: { kind: 'leaf', sessionId: 's2' }
+      }),
+      color: 3
+    }
+    db.stub('FROM tasks', [taskRow])
+    db.stub('FROM sessions', [sessionRows[0], sessionRows[1]])
+    db.stub('FROM session_groups', [groupRow])
+    db.stub('FROM app_state', [])
+
+    const snap = store.load()
+    expect(snap.tasks).toHaveLength(1)
+    expect(snap.tasks[0].groups).toHaveLength(1)
+    expect(snap.tasks[0].groups![0]).toEqual({
+      id: asGroupId('g1'),
+      tree: JSON.parse(groupRow.layout),
+      colorIndex: 3
+    })
+
+    // The SELECT orders by task_id then rowid (no per-group position column).
+    const call = db.runs.find((r) => r.sql.includes('FROM session_groups'))
+    expect(call).toBeDefined()
+    expect(call!.sql).toContain('ORDER BY task_id ASC, rowid ASC')
+  })
+
+  it('load gives a task with no group rows an empty groups array, not undefined', () => {
+    const db = new FakeDb()
+    const store = SqliteStore.create(db)
+    db.stub('FROM tasks', [
+      {
+        id: 't1',
+        name: 'task',
+        worktree: '/wt',
+        branch: null,
+        base_ref: null,
+        repo_root: '/repo',
+        created_at: 10,
+        position: 0,
+        active_session_id: null,
+        managed: 1,
+        repo_less: 0
+      }
+    ])
+    db.stub('FROM sessions', [])
+    db.stub('FROM session_groups', [])
+    db.stub('FROM app_state', [])
+    const snap = store.load()
+    expect(snap.tasks[0].groups).toEqual([])
   })
 })
 

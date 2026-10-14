@@ -5,6 +5,7 @@ import {
   useStore,
   sessionIdsInWindow,
   activeSessionInWindow,
+  groupOfSession,
   isSessionFocused,
   sessionDisplayState,
   taskDisplayState,
@@ -12,7 +13,14 @@ import {
   isIssueBoundElsewhere,
   type StoreData
 } from './store'
-import type { TaskDTO, SessionDTO, WindowedWorkspaceStateDTO, IssueDTO } from '../../../shared/dto'
+import type {
+  TaskDTO,
+  SessionDTO,
+  WindowedWorkspaceStateDTO,
+  SplitNode,
+  GroupDTO,
+  IssueDTO
+} from '../../../shared/dto'
 
 function session(id: string, taskId: string, over: Partial<SessionDTO> = {}): SessionDTO {
   return {
@@ -39,6 +47,7 @@ function task(id: string, over: Partial<TaskDTO> = {}): TaskDTO {
     sessions: [],
     position: 0,
     createdAt: 1000,
+    groups: [],
     ...over
   }
 }
@@ -53,6 +62,16 @@ function issue(id: string, over: Partial<IssueDTO> = {}): IssueDTO {
     updatedAt: 1000,
     ...over
   }
+}
+
+/** A leaf node naming `sessionId` — `split-layout.ts` only reads trees, it doesn't build them. */
+function leaf(sessionId: string): SplitNode {
+  return { kind: 'leaf', sessionId }
+}
+
+/** A backend-owned group (DESIGN §5.7) wrapping `layout`, as carried in `TaskDTO.groups`/`groupsByTask`. */
+function group(id: string, layout: SplitNode, colorIndex = 0): GroupDTO {
+  return { id, layout, colorIndex }
 }
 
 describe('reduceEvent (§5.2)', () => {
@@ -1162,6 +1181,167 @@ describe('per-window marks (§3.7)', () => {
       expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
       expect(useStore.getState().sessions.s3.windowId).toBe('win-9')
     })
+
+    /**
+     * Whole-group moves (DESIGN §5.7 "every group member shares one window"): the
+     * backend sends ONE event per member — the directly-sent one with no `cause`, the
+     * rest tagged `cause: 'groupMove'` — but a single reducer step must move every
+     * member's `windowId` atomically (IMP1 fix), or a groupmate whose own event hasn't
+     * landed yet would misread as still hosted/on-screen here.
+     */
+    describe('group moves', () => {
+      /** t1: s1+s2 grouped and s3 lone, all in `main`; s4 lone in `win-2`. */
+      function groupedSnapshot(thisWindowId: string, active?: string): WindowedWorkspaceStateDTO {
+        const base = snapshot(thisWindowId, active)
+        const t1 = base.tasks[0]
+        // The base snapshot hosts s3 in `win-2` alongside s4 — pull it into `main` so
+        // there is a lone, non-group tab there to land on ("nearest OUTSIDE the group").
+        const sessions = t1.sessions.map((x) => (x.id === 's3' ? { ...x, windowId: 'main' } : x))
+        return { ...base, tasks: [{ ...t1, sessions, groups: [group('g1', leaf('s1'))] }] }
+      }
+
+      function withGroupLayout(layout: SplitNode): WindowedWorkspaceStateDTO {
+        const s = groupedSnapshot('main', 's1')
+        const t1 = s.tasks[0]
+        return { ...s, tasks: [{ ...t1, groups: [group('g1', layout)] }] }
+      }
+
+      it('the source re-marks the nearest tab OUTSIDE the whole moving group, not a structural neighbour', () => {
+        // Group g1 = {s1, s2}; s3 is lone, also in `main`. Marking s1 and moving it out
+        // must land on s3 (outside the group), never s2 (a groupmate also leaving).
+        useStore
+          .getState()
+          .hydrate(
+            withGroupLayout({ kind: 'split', dir: 'row', ratio: 0.5, a: leaf('s1'), b: leaf('s2') })
+          )
+        useStore.getState().applyEvent(move('s1', 'main', 'win-2'))
+        expect(useStore.getState().activeSessionByTask.t1).toBe('s3')
+        // The whole group moved atomically: s2 (not directly sent) is already reassigned.
+        expect(useStore.getState().sessions.s2.windowId).toBe('win-2')
+      })
+
+      it('the source re-marks OUTSIDE the group even when the mark is the OTHER member, not the one sent', () => {
+        // Same group/snapshot, but the mark is s2 while s1 is the one directly sent. If
+        // the source's "skip every current group member" logic keyed off whichever
+        // member happens to be the mark (rather than group MEMBERSHIP), it would wrongly
+        // fall through to a "lone session" structural-neighbour rule and land back on a
+        // groupmate (s1 or s2) instead of skipping the whole group onto s3.
+        useStore
+          .getState()
+          .hydrate(
+            withGroupLayout({ kind: 'split', dir: 'row', ratio: 0.5, a: leaf('s1'), b: leaf('s2') })
+          )
+        useStore.getState().setActiveSession('t1', 's2')
+        useStore.getState().applyEvent(move('s1', 'main', 'win-2'))
+        expect(useStore.getState().activeSessionByTask.t1).toBe('s3')
+        expect(useStore.getState().sessions.s2.windowId).toBe('win-2')
+      })
+
+      it('a group that is ALL of this window’s hosted tabs drops the mark — no transient focus of a groupmate', () => {
+        // Unlike `groupedSnapshot`'s default (s3 pulled into `main` as a lone tab), drop
+        // s3 from the task entirely here so s1+s2 (the group) is the WHOLE of `main`'s
+        // hosted set — moving it out must leave no mark, and must NOT transiently
+        // "focus" s2 on the way.
+        const layout: SplitNode = {
+          kind: 'split',
+          dir: 'row',
+          ratio: 0.5,
+          a: leaf('s1'),
+          b: leaf('s2')
+        }
+        const s = withGroupLayout(layout)
+        const t1 = s.tasks[0]
+        // Drop s3 from `main` entirely so the group IS the window's whole tab set.
+        const sessions = t1.sessions.filter((x) => x.id !== 's3')
+        useStore.getState().hydrate({ ...s, tasks: [{ ...t1, sessions }] })
+
+        useStore.getState().applyEvent(move('s1', 'main', 'win-2'))
+        expect(useStore.getState().activeSessionByTask.t1).toBeUndefined()
+        // s2 never becomes this window's mark/focus on the way out.
+        expect(isSessionFocused(useStore.getState(), 's2')).toBe(false)
+        expect(activeSessionInWindow(useStore.getState(), 't1', 'main')).toBeUndefined()
+
+        // The second (tagged, cause: 'groupMove') event for the OTHER member that
+        // already moved on the first event is an idempotent no-op.
+        const before = useStore.getState()
+        useStore.getState().applyEvent({ ...move('s2', 'main', 'win-2'), cause: 'groupMove' })
+        expect(useStore.getState()).toBe(before)
+      })
+
+      it('a 3-member group moves atomically; the source skips every member when picking the nearest outside tab', () => {
+        // row(a | col(b, c)) — three leaves, all hosted in `main` alongside lone s3... use
+        // s1/s2/s4 as the group so s3 (lone, order 2) is the one surviving tab to land on.
+        const layout: SplitNode = {
+          kind: 'split',
+          dir: 'row',
+          ratio: 0.5,
+          a: leaf('s1'),
+          b: { kind: 'split', dir: 'col', ratio: 0.5, a: leaf('s2'), b: leaf('s4') }
+        }
+        const s = withGroupLayout(layout)
+        const t1 = s.tasks[0]
+        // Bring s4 into `main` too so all three group members share this window.
+        const sessions = t1.sessions.map((x) =>
+          x.id === 's4' ? { ...x, windowId: 'main', order: 3 } : x
+        )
+        useStore.getState().hydrate({ ...s, tasks: [{ ...t1, sessions }] })
+
+        useStore.getState().applyEvent(move('s1', 'main', 'win-9'))
+        expect(useStore.getState().activeSessionByTask.t1).toBe('s3')
+        expect(useStore.getState().sessions.s2.windowId).toBe('win-9')
+        expect(useStore.getState().sessions.s4.windowId).toBe('win-9')
+      })
+
+      it('the TARGET marks the directly-sent member (no cause) even when it is a group', () => {
+        // Hydrate FROM win-9's own vantage: it hosts none of t1's sessions yet, so it
+        // has no mark to begin with (the group lives in `main`, per `withGroupLayout`).
+        const s = withGroupLayout({
+          kind: 'split',
+          dir: 'row',
+          ratio: 0.5,
+          a: leaf('s1'),
+          b: leaf('s2')
+        })
+        useStore.getState().hydrate({ ...s, thisWindowId: 'win-9', thisWindowRole: 'secondary' })
+        expect(useStore.getState().activeSessionByTask.t1).toBeUndefined()
+        useStore.getState().applyEvent(move('s1', 'main', 'win-9'))
+        expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
+      })
+
+      it('the TARGET marks whichever member was directly sent, even if not the group’s first member', () => {
+        // Same as above, but s2 — not s1, the "first" member in both the tree a/b order
+        // and tab order — is the one actually sent. A target-side rule hardcoded to "mark
+        // the group's first member" would wrongly mark s1 instead of the member that was
+        // truly moved.
+        const s = withGroupLayout({
+          kind: 'split',
+          dir: 'row',
+          ratio: 0.5,
+          a: leaf('s1'),
+          b: leaf('s2')
+        })
+        useStore.getState().hydrate({ ...s, thisWindowId: 'win-9', thisWindowRole: 'secondary' })
+        expect(useStore.getState().activeSessionByTask.t1).toBeUndefined()
+        useStore.getState().applyEvent(move('s2', 'main', 'win-9'))
+        expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+      })
+
+      it('the TARGET keeps its existing mark for a tagged (cause: groupMove) rider', () => {
+        // Hydrate FROM win-2's own vantage: it already hosts and marks lone s4 (per the
+        // base `snapshot`); a tagged rider of the main-side group move must not disturb it.
+        const s = withGroupLayout({
+          kind: 'split',
+          dir: 'row',
+          ratio: 0.5,
+          a: leaf('s1'),
+          b: leaf('s2')
+        })
+        useStore.getState().hydrate({ ...s, thisWindowId: 'win-2', thisWindowRole: 'secondary' })
+        expect(useStore.getState().activeSessionByTask.t1).toBe('s4')
+        useStore.getState().applyEvent({ ...move('s2', 'main', 'win-2'), cause: 'groupMove' })
+        expect(useStore.getState().activeSessionByTask.t1).toBe('s4')
+      })
+    })
   })
 })
 
@@ -1772,5 +1952,358 @@ describe('sessionStateNotification → toast (§9.5)', () => {
     )
     expect(d.toasts).toHaveLength(0)
     expect(admitCalls).toBe(0)
+  })
+})
+
+describe('default settings include the six split-pane chords (DESIGN §5.7)', () => {
+  it('initialData().settings carries the default split/focus-pane chords', () => {
+    const s = initialData().settings
+    expect(s.splitRightKey).toBe('Ctrl+Shift+KeyE')
+    expect(s.splitDownKey).toBe('Ctrl+Shift+KeyO')
+    expect(s.focusPaneLeftKey).toBe('Ctrl+Shift+KeyH')
+    expect(s.focusPaneRightKey).toBe('Ctrl+Shift+KeyL')
+    expect(s.focusPaneUpKey).toBe('Ctrl+Shift+KeyK')
+    expect(s.focusPaneDownKey).toBe('Ctrl+Shift+KeyJ')
+  })
+})
+
+/**
+ * Split groups (DESIGN §5.7, split-groups design): `groupsByTask` is the backend-owned
+ * projection of each task's `GroupDTO[]` (hydrate's `TaskDTO.groups`, replaced wholesale
+ * on `groupsChanged`); the renderer never mutates a group, only reads it via
+ * {@link groupOfSession}. Mark moves (`setActiveSession`, `focusPane`) and group
+ * membership are orthogonal — the mark-move actions never touch a group (DESIGN §3.7).
+ */
+describe('split groups (DESIGN §5.7, split-groups design)', () => {
+  beforeEach(() => {
+    useStore.setState(initialData())
+  })
+
+  /** t1 with s1, s2, s3 all hosted in `main`, grouped as g1 = row(s1 | s2); s3 lone. */
+  function groupedBase(): StoreData {
+    let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s1', 't1') })
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s2', 't1') })
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s3', 't1') })
+    const layout: SplitNode = {
+      kind: 'split',
+      dir: 'row',
+      ratio: 0.5,
+      a: leaf('s1'),
+      b: leaf('s2')
+    }
+    d = reduceEvent(d, { type: 'groupsChanged', taskId: 't1', groups: [group('g1', layout)] })
+    return { ...d, activeTaskId: 't1', activeSessionByTask: { t1: 's1' }, windowFocused: true }
+  }
+
+  describe('groupsByTask: hydrate + groupsChanged + groupOfSession', () => {
+    it('hydrate seeds groupsByTask from each TaskDTO.groups', () => {
+      const layout: SplitNode = {
+        kind: 'split',
+        dir: 'col',
+        ratio: 0.5,
+        a: leaf('s1'),
+        b: leaf('s2')
+      }
+      const state: WindowedWorkspaceStateDTO = {
+        tasks: [
+          task('t1', {
+            sessions: [session('s1', 't1'), session('s2', 't1')],
+            groups: [group('g1', layout)]
+          })
+        ],
+        activeTaskId: 't1',
+        sessionTypes: [],
+        settings: initialData().settings,
+        version: 1,
+        thisWindowId: 'main',
+        thisWindowRole: 'main',
+        windows: [],
+        issues: []
+      }
+      useStore.getState().hydrate(state)
+      expect(useStore.getState().groupsByTask.t1).toEqual([group('g1', layout)])
+    })
+
+    it('groupsChanged replaces a task’s group list wholesale', () => {
+      const d = groupedBase()
+      const next = reduceEvent(d, { type: 'groupsChanged', taskId: 't1', groups: [] })
+      expect(next.groupsByTask.t1).toEqual([])
+      expect(groupOfSession(next, 't1', 's1')).toBeUndefined()
+    })
+
+    it('groupsChanged for an unknown task is a no-op (identity)', () => {
+      const d = groupedBase()
+      const next = reduceEvent(d, {
+        type: 'groupsChanged',
+        taskId: 'ghost-task',
+        groups: [group('g9', leaf('s9'))]
+      })
+      expect(next).toBe(d)
+      expect(next.groupsByTask['ghost-task']).toBeUndefined()
+    })
+
+    it('groupOfSession finds the group containing a leaf; undefined for a lone session', () => {
+      const d = groupedBase()
+      expect(groupOfSession(d, 't1', 's1')?.id).toBe('g1')
+      expect(groupOfSession(d, 't1', 's2')?.id).toBe('g1')
+      expect(groupOfSession(d, 't1', 's3')).toBeUndefined() // lone
+      expect(groupOfSession(d, 'ghost-task', 's1')).toBeUndefined()
+    })
+  })
+
+  describe('mark moves never touch a group', () => {
+    it('setActiveSession (tab click) moves the mark only — groupsByTask is untouched', () => {
+      useStore.setState(groupedBase())
+      const before = useStore.getState().groupsByTask
+      useStore.getState().setActiveSession('t1', 's2')
+      expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+      expect(useStore.getState().groupsByTask).toBe(before) // same reference: untouched
+      expect(groupOfSession(useStore.getState(), 't1', 's2')?.id).toBe('g1') // still grouped
+    })
+
+    it('focusPane moves the mark only — groupsByTask is untouched', () => {
+      useStore.setState(groupedBase())
+      const before = useStore.getState().groupsByTask
+      useStore.getState().focusPane('s2')
+      expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+      expect(useStore.getState().groupsByTask).toBe(before)
+    })
+
+    it('focusPane into a lone session leaves it lone (no implicit group join)', () => {
+      useStore.setState(groupedBase())
+      useStore.getState().focusPane('s3')
+      expect(useStore.getState().activeSessionByTask.t1).toBe('s3')
+      expect(groupOfSession(useStore.getState(), 't1', 's3')).toBeUndefined()
+    })
+  })
+
+  describe('closing a grouped tab re-marks within the group (§3.7, IMP3 fix)', () => {
+    it('closing the focused FIRST member marks the NEXT groupmate', () => {
+      useStore.setState({ ...groupedBase(), activeSessionByTask: { t1: 's1' } })
+      useStore.getState().applyEvent({ type: 'sessionClosed', taskId: 't1', sessionId: 's1' })
+      expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+    })
+
+    it('closing the focused LAST member marks the PREVIOUS groupmate', () => {
+      useStore.setState({ ...groupedBase(), activeSessionByTask: { t1: 's2' } })
+      useStore.getState().applyEvent({ type: 'sessionClosed', taskId: 't1', sessionId: 's2' })
+      expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
+    })
+
+    /**
+     * A 3-member group whose TREE a/b order deliberately disagrees with TAB order, to
+     * prove `neighbourInGroup` (store.ts) walks `fullOrder` (tab order), not the tree's
+     * structural a/b order. Tree DFS order: s3, s1, s2. Tab order (the `order` field,
+     * sorted by `normalizeTask` on hydrate): s1, s2, s3.
+     */
+    function threeMemberDivergentOrderState(): WindowedWorkspaceStateDTO {
+      const layout: SplitNode = {
+        kind: 'split',
+        dir: 'row',
+        ratio: 0.5,
+        a: leaf('s3'),
+        b: { kind: 'split', dir: 'col', ratio: 0.5, a: leaf('s1'), b: leaf('s2') }
+      }
+      return {
+        tasks: [
+          task('t1', {
+            sessions: [
+              session('s1', 't1', { order: 0 }),
+              session('s2', 't1', { order: 1 }),
+              session('s3', 't1', { order: 2 })
+            ],
+            groups: [group('g1', layout)]
+          })
+        ],
+        activeTaskId: 't1',
+        sessionTypes: [],
+        settings: initialData().settings,
+        version: 1,
+        thisWindowId: 'main',
+        thisWindowRole: 'main',
+        windows: [],
+        issues: []
+      }
+    }
+
+    it('closing the TAB-order-MIDDLE member marks the TAB-order-next groupmate, not the tree-order one', () => {
+      // s2 is tab-order-middle (order 1) but tree-order-LAST (DFS: s3, s1, s2). A rule
+      // that walked the tree's a/b order (ignoring `fullOrder`) would see s2 as last and
+      // land on tree-previous s1; the correct tab-order-next is s3.
+      useStore.getState().hydrate(threeMemberDivergentOrderState())
+      useStore.getState().setActiveSession('t1', 's2')
+      useStore.getState().applyEvent({ type: 'sessionClosed', taskId: 't1', sessionId: 's2' })
+      expect(useStore.getState().activeSessionByTask.t1).toBe('s3')
+    })
+
+    it('closing the TAB-order-LAST member marks the TAB-order-previous groupmate, not the tree-order one', () => {
+      // s3 is tab-order-LAST (order 2) but tree-order-FIRST (DFS: s3, s1, s2). A rule
+      // keyed off tree order (ignoring `fullOrder`) would see s3 as first and land on
+      // tree-next s1; the correct tab-order-previous is s2.
+      useStore.getState().hydrate(threeMemberDivergentOrderState())
+      useStore.getState().setActiveSession('t1', 's3')
+      useStore.getState().applyEvent({ type: 'sessionClosed', taskId: 't1', sessionId: 's3' })
+      expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+    })
+
+    it('a group of 2 losing a member, then groupsChanged, dissolves the group', () => {
+      // Start with g1 = {s1, s2} only (drop lone s3 so the group IS the whole task).
+      let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
+      d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s1', 't1') })
+      d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s2', 't1') })
+      const layout: SplitNode = {
+        kind: 'split',
+        dir: 'row',
+        ratio: 0.5,
+        a: leaf('s1'),
+        b: leaf('s2')
+      }
+      d = reduceEvent(d, { type: 'groupsChanged', taskId: 't1', groups: [group('g1', layout)] })
+      d = { ...d, activeTaskId: 't1', activeSessionByTask: { t1: 's1' } }
+
+      // Close s1: sessionClosed arrives BEFORE groupsChanged (§5.7), so the OLD group
+      // (still 2 members) decides the re-mark — s2, the sole remaining groupmate.
+      d = reduceEvent(d, { type: 'sessionClosed', taskId: 't1', sessionId: 's1' })
+      expect(d.activeSessionByTask.t1).toBe('s2')
+      expect(d.groupsByTask.t1).toEqual([group('g1', layout)]) // not yet reconciled
+
+      // The backend then reconciles: a 1-member "group" isn't a group (DESIGN §5.7).
+      d = reduceEvent(d, { type: 'groupsChanged', taskId: 't1', groups: [] })
+      expect(d.groupsByTask.t1).toEqual([])
+      expect(groupOfSession(d, 't1', 's2')).toBeUndefined() // s2 is lone now
+      expect(d.activeSessionByTask.t1).toBe('s2') // the re-mark survives dissolution
+    })
+  })
+
+  describe('hydrate: initialMark (§6.7 IMP2 fix) vs. a per-window mark vs. the persisted pointer', () => {
+    function stateWith(
+      initialMark: { taskId: string; sessionId: string } | undefined
+    ): WindowedWorkspaceStateDTO {
+      return {
+        tasks: [
+          task('t1', {
+            sessions: [session('s1', 't1'), session('s2', 't1'), session('s3', 't1')],
+            activeSessionId: 's1' // the persisted "last focused" pointer
+          })
+        ],
+        activeTaskId: 't1',
+        sessionTypes: [],
+        settings: initialData().settings,
+        version: 1,
+        thisWindowId: 'main',
+        thisWindowRole: 'main',
+        windows: [],
+        issues: [],
+        initialMark
+      }
+    }
+
+    it('a FRESH window (no prior mark) marks initialMark’s session, overriding the persisted pointer', () => {
+      useStore.getState().hydrate(stateWith({ taskId: 't1', sessionId: 's2' }))
+      expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+    })
+
+    it('an EXISTING per-window mark wins over initialMark on re-hydrate', () => {
+      useStore.getState().hydrate(stateWith(undefined))
+      useStore.getState().setActiveSession('t1', 's3')
+      // A second hydrate (e.g. SettingsModal) carries an initialMark again — this window
+      // already has its own mark (s3) and keeps it; initialMark never overrides it.
+      useStore.getState().hydrate(stateWith({ taskId: 't1', sessionId: 's2' }))
+      expect(useStore.getState().activeSessionByTask.t1).toBe('s3')
+    })
+
+    it('activeTaskId always comes from state, never from initialMark', () => {
+      const state = { ...stateWith({ taskId: 't1', sessionId: 's2' }), activeTaskId: 't1' }
+      useStore.getState().hydrate(state)
+      expect(useStore.getState().activeTaskId).toBe('t1')
+      // A crash-reload re-hydrate with a DIFFERENT activeTaskId must win outright, even
+      // though initialMark still names t1 — it only ever feeds `pickMark`, scoped to its
+      // own task, never the window's current task.
+      const other = {
+        ...state,
+        tasks: [...state.tasks, task('t2', { sessions: [] })],
+        activeTaskId: 't2'
+      }
+      useStore.getState().hydrate(other)
+      expect(useStore.getState().activeTaskId).toBe('t2')
+    })
+
+    it('initialMark naming a session NOT hosted in this window is ignored', () => {
+      const state = stateWith({ taskId: 't1', sessionId: 's2' })
+      const t1 = state.tasks[0]
+      const sessions = t1.sessions.map((x) => (x.id === 's2' ? { ...x, windowId: 'win-2' } : x))
+      useStore.getState().hydrate({ ...state, tasks: [{ ...t1, sessions }] })
+      // s2 (named by initialMark) isn't hosted here, so pickMark falls through to the
+      // persisted pointer (s1, hosted here).
+      expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
+    })
+
+    it('initialMark naming a DIFFERENT task than entry is scoped away — ignored for t1', () => {
+      const state = stateWith({ taskId: 't-other', sessionId: 's2' })
+      useStore.getState().hydrate(state)
+      // initialMark doesn't name t1, so t1 falls through to the persisted pointer (s1).
+      expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
+    })
+  })
+
+  describe('ready-for-review within a shown group (§9.5, CLAUDE_STATE_PRD "Split panes")', () => {
+    it('a visible-but-UNFOCUSED groupmate still raises the review dot', () => {
+      // s1 is the group's mark (focused); s2 is its groupmate — rendered on screen in the
+      // SAME split, but `isSessionFocused` only ever says true for the ONE marked pane.
+      let d = groupedBase() // mark = s1
+      d = reduceEvent(d, { type: 'sessionStateChanged', sessionId: 's2', state: 'working' })
+      d = reduceEvent(d, { type: 'sessionStateChanged', sessionId: 's2', state: 'waiting' })
+      expect(d.hasUnseenFinishedTurn.s2).toBe(true)
+      expect(isSessionFocused(d, 's2')).toBe(false)
+      expect(sessionDisplayState(d.sessions.s2, true, isSessionFocused(d, 's2'))).toBe('review')
+    })
+
+    it('it is NOT cleared by markVisibleSessionSeen until that groupmate becomes the mark', () => {
+      let d = groupedBase()
+      d = reduceEvent(d, { type: 'sessionStateChanged', sessionId: 's2', state: 'working' })
+      d = reduceEvent(d, { type: 'sessionStateChanged', sessionId: 's2', state: 'waiting' })
+      useStore.setState(d)
+
+      // The mark is still s1: clearing "visible session seen" clears nothing for s2 — a
+      // visible-but-unmarked groupmate is not what markVisibleSessionSeen looks at.
+      expect(useStore.getState().markVisibleSessionSeen()).toBeUndefined()
+      expect(useStore.getState().hasUnseenFinishedTurn.s2).toBe(true)
+
+      // Moving the mark onto s2 (a pane click / focus-pane chord) makes it the on-screen
+      // session; the settled-render effect then clears and relays it.
+      useStore.getState().focusPane('s2')
+      expect(useStore.getState().hasUnseenFinishedTurn.s2).toBe(true) // focusPane itself doesn't clear
+      expect(useStore.getState().markVisibleSessionSeen()).toBe('s2')
+      expect(useStore.getState().hasUnseenFinishedTurn.s2).toBeUndefined()
+    })
+  })
+
+  describe('state-change toast for a visible-but-unfocused groupmate (§9.5)', () => {
+    // Mirrors "ready-for-review within a shown group" above: s2 is rendered on screen,
+    // in the SAME split pane as the mark (s1), but `isSessionFocused` only ever says
+    // true for the ONE marked pane. The §9.5 toast reducer (sessionStateNotification,
+    // store.ts ~937) suppresses SOLELY on `isSessionFocused`, so a groupmate that is
+    // visible-but-not-marked must still toast — a regression that widened suppression to
+    // "any leaf of the focused group" (not just the mark) would wrongly drop this toast.
+    it('still toasts for a visible-but-unmarked groupmate', () => {
+      const d = reduceEvent(groupedBase(), {
+        type: 'sessionStateNotification',
+        sessionId: 's2',
+        taskName: 'T',
+        sessionName: 'S'
+      })
+      expect(d.toasts).toHaveLength(1)
+    })
+
+    it('still suppresses the toast for the group’s actual mark', () => {
+      const d = reduceEvent(groupedBase(), {
+        type: 'sessionStateNotification',
+        sessionId: 's1',
+        taskName: 'T',
+        sessionName: 'S'
+      })
+      expect(d.toasts).toHaveLength(0)
+    })
   })
 })

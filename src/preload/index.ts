@@ -27,6 +27,11 @@ import type {
   SessionCwdInput,
   RefreshSessionStateInput,
   MarkSessionSeenInput,
+  JoinGroupInput,
+  LeaveGroupInput,
+  UngroupInput,
+  ReorderGroupInput,
+  ResizeGroupInput,
   CreateWindowInput,
   CloseWindowInput,
   MoveSessionInput,
@@ -85,6 +90,19 @@ const octopusAPI: OctopusAPI = {
     markSeen: (input: MarkSessionSeenInput): void =>
       ipcRenderer.send(CHANNELS.sessionMarkSeen, input),
     focus: (input: FocusSessionInput): void => ipcRenderer.send(CHANNELS.sessionFocus, input)
+  },
+
+  groups: {
+    join: (input: JoinGroupInput): Promise<CommandAck> =>
+      ipcRenderer.invoke(CHANNELS.groupJoin, input),
+    leave: (input: LeaveGroupInput): Promise<CommandAck> =>
+      ipcRenderer.invoke(CHANNELS.groupLeave, input),
+    ungroup: (input: UngroupInput): Promise<CommandAck> =>
+      ipcRenderer.invoke(CHANNELS.groupUngroup, input),
+    reorder: (input: ReorderGroupInput): Promise<CommandAck> =>
+      ipcRenderer.invoke(CHANNELS.groupReorder, input),
+    resize: (input: ResizeGroupInput): Promise<CommandAck> =>
+      ipcRenderer.invoke(CHANNELS.groupResize, input)
   },
 
   windows: {

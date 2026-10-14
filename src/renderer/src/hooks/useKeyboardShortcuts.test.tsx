@@ -1,10 +1,31 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { useKeyboardShortcuts, type KeyboardShortcutHandlers } from './useKeyboardShortcuts'
 import { DeleteTaskConfirm } from '../components/DeleteTaskConfirm'
 import { useStore, initialData } from '../store/store'
-import { installStubBridge } from '../test-support/stub-bridge'
-import type { SessionDTO, TaskDTO, WindowDTO } from '../../../shared/dto'
+import { installStubBridge, makeStubBridge } from '../test-support/stub-bridge'
+import { registerPaneMetrics, _resetPaneMetrics } from '../terminal/terminal-metrics'
+import type { SessionDTO, TaskDTO, WindowDTO, SplitNode, GroupDTO } from '../../../shared/dto'
+
+/** A leaf node naming `sessionId` — `split-layout.ts` no longer exports this fixture. */
+function leaf(sessionId: string): SplitNode {
+  return { kind: 'leaf', sessionId }
+}
+
+/** A row split of two leaves (left/right) — the shape the directional chords walk (§5.7). */
+function rowSplit(aId: string, bId: string): SplitNode {
+  return { kind: 'split', dir: 'row', ratio: 0.5, a: leaf(aId), b: leaf(bId) }
+}
+
+/** A col split of two leaves (top/bottom) (§5.7). */
+function colSplit(aId: string, bId: string): SplitNode {
+  return { kind: 'split', dir: 'col', ratio: 0.5, a: leaf(aId), b: leaf(bId) }
+}
+
+/** A backend-owned group (DESIGN §5.7) wrapping `layout`, as carried in `groupsByTask`. */
+function group(id: string, layout: SplitNode, colorIndex = 0): GroupDTO {
+  return { id, layout, colorIndex }
+}
 
 function Host(props: KeyboardShortcutHandlers): React.JSX.Element {
   useKeyboardShortcuts(props)
@@ -36,6 +57,7 @@ function task(id: string, over: Partial<TaskDTO> = {}): TaskDTO {
     sessions: [],
     position: 0,
     createdAt: 1000,
+    groups: [],
     ...over
   }
 }
@@ -83,7 +105,13 @@ function seed(
       newTaskKey: 'Ctrl+Shift+KeyT',
       closeSessionKey: 'Ctrl+Shift+KeyW',
       searchKey: 'Ctrl+Shift+KeyF',
-      issuesKey: 'Alt+Shift+KeyI'
+      issuesKey: 'Alt+Shift+KeyI',
+      splitRightKey: 'Ctrl+Shift+KeyE',
+      splitDownKey: 'Ctrl+Shift+KeyO',
+      focusPaneLeftKey: 'Ctrl+Shift+KeyH',
+      focusPaneRightKey: 'Ctrl+Shift+KeyL',
+      focusPaneUpKey: 'Ctrl+Shift+KeyK',
+      focusPaneDownKey: 'Ctrl+Shift+KeyJ'
     },
     version: 1,
     thisWindowId,
@@ -513,6 +541,11 @@ describe('useKeyboardShortcuts (§5.4 — Shift-gated)', () => {
       expect(chord('KeyF')).toBe(false)
       expect(onSearch).not.toHaveBeenCalled()
 
+      // The split and pane-focus chords act on the hidden workspace too.
+      expect(chord('KeyE')).toBe(false)
+      expect(chord('KeyL')).toBe(false)
+      expect(window.octopusAPI.sessions.create).not.toHaveBeenCalled()
+
       // Session/task navigation chords are exempt and still act while the drawer
       // covers the workspace.
       expect(chord('ArrowDown')).toBe(false)
@@ -522,5 +555,290 @@ describe('useKeyboardShortcuts (§5.4 — Shift-gated)', () => {
       expect(issuesChord()).toBe(false)
       expect(useStore.getState().issuesDrawerOpen).toBe(false)
     })
+  })
+  it('calls preventDefault only on a matching chord', () => {
+    const t = task('t1', { sessions: [session('s1')], activeSessionId: 's1' })
+    seed([t], 't1')
+    render(<Host onNewTask={vi.fn()} />)
+    // fireEvent's return value is `dispatchEvent`'s result: false once preventDefault() ran.
+    expect(fireEvent.keyDown(window, { code: 'KeyE', ctrlKey: true, shiftKey: true })).toBe(false)
+    // No action is bound to this chord — the handler returns without calling it.
+    expect(fireEvent.keyDown(window, { code: 'KeyZ', ctrlKey: true, shiftKey: true })).toBe(true)
+  })
+})
+
+describe('useKeyboardShortcuts — split chords (§5.7)', () => {
+  beforeEach(() => {
+    useStore.setState(initialData())
+    installStubBridge()
+  })
+
+  afterEach(() => {
+    _resetPaneMetrics()
+  })
+
+  it('Ctrl+Shift+E creates a terminal joined into the mark’s group, split row, in one command', () => {
+    const t = task('t1', { sessions: [session('s1')], activeSessionId: 's1' })
+    seed([t], 't1')
+    render(<Host onNewTask={vi.fn()} />)
+    chord('KeyE')
+    expect(window.octopusAPI.sessions.create).toHaveBeenCalledWith({
+      taskId: 't1',
+      split: { anchorSessionId: 's1', dir: 'row' }
+    })
+  })
+
+  it('Ctrl+Shift+O creates a terminal joined into the mark’s group, split col, in one command', () => {
+    const t = task('t1', { sessions: [session('s1')], activeSessionId: 's1' })
+    seed([t], 't1')
+    render(<Host onNewTask={vi.fn()} />)
+    chord('KeyO')
+    expect(window.octopusAPI.sessions.create).toHaveBeenCalledWith({
+      taskId: 't1',
+      split: { anchorSessionId: 's1', dir: 'col' }
+    })
+  })
+
+  it('does nothing when the active task is not ready', () => {
+    const t = task('t1', { lifecycle: 'provisioning', sessions: [session('s1')] })
+    seed([t], 't1')
+    render(<Host onNewTask={vi.fn()} />)
+    chord('KeyE')
+    expect(window.octopusAPI.sessions.create).not.toHaveBeenCalled()
+  })
+
+  it('ignores a repeated (held) chord — one split per press', () => {
+    const t = task('t1', { sessions: [session('s1')], activeSessionId: 's1' })
+    seed([t], 't1')
+    render(<Host onNewTask={vi.fn()} />)
+    chord('KeyE', { repeat: true })
+    expect(window.octopusAPI.sessions.create).not.toHaveBeenCalled()
+  })
+
+  it('a failed ack pushes an error toast — there is no local pending state to roll back', async () => {
+    const t = task('t1', { sessions: [session('s1')], activeSessionId: 's1' })
+    seed([t], 't1')
+    const bridge = makeStubBridge({ ack: () => ({ ok: false, error: 'nope' }) })
+    window.octopusAPI = bridge.api
+    render(<Host onNewTask={vi.fn()} />)
+    chord('KeyE')
+    await waitFor(() =>
+      expect(useStore.getState().toasts.map((toast) => toast.message)).toContain('nope')
+    )
+  })
+
+  it('a failed ack with no error message falls back to a generic toast', async () => {
+    const t = task('t1', { sessions: [session('s1')], activeSessionId: 's1' })
+    seed([t], 't1')
+    const bridge = makeStubBridge({ ack: () => ({ ok: false }) })
+    window.octopusAPI = bridge.api
+    render(<Host onNewTask={vi.fn()} />)
+    chord('KeyE')
+    await waitFor(() =>
+      expect(useStore.getState().toasts.map((toast) => toast.message)).toContain('Failed to split')
+    )
+  })
+
+  it('a rejected sessions.create promise pushes an error toast and does not throw unhandled', async () => {
+    const t = task('t1', { sessions: [session('s1')], activeSessionId: 's1' })
+    seed([t], 't1')
+    const bridge = makeStubBridge()
+    bridge.api.sessions.create = vi.fn().mockRejectedValue(new Error('backend gone'))
+    window.octopusAPI = bridge.api
+    render(<Host onNewTask={vi.fn()} />)
+    chord('KeyE')
+    await waitFor(() =>
+      expect(useStore.getState().toasts.map((toast) => toast.message)).toContain('Failed to split')
+    )
+  })
+
+  it('refuses a split that would leave a pane under the minimum size — toast, no create', () => {
+    const t = task('t1', { sessions: [session('s1')], activeSessionId: 's1' })
+    seed([t], 't1')
+    // 100px halved is 50px; at 50px/cell that is 1 col — far under MIN_PANE_COLS (20).
+    registerPaneMetrics('s1', () => ({
+      widthPx: 100,
+      heightPx: 1000,
+      cellWidthPx: 50,
+      cellHeightPx: 16
+    }))
+    render(<Host onNewTask={vi.fn()} />)
+    chord('KeyE')
+    expect(window.octopusAPI.sessions.create).not.toHaveBeenCalled()
+    expect(useStore.getState().toasts.map((toast) => toast.message)).toContain(
+      'Pane too small to split'
+    )
+  })
+
+  it('anchors the split on THIS window’s mark, not ids[0] nor the persisted activeSessionId', () => {
+    // ids[0] (tab order) is s1; the task's PERSISTED activeSessionId is s2 (neither of
+    // which is the mark); the mark is explicitly moved to s3 after hydrate. A mutant that
+    // anchors on `task.sessionIds[0]` or on `activeSessionId` instead of
+    // `activeSessionInWindow` would send 's1' or 's2' here instead of 's3'.
+    const t = task('t1', {
+      sessions: [session('s1'), session('s2', { order: 1 }), session('s3', { order: 2 })],
+      activeSessionId: 's2'
+    })
+    seed([t], 't1')
+    useStore.setState((s) => ({ activeSessionByTask: { ...s.activeSessionByTask, t1: 's3' } }))
+    render(<Host onNewTask={vi.fn()} />)
+    chord('KeyE')
+    expect(window.octopusAPI.sessions.create).toHaveBeenCalledWith({
+      taskId: 't1',
+      split: { anchorSessionId: 's3', dir: 'row' }
+    })
+  })
+
+  it('does not block the split when the pane is unmeasured (not yet mounted)', () => {
+    const t = task('t1', { sessions: [session('s1')], activeSessionId: 's1' })
+    seed([t], 't1')
+    // No `registerPaneMetrics` call for 's1' — `measurePane` returns undefined.
+    render(<Host onNewTask={vi.fn()} />)
+    chord('KeyE')
+    expect(window.octopusAPI.sessions.create).toHaveBeenCalledWith({
+      taskId: 't1',
+      split: { anchorSessionId: 's1', dir: 'row' }
+    })
+  })
+})
+
+describe('useKeyboardShortcuts — directional pane focus (§5.7)', () => {
+  beforeEach(() => {
+    useStore.setState(initialData())
+    installStubBridge()
+  })
+
+  it('Ctrl+Shift+L/H move focus right/left via the geometric neighbor within the shown group, no-op at the boundary', () => {
+    const t = task('t1', {
+      sessions: [session('s1'), session('s2', { order: 1 })],
+      activeSessionId: 's1'
+    })
+    seed([t], 't1')
+    useStore.setState((s) => ({
+      groupsByTask: { ...s.groupsByTask, t1: [group('g1', rowSplit('s1', 's2'))] }
+    }))
+    render(<Host onNewTask={vi.fn()} />)
+
+    chord('KeyL') // focus pane right: s1 → s2
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+    chord('KeyL') // s2 is the rightmost pane: no neighbor that way, no-op
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+    chord('KeyH') // focus pane left: s2 → s1
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
+    chord('KeyH') // s1 is the leftmost pane: no-op
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
+  })
+
+  it('Ctrl+Shift+J/K move focus down/up via the geometric neighbor, no-op at the boundary', () => {
+    const t = task('t1', {
+      sessions: [session('s1'), session('s2', { order: 1 })],
+      activeSessionId: 's1'
+    })
+    seed([t], 't1')
+    useStore.setState((s) => ({
+      groupsByTask: { ...s.groupsByTask, t1: [group('g1', colSplit('s1', 's2'))] }
+    }))
+    render(<Host onNewTask={vi.fn()} />)
+
+    chord('KeyJ') // focus pane down: s1 → s2
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+    chord('KeyJ') // s2 is the bottom pane: no-op
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+    chord('KeyK') // focus pane up: s2 → s1
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
+    chord('KeyK') // s1 is the top pane: no-op
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
+  })
+
+  it('moves the mark but leaves hasUnseenFinishedTurn SET on the target (§9.5 relay, not a local clear)', () => {
+    // Unlike `setActiveSession` (store.ts), the pane-focus chord dispatches `focusPane`,
+    // which deliberately does NOT clear the flag locally — the clear is deferred to the
+    // `markVisibleSessionSeen` relay so every window's rollup also hears "seen". A
+    // regression that swaps `focusPane` for `setActiveSession` in `focusDirection`
+    // (useKeyboardShortcuts.ts) would clear it here immediately, failing this assertion.
+    const t = task('t1', {
+      sessions: [session('s1'), session('s2', { order: 1 })],
+      activeSessionId: 's1'
+    })
+    seed([t], 't1')
+    useStore.setState((s) => ({
+      groupsByTask: { ...s.groupsByTask, t1: [group('g1', rowSplit('s1', 's2'))] },
+      hasUnseenFinishedTurn: { ...s.hasUnseenFinishedTurn, s2: true }
+    }))
+    render(<Host onNewTask={vi.fn()} />)
+
+    chord('KeyL') // focus pane right: s1 → s2
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+    expect(useStore.getState().hasUnseenFinishedTurn.s2).toBe(true)
+  })
+
+  it('is a no-op when the mark is lone here (no group)', () => {
+    const t = task('t1', { sessions: [session('s1')], activeSessionId: 's1' })
+    seed([t], 't1')
+    render(<Host onNewTask={vi.fn()} />)
+    chord('KeyL')
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s1')
+  })
+
+  it('is a no-op in a 3-member group when the neighbor direction has nothing adjacent', () => {
+    // g: s1 | (s2 / s3) — a row split whose right child is itself a col split.
+    const t = task('t1', {
+      sessions: [session('s1'), session('s2', { order: 1 }), session('s3', { order: 2 })],
+      activeSessionId: 's3'
+    })
+    seed([t], 't1')
+    const layout: SplitNode = {
+      kind: 'split',
+      dir: 'row',
+      ratio: 0.5,
+      a: leaf('s1'),
+      b: colSplit('s2', 's3')
+    }
+    useStore.setState((s) => ({ groupsByTask: { ...s.groupsByTask, t1: [group('g1', layout)] } }))
+    render(<Host onNewTask={vi.fn()} />)
+    // s3 (bottom-right) has no neighbor further right — no-op.
+    chord('KeyL')
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s3')
+    // ...but does have one above it.
+    chord('KeyK')
+    expect(useStore.getState().activeSessionByTask.t1).toBe('s2')
+  })
+})
+
+describe('useKeyboardShortcuts — next/prev session with a group present (§5.7)', () => {
+  beforeEach(() => {
+    useStore.setState(initialData())
+    installStubBridge()
+  })
+
+  it('cycles tab-by-tab regardless of group membership — into a shown group', () => {
+    // s1/s2 are grouped (shown as a split); s3 is lone. The mark (s1) is in the group.
+    const t = task('t1', {
+      sessions: [session('s1'), session('s2', { order: 1 }), session('s3', { order: 2 })],
+      activeSessionId: 's1'
+    })
+    seed([t], 't1')
+    useStore.setState((s) => ({
+      groupsByTask: { ...s.groupsByTask, t1: [group('g1', rowSplit('s1', 's2'))] }
+    }))
+    render(<Host onNewTask={vi.fn()} />)
+
+    chord('ArrowRight') // s1 → s2: still within the group — a plain mark move either way
+    expect(window.octopusAPI.sessions.switch).toHaveBeenCalledWith({ sessionId: 's2' })
+  })
+
+  it('cycles tab-by-tab regardless of group membership — out of a shown group', () => {
+    const t = task('t1', {
+      sessions: [session('s1'), session('s2', { order: 1 }), session('s3', { order: 2 })],
+      activeSessionId: 's2'
+    })
+    seed([t], 't1')
+    useStore.setState((s) => ({
+      groupsByTask: { ...s.groupsByTask, t1: [group('g1', rowSplit('s1', 's2'))] }
+    }))
+    render(<Host onNewTask={vi.fn()} />)
+
+    chord('ArrowRight') // s2 → s3: leaving the group. cycleSession never consults groups.
+    expect(window.octopusAPI.sessions.switch).toHaveBeenCalledWith({ sessionId: 's3' })
   })
 })

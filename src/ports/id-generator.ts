@@ -4,7 +4,7 @@
  * so the application/domain stay pure and tests can inject deterministic ids.
  */
 
-import type { TaskId, SessionId, WindowId, IssueId } from '../domain/ids'
+import type { TaskId, SessionId, WindowId, IssueId, GroupId } from '../domain/ids'
 
 export interface IdGenerator {
   /** A fresh globally-unique task id (I6). */
@@ -15,4 +15,10 @@ export interface IdGenerator {
   newWindowId(): WindowId
   /** A fresh globally-unique issue id (I19). */
   newIssueId(): IssueId
+  /**
+   * A fresh globally-unique split-group id (DESIGN §5.7). `Task` never invents
+   * ids itself — the join use case passes one in so a join that forms a new
+   * group (rather than extending an existing one) has an id ready.
+   */
+  newGroupId(): GroupId
 }

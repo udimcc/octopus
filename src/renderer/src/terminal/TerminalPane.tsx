@@ -1,6 +1,6 @@
 /**
- * The xterm host for one terminal session (DESIGN §5.3, §6.1). This is the most
- * lifecycle-sensitive component in the app, so the rules are strict:
+ * The xterm host for one terminal session (DESIGN §5.3, §5.7, §6.1). This is the
+ * most lifecycle-sensitive component in the app, so the rules are strict:
  *
  *  - The `Terminal` is created EXACTLY ONCE, in a mount effect with an empty dep
  *    array, and lives in a ref. It is never recreated on re-render — recreating it
@@ -12,14 +12,31 @@
  *    unmounts — which in V1 happens on session close. Task switching keeps every
  *    pane mounted (just hidden), so buffers survive (§5.3).
  *
- * `active` drives the on-show refit: when a hidden pane becomes visible its
+ * A single `active` flag used to drive everything below. Split panes (§5.7) need
+ * two flags instead, because a split can show several panes of the SAME task at
+ * once while only one of them holds keyboard focus:
+ *  - `visible` — this pane is on screen: the unsplit active pane, or any leaf of a
+ *    split in the active task. Drives everything `active` used to drive EXCEPT
+ *    keyboard focus — the on-show refit, the renderer tier / WebGL lease, and
+ *    scroll-intent capture/restore.
+ *  - `focused` — this pane holds the window's mark (§3.7). Drives ONLY
+ *    `term.focus()`, in its own effect below so moving focus between two already-
+ *    visible panes never re-fits, re-syncs the renderer tier, or touches scroll.
+ * With no split, `visible === focused`, so behavior is unchanged from before the split.
+ *
+ * `visible` drives the on-show refit: when a hidden pane becomes visible its
  * container finally has real dimensions, so we fit → resize → refresh to avoid the
  * "reflow pop" a stale grid would show. Conversely, while hidden the pane collapses
  * to 0×0 and `fitAndResize` must NOT fit — a 0×0 fit shrinks xterm to its 2×1 floor
  * and reflows the scrollback, which leaves a NORMAL-buffer TUI (Claude Code) scrolled
- * to the top on the way back; `fitAndResize` guards on the host's layout box.
+ * to the top on the way back; `fitAndResize` guards on the host's layout box. The
+ * same resize path also covers a split ratio change: dragging a divider resizes this
+ * pane's host (`SessionPane` sets its box from `toRects`, §5.7) without touching
+ * `visible` at all — the ResizeObserver below reacts to the host's size, not to
+ * `visible`, so it debounces a fit + `pty.resize` for that case exactly as it would
+ * for a window resize.
  *
- * `active` ALSO drives the renderer tier (§5.3): with every pane kept mounted, we
+ * `visible` ALSO drives the renderer tier (§5.3): with every pane kept mounted, we
  * can't hold a live WebGL context per terminal (browsers cap ~16). So a pane leases
  * a WebGL slot from `webglBudget` when it becomes visible and releases it when
  * hidden; a hidden pane (or one that can't get a lease) renders with `CanvasAddon`
@@ -39,6 +56,11 @@
  * and one that does (Emacs, whose `cnorm`/`cvvis` repaint toggles cursor blink twice per
  * frame) killed the renderer process outright. `installCursorBlinkGuard` closes that route
  * (`cursor-blink-guard.ts`, §5.3).
+ *
+ * This pane also registers a cell-metrics reader with `terminal-metrics.ts`
+ * (`registerPaneMetrics`), so a split chord can ask `canSplit`
+ * (`store/split-layout.ts`) whether there's room to split before it ever creates a
+ * new session (§5.7).
  */
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
@@ -57,6 +79,7 @@ import { isSafeExternalUrl } from '../../../shared/external-url'
 import { registerTerminalSink, unregisterTerminalSink } from '../pty/pty-router'
 import { registerSearchOpener, unregisterSearchOpener } from './terminal-search'
 import { registerTerminalFocuser, unregisterTerminalFocuser } from './terminal-focus'
+import { registerPaneMetrics, unregisterPaneMetrics } from './terminal-metrics'
 import { installCursorBlinkGuard } from './cursor-blink-guard'
 import { webglBudget } from './webgl-budget'
 import { probeGpuTier } from './gpu-capability'
@@ -64,8 +87,17 @@ import { color, radius, shadow, terminalTheme } from '../style/tokens'
 
 export interface TerminalPaneProps {
   readonly sessionId: string
-  /** Whether this pane is the visible one for its (active) task. */
-  readonly active: boolean
+  /**
+   * Whether this pane is on screen (§5.7): the unsplit active pane, or any leaf of
+   * a split in the active task. Drives fit/resize, the renderer tier / WebGL
+   * lease, and scroll-intent capture/restore — everything except keyboard focus.
+   */
+  readonly visible: boolean
+  /**
+   * Whether this pane holds the window's mark (§3.7) — keyboard focus. Drives
+   * only `term.focus()`. Equal to `visible` when the task is unsplit.
+   */
+  readonly focused: boolean
 }
 
 const SCROLLBACK = 10000
@@ -115,7 +147,7 @@ function loadCanvas(term: Terminal, ref: React.MutableRefObject<LoadedRenderer |
 }
 
 /**
- * Bring the pane's renderer to the tier `active` warrants: WebGL for the visible
+ * Bring the pane's renderer to the tier `visible` warrants: WebGL for the visible
  * pane (if a lease is free), Canvas otherwise. Swaps only when the tier actually
  * changes, so a re-render with no visibility change is a no-op.
  *
@@ -126,7 +158,7 @@ function applyRendererTier(
   sessionId: string,
   term: Terminal,
   ref: React.MutableRefObject<LoadedRenderer | null>,
-  active: boolean
+  visible: boolean
 ): void {
   // No real GPU (SwiftShader/llvmpipe/no-WebGL): the DOM renderer is fastest here.
   // Drop any accelerated addon we somehow hold, release the lease, and stop.
@@ -137,7 +169,7 @@ function applyRendererTier(
     return
   }
 
-  const wantWebgl = active && webglBudget.acquire(sessionId)
+  const wantWebgl = visible && webglBudget.acquire(sessionId)
   const current = ref.current
 
   if (wantWebgl) {
@@ -171,7 +203,11 @@ function applyRendererTier(
   loadCanvas(term, ref)
 }
 
-export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JSX.Element {
+export function TerminalPane({
+  sessionId,
+  visible,
+  focused
+}: TerminalPaneProps): React.JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -228,16 +264,17 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
 
     term.open(host)
 
-    // Chords owned by the global shortcut layer (§5.4) — the nine free-form
-    // configurable chords — must NOT reach the PTY. The blanket Ctrl+Shift drop is a
-    // safety net covering the Ctrl+Shift defaults; the explicit list also catches a
-    // rebind to any other modifier (e.g. `Alt+/`) AND `issuesKey`, whose default
-    // (`Alt+Shift+KeyI`) isn't Ctrl+Shift at all, so without the explicit entry the
-    // terminal would swallow it before the global hook ever saw it. Returning false
-    // drops the key before xterm turns it into `onData` output; the window listener's
-    // preventDefault alone is unreliable (xterm's own textarea handler runs first).
-    // Settings live via `getState()` so a rebind takes effect without re-attaching.
-    // This mirrors `useKeyboardShortcuts` so the layers agree.
+    // Chords owned by the global shortcut layer (§5.4) — the fifteen free-form
+    // configurable chords (including `issuesKey` and the six split-pane chords, §5.7)
+    // — must NOT reach the PTY. The blanket Ctrl+Shift drop is a safety net covering
+    // the Ctrl+Shift defaults; the explicit list also catches a rebind to any other
+    // modifier (e.g. `Alt+/`) AND `issuesKey`, whose default (`Alt+Shift+KeyI`) isn't
+    // Ctrl+Shift at all, so without the explicit entry the terminal would swallow it
+    // before the global hook ever saw it. Returning false drops the key before xterm
+    // turns it into `onData` output; the window listener's preventDefault alone is
+    // unreliable (xterm's own textarea handler runs first). Settings live via
+    // `getState()` so a rebind takes effect without re-attaching. This mirrors
+    // `useKeyboardShortcuts` so the layers agree.
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true
       const {
@@ -251,7 +288,13 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
         newTaskKey,
         closeSessionKey,
         searchKey,
-        issuesKey
+        issuesKey,
+        splitRightKey,
+        splitDownKey,
+        focusPaneLeftKey,
+        focusPaneRightKey,
+        focusPaneUpKey,
+        focusPaneDownKey
       } = useStore.getState().settings
       // Copy/paste act on THIS terminal's selection/buffer, so they're handled here
       // (with the live `term`) rather than in the global shortcut hook. Checked before
@@ -281,7 +324,13 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
         newTaskKey,
         closeSessionKey,
         searchKey,
-        issuesKey
+        issuesKey,
+        splitRightKey,
+        splitDownKey,
+        focusPaneLeftKey,
+        focusPaneRightKey,
+        focusPaneUpKey,
+        focusPaneDownKey
       ]
       if (configurable.some((chord) => matchesChord(e, chord))) return false
       return true
@@ -291,9 +340,9 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
     fitRef.current = fit
     searchRef.current = search
 
-    // Start on the tier the initial `active` warrants (the active effect keeps it
+    // Start on the tier the initial `visible` warrants (the visible effect keeps it
     // in sync thereafter). Keeps WebGL leases off hidden panes at mount.
-    applyRendererTier(sessionId, term, rendererRef, active)
+    applyRendererTier(sessionId, term, rendererRef, visible)
 
     // Backend output → this terminal (the §5.2 bypass, not via the store).
     registerTerminalSink(sessionId, (data) => term.write(data))
@@ -308,6 +357,25 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
     // `textarea` (not `term.focus()`, which takes no params) so `preventScroll` is
     // honored — the drawer closing shouldn't also yank the session list's scroll.
     registerTerminalFocuser(sessionId, () => term.textarea?.focus({ preventScroll: true }))
+    // A split chord's `canSplit` check (§5.7) reads this pane's current container
+    // and cell size. `host.clientWidth/clientHeight` is the container's CSS pixel
+    // box; cell size has no stable public xterm API, so it's derived from the
+    // current fitted grid (container size ÷ `term.cols`/`rows`) — not
+    // the private `_core` render-service APIs. 0 cell size (hidden pane, 0 cols)
+    // tells `canSplit` the data isn't available, which it treats as "don't block".
+    registerPaneMetrics(sessionId, () => {
+      const h = hostRef.current
+      const t = termRef.current
+      if (!h || !t) return undefined
+      const widthPx = h.clientWidth
+      const heightPx = h.clientHeight
+      return {
+        widthPx,
+        heightPx,
+        cellWidthPx: t.cols > 0 ? widthPx / t.cols : 0,
+        cellHeightPx: t.rows > 0 ? heightPx / t.rows : 0
+      }
+    })
     // Keystrokes → backend PTY (fire-and-forget, §6.5).
     const dataSub = term.onData((data) => window.octopusAPI.pty.write({ sessionId, data }))
 
@@ -323,13 +391,15 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
 
     fitAndResize(sessionId, term, fit, host)
 
-    // Focus a pane that mounts already-active (a freshly opened session becomes the
-    // active tab), so the user can type immediately without clicking in. The on-show
-    // `useLayoutEffect` can't do this on the FIRST render: it runs in the commit phase
-    // BEFORE this passive mount effect, when `termRef` is still null, so it returns
-    // early. It handles focus only for LATER active→visible transitions of an
-    // already-mounted pane.
-    if (active) term.focus()
+    // Focus a pane that mounts already-focused (a freshly opened session becomes
+    // the focused tab, or the new pane of a split created via a split chord —
+    // `sessions.create`'s `split` intent joins it into the group atomically on the
+    // backend, DESIGN §5.7, split-groups design), so the user can type immediately
+    // without clicking in. The dedicated focus `useLayoutEffect` below can't do this
+    // on the FIRST render: it runs in the commit phase BEFORE this passive mount
+    // effect, when `termRef` is still null, so it returns early. It handles focus
+    // only for LATER focus transitions of an already-mounted pane.
+    if (focused) term.focus()
 
     // Refit on container resize, debounced so a drag doesn't spam pty:resize.
     let debounce: ReturnType<typeof setTimeout> | undefined
@@ -350,6 +420,7 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
       unregisterTerminalSink(sessionId)
       unregisterSearchOpener(sessionId)
       unregisterTerminalFocuser(sessionId)
+      unregisterPaneMetrics(sessionId)
       rendererRef.current?.addon.dispose()
       rendererRef.current = null
       webglBudget.release(sessionId)
@@ -358,26 +429,29 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
       fitRef.current = null
       searchRef.current = null
     }
-    // `active` is intentionally NOT a dep: the terminal is created once; the tier is
-    // re-synced by the active effect below. `active` is read here only to pick the
-    // initial renderer tier at mount.
+    // Neither `visible` nor `focused` is a dep: the terminal is created once.
+    // `visible` is read here only to pick the initial renderer tier at mount (the
+    // visible effect below re-syncs it thereafter); `focused` is read here only for
+    // the mount-time focus call above (the dedicated focus effect below re-syncs it
+    // thereafter).
   }, [sessionId])
 
-  // Capture scroll intent the instant this pane goes inactive. `useLayoutEffect` runs
+  // Capture scroll intent the instant this pane goes hidden. `useLayoutEffect` runs
   // synchronously in the commit phase — BEFORE the browser's render step dispatches the
   // scrollTop=0 event that corrupts xterm's `ydisp` (see the on-show effect) — so
-  // `viewportY`/`baseY` are still truthful here. The `active` guard snapshots only the
-  // state we're leaving (active→hidden); it never overwrites the saved intent during a
-  // show commit. Declared ABOVE the on-show effect so it commits first.
+  // `viewportY`/`baseY` are still truthful here. The `visible` guard snapshots only
+  // the state we're leaving (visible→hidden); it never overwrites the saved intent
+  // during a show commit, and a `focused` change alone (visible stays true) doesn't
+  // re-run this effect at all. Declared ABOVE the on-show effect so it commits first.
   useLayoutEffect(() => {
     const term = termRef.current
-    if (!term || active) return
+    if (!term || visible) return
     const buf = term.buffer.active
     scrollIntentRef.current = {
       atBottom: buf.viewportY >= buf.baseY,
       viewportY: buf.viewportY
     }
-  }, [active, sessionId])
+  }, [visible, sessionId])
 
   // On becoming visible, the container gains real dimensions: refit and repaint so
   // there's no stale-grid "pop" (§5.3). Also re-sync the renderer tier so the newly
@@ -398,8 +472,8 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
     const fit = fitRef.current
     const host = hostRef.current
     if (!term || !fit || !host) return
-    applyRendererTier(sessionId, term, rendererRef, active)
-    if (!active) return
+    applyRendererTier(sessionId, term, rendererRef, visible)
+    if (!visible) return
     fitAndResize(sessionId, term, fit, host) // reflow first — this moves baseY
     term.refresh(0, term.rows - 1)
     const restore = (): void => {
@@ -409,7 +483,6 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
       else t.scrollToLine(scrollIntentRef.current.viewportY)
     }
     restore()
-    term.focus()
 
     if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
     rafRef.current = requestAnimationFrame(() => {
@@ -423,7 +496,20 @@ export function TerminalPane({ sessionId, active }: TerminalPaneProps): React.JS
         rafRef.current = null
       }
     }
-  }, [active, sessionId])
+  }, [visible, sessionId])
+
+  // Pane focus (§5.7) is independent of visibility: a split can hold several
+  // `visible` panes at once while only one is `focused`, and moving focus between
+  // two already-visible panes must NOT re-fit, re-sync the renderer tier, or touch
+  // scroll position — only call `term.focus()`. On the FIRST render this runs (as a
+  // layout effect) BEFORE the passive mount effect above, when `termRef` is still
+  // null, so it returns early there; the mount effect's own `if (focused)
+  // term.focus()` covers that case, mirroring the on-show effect above.
+  useLayoutEffect(() => {
+    const term = termRef.current
+    if (!term || !focused) return
+    term.focus()
+  }, [focused, sessionId])
 
   const runSearch = (backwards: boolean): void => {
     const search = searchRef.current

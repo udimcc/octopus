@@ -54,6 +54,12 @@ type ChordKey =
   | 'copyKey'
   | 'pasteKey'
   | 'issuesKey'
+  | 'splitRightKey'
+  | 'splitDownKey'
+  | 'focusPaneLeftKey'
+  | 'focusPaneRightKey'
+  | 'focusPaneUpKey'
+  | 'focusPaneDownKey'
 
 interface ChordFieldDef {
   readonly key: ChordKey
@@ -72,7 +78,21 @@ const CHORD_FIELDS: ReadonlyArray<ChordFieldDef> = [
   { key: 'searchKey', label: 'Terminal search', default: 'Ctrl+Shift+KeyF' },
   { key: 'copyKey', label: 'Copy', default: 'Ctrl+Shift+KeyC' },
   { key: 'pasteKey', label: 'Paste', default: 'Ctrl+Shift+KeyV' },
-  { key: 'issuesKey', label: 'Toggle Issues', default: 'Alt+Shift+KeyI' }
+  { key: 'issuesKey', label: 'Toggle Issues', default: 'Alt+Shift+KeyI' },
+  { key: 'splitRightKey', label: 'Split pane right', default: 'Ctrl+Shift+KeyE' },
+  { key: 'splitDownKey', label: 'Split pane down', default: 'Ctrl+Shift+KeyO' },
+  {
+    key: 'focusPaneLeftKey',
+    label: 'Focus pane left',
+    default: 'Ctrl+Shift+KeyH'
+  },
+  {
+    key: 'focusPaneRightKey',
+    label: 'Focus pane right',
+    default: 'Ctrl+Shift+KeyL'
+  },
+  { key: 'focusPaneUpKey', label: 'Focus pane up', default: 'Ctrl+Shift+KeyK' },
+  { key: 'focusPaneDownKey', label: 'Focus pane down', default: 'Ctrl+Shift+KeyJ' }
 ]
 
 /** The settings categories, shown in the left sidebar in this order. */
@@ -205,7 +225,13 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
       searchKey: chords.searchKey,
       copyKey: chords.copyKey,
       pasteKey: chords.pasteKey,
-      issuesKey: chords.issuesKey
+      issuesKey: chords.issuesKey,
+      splitRightKey: chords.splitRightKey,
+      splitDownKey: chords.splitDownKey,
+      focusPaneLeftKey: chords.focusPaneLeftKey,
+      focusPaneRightKey: chords.focusPaneRightKey,
+      focusPaneUpKey: chords.focusPaneUpKey,
+      focusPaneDownKey: chords.focusPaneDownKey
     }
     void window.octopusAPI.app.updateSettings(patch).then((ack) => {
       if (!ack.ok) {

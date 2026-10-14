@@ -9,12 +9,13 @@
  * deliberate, tested seam rather than a shared import.
  */
 
-import type { TaskId, SessionId, TypeId, WindowId, IssueId } from './ids'
+import type { TaskId, SessionId, TypeId, WindowId, IssueId, GroupId } from './ids'
 import type { SessionState, TaskState } from './state'
 import type { TaskLifecycle, SessionLifecycle } from './lifecycle'
 import type { SessionConfig } from './session-config'
 import type { ScriptInvocationMeta } from './worktree-ref'
 import type { IssueStatus } from './issue'
+import type { GroupTree } from './group-tree'
 
 export interface WorktreeRefSnapshot {
   readonly path: string
@@ -45,6 +46,17 @@ export interface SessionSnapshot {
   readonly windowId?: WindowId
 }
 
+/**
+ * A split group's persisted shape (DESIGN §5.7): an id, its layout tree (leaves
+ * are member session ids) and a palette color index. Membership is `tree`'s
+ * leaves — nothing else to keep in sync.
+ */
+export interface GroupSnapshot {
+  readonly id: GroupId
+  readonly tree: GroupTree
+  readonly colorIndex: number
+}
+
 export interface TaskSnapshot {
   readonly id: TaskId
   readonly name: string
@@ -67,6 +79,12 @@ export interface TaskSnapshot {
   readonly activeSessionId?: SessionId
   readonly position: number
   readonly createdAt: number
+  /**
+   * This task's split groups (DESIGN §5.7). Optional on read so pre-feature
+   * snapshots hydrate as "no groups" — see `Task.fromSnapshot`, which also
+   * drops any individually-invalid saved group rather than failing the load.
+   */
+  readonly groups?: readonly GroupSnapshot[]
 }
 
 export interface IssueSnapshot {

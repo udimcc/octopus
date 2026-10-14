@@ -181,7 +181,8 @@ describe('<IssueList>', () => {
           state: 'unknown',
           sessions: [],
           position: 0,
-          createdAt: 1000
+          createdAt: 1000,
+          groups: []
         }
       ]
     )

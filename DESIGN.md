@@ -292,6 +292,13 @@ marked session, and moving between them never blanks or re-points the window jus
   (`sessionMovedToWindow{cause:'windowClosed'}`) keeps main's mark; main marks a moved session only if it
   hosted none of that task's sessions.
 - **Close** of a window's marked tab: the window falls back to its **last** remaining tab.
+- **Split groups** (§5.7): a window's mark can be a member of a backend-owned **group** — 2+ sessions of the
+  task sharing a layout tree in that window — in which case the window shows the **whole group**, with the
+  mark as its **focused pane**; a lone mark shows alone. Marking a session — a tab click, the "⋯" jump menu,
+  next/prev — **only ever moves the mark; it never joins, leaves, reorders or resizes a group**. Marking a
+  session that is a member of the group already shown just moves focus to its pane; marking a session in a
+  *different* group (or a lone session) swaps the whole displayed set to that group's leaves (or to no split).
+  Every rule above (focused session, shortcuts, I10 persistence) keeps its meaning.
 
 ---
 
@@ -326,7 +333,7 @@ App
 └── TaskWorkspace
     └── TaskView*                 (one per task; only active is visible)
         ├── SessionTabBar → NewSessionDropdown, SessionTab* (SessionStatusIcon [phase 2])
-        └── SessionPaneArea → SessionPane*  (TerminalPane | JenkinsPane [phase 3])
+        └── SessionPaneArea → SessionPane*  (TerminalPane | JenkinsPane [phase 3]), SplitDividers (§5.7)
 ```
 
 All `TaskView`s and their `SessionPane`s stay mounted; only the active ones are visible (see §5.3).
@@ -400,6 +407,11 @@ context). `terminal.write(data)` keeps running for hidden sessions so their buff
   199 events → 1. General rule for this layer: **route around xterm option writes on hot paths; never add one
   per frame.** The safety net for the class is §6.7's `render-process-gone` handler.
 
+- **Split groups keep the flat render (§5.7).** A shown group never nests a pane inside a per-group
+  container: `TaskView` keeps rendering every hosted `SessionPane` as a flat sibling keyed by session id, and
+  a shown group only changes each pane's absolute box. Joining, leaving, ungrouping, resizing, and switching
+  the mark between a group and a lone session therefore change props only, and never remount a `TerminalPane`.
+
 Rejected: unmount + backend-buffered replay (perceptible 50–300 ms "pop" on switch, cursor/selection
 restore complexity). The serialize-and-replay path is kept available for a future durable-backend re-attach
 (§6.2), not for routine task switching.
@@ -471,7 +483,8 @@ restore complexity). The serialize-and-replay path is kept available for a futur
     session (opening its tab in its window). Because it is a renderer view-model flag it survives task switches
     (still in the store) but not an app restart (a restored session starts un-flagged — a finished-long-ago
     agent is just idle).
-- **Keyboard:** nine actions are **fully user-configurable chords** in Settings — next/prev session
+- **Keyboard:** fifteen actions are **fully user-configurable chords** (the six split-pane chords are
+  listed in §5.7) in Settings — next/prev session
   (`sessionNextKey` / `sessionPrevKey`, defaults `Ctrl+Shift+→`/`←`), next/prev task (`taskNextKey` /
   `taskPrevKey`, defaults `Ctrl+Shift+↓`/`↑`), new session (`newSessionKey`, default `Ctrl+Shift+N`), new task
   (`newTaskKey`, default `Ctrl+Shift+T`), close session (`closeSessionKey`, default `Ctrl+Shift+W`),
@@ -483,7 +496,7 @@ restore complexity). The serialize-and-replay path is kept available for a futur
   `RESERVED_CHORDS`, currently empty) before Save is allowed. `Ctrl+Shift+C/V` copy/paste and `Esc` close
   modal/dropdown are not configurable. Because every binding requires a modifier, terminal `Ctrl+C` etc. are
   never stolen. `TerminalPane` also installs an xterm `attachCustomKeyEventHandler` that drops both every
-  `Ctrl+Shift` chord AND the nine configurable chords before they become PTY input, so a global shortcut is
+  `Ctrl+Shift` chord AND every configurable chord before they become PTY input, so a global shortcut is
   never *also* written to the terminal (the `window` listener's `preventDefault` alone is unreliable —
   xterm's textarea handler runs first).
 - **Empty states & toasts:** "No tasks yet", "No sessions", inline "Connecting…" written into the terminal;
@@ -529,6 +542,154 @@ the native `screenX/screenY` and calls `octopusAPI.windows.windowAtPoint({x,y})`
 over another Octopus window → `sessions.move({sessionId, targetWindowId})`; if it lands on empty desktop →
 `createWindowWithSession` opens a new secondary window at the drop point and moves the session into it. The
 move is a pure view re-assignment — the PTY keeps running untouched (§6.7).
+
+### 5.7 Split panes
+
+A window can show several sessions of the **active task** at once, tmux-style. Unlike a plain per-window
+split, which sessions appear together is a **backend-owned split group**, not renderer state: a group is a
+fixed combination the user built on purpose (e.g. "claude + code" in one split, "terminal1 + terminal2" in
+another), and it stays that combination no matter which of its sessions the mark visits or what else happens
+in the window. A session that belongs to no group shows alone. There is still **one tab bar per task**.
+
+**Model (domain, `Task` aggregate, §3.1).** `Task` holds a list of **groups** — `{ id: GroupId, tree:
+GroupTree, colorIndex }` (`src/domain/task.ts`). A group is **2 or more sessions of that task, in one
+window**, sharing a layout tree and a palette color; a task may have several groups. `GroupTree`
+(`src/domain/group-tree.ts`) is a leaf (one session id) or a split (`dir` `row` = side by side, `col` =
+stacked; `ratio` = the first child's share, clamped **0.1–0.9**; two children) — structurally identical to
+the wire `SplitNode` (`shared/dto.ts`), re-declared rather than imported because the domain cannot import
+`shared`. **Membership is the tree's leaves** — there is no separate member list and no group pointer on
+`Session`, so there is nothing to reconcile. `Task` enforces the invariants on every mutation: **one group
+per session** (joining a session already in another group leaves that one first); **2+ members** (a group
+that would drop to 1 **dissolves** instead); **all members share a window**; **members are contiguous** in
+the task's session order. `Task` never invents a `GroupId` itself — the use case passes one in from
+`deps.ids.newGroupId()` (`IdGenerator` port) when a join might need to form a new group. Color: a fixed
+6-color palette (`GROUP_COLOR_PALETTE_SIZE = 6`; swatches in `src/renderer/src/style/tokens.ts`'s
+`GROUP_COLOR_PALETTE`); a new group takes the first index not already used by another group of the same task,
+persisted and stable until the group dissolves. **Loading tolerates bad saved data**: `Task.fromSnapshot`
+drops (never throws on) a saved group whose tree fails its own internal validation (`group-tree.ts`'s
+`validate` — bad shape, a leaf repeated within the tree, a non-finite ratio) or whose surviving leaves are
+unknown to the task, already claimed by an earlier group, fewer than 2, span more than one window, or aren't
+contiguous in the restored session order.
+
+**The mark decides what is shown; it never touches a group.** The window's mark (`activeSessionByTask`,
+§3.7) is unchanged — still per-window, still just "which tab/pane this window currently shows for this
+task." `groupOfSession(taskId, mark)` (renderer store) looks up the mark's group, if any; `visiblePaneIds`
+returns that group's leaves hosted in this window (its tree order) when the mark is grouped, or just the
+mark when it's lone. **A tab click, the "⋯" jump menu, and next/prev session (incl. the cross-window walk)
+only ever move the mark** (`setActiveSession` + `sessions.switch`) — none of them sends a group command or
+changes a group's tree, membership or order. Marking a session that is already a member of the group shown
+just moves focus to its pane; marking a session in a different group (or a lone session) swaps the whole
+displayed set to *that* mark's group (or to no split) — a side effect of which group the mark belongs to,
+never a mutation of one.
+
+**Rendering (§5.3).** `TaskView` renders every session this window hosts as a flat `SessionPane` keyed by
+session id, in tab order, whether or not its group is shown — joining, leaving, ungrouping, resizing, and
+switching the mark between a group and a lone session change only each pane's `visible`/`focused`/`rect`
+props, never the element's parent, type, or key (load-bearing for keep-alive, §5.3). `toRects` (now a pure
+**geometry-only** module, `store/split-layout.ts` — it reads a `GroupDTO.layout` tree but never mutates one)
+maps the shown group's tree to absolute percentage boxes; a group transiently missing a leaf from this window
+mid-move (§7 below) falls back to showing the mark alone rather than drawing a 1-pane "split." `focused` is
+true only for the mark; the focused pane has a 2 px accent outline. `SplitDividers` renders as a sibling
+*after* every pane (never between/around them) with one draggable gutter per split node; a mousedown in an
+unfocused pane focuses it without consuming the event, so xterm still gets the click for selection and mouse
+reporting.
+
+**Divider drag.** Local while the pointer moves — `SplitDividers` reports path/ratio continuously
+(rAF-throttled) purely for `TaskView`'s own in-memory preview, no command sent. **One** `groups.resize`
+command fires on release. The preview clears once the backend's own tree for that group changes identity
+(i.e. the resize's own `groupsChanged` lands) rather than on pointer-up, so there is no visible pre-drag
+snap-back while the round trip is in flight; a capture lost mid-drag (e.g. the tab switches away) drops the
+preview and sends nothing.
+
+**Joining.** Tab menu **"Split right" / "Split down"** on tab T sends `groups.join{sessionId: T,
+anchorSessionId: mark, dir}` — forms a new group if the mark is lone, else splits the mark's existing
+group's leaf in place; T's tab moves to right after the mark's. Disabled when T **is** the mark, T is
+**already** a member of the mark's group, or the mark's pane has no room to halve (`canSplit`, via
+`terminal-metrics.ts`'s `measurePane`). The **split chords** (`Ctrl+Shift+E`/`O`) create a brand-new terminal
+already joined in **one command** — `sessions.create({taskId, split: {anchorSessionId: mark, dir}})`
+(`CreateSessionInput.split`) — refused with a toast under the same `canSplit` size check; there is no
+renderer-held "pending split" intent to reconcile with a later `sessionCreated` (unlike the first,
+unshipped per-window-split version). `openSession` validates the anchor **before** any mutation: if a race
+leaves it no longer resolving to a session of this task in the new session's window, the split is dropped
+silently and the terminal is still created, lone — losing the split is better than losing the new terminal.
+If T already belongs to a different group, joining leaves that group first (dissolving it at 1 remaining
+member, exactly like "Remove from group" below).
+
+**Leaving / ungrouping.** Tab menu **"Remove from group"** (members only) sends `groups.leave{sessionId}` —
+the session becomes lone, its tab placed right after the (remaining) group's block; a group left with 1
+member **dissolves** (the lone remaining member keeps its own tab position). Right-click the group's line →
+**"Ungroup"** sends `groups.ungroup{taskId, groupId}` — every member becomes lone at once; tabs stay exactly
+where they are (no reorder, unlike join/leave). No group names anywhere in this UI.
+
+**Tab bar look & drag.** A colored line along the bottom of each member tab, bridged across the gap to the
+next tab when it's a fellow member, so a group's whole span reads as one continuous line in its palette
+color. **The line is the group's drag handle** (taller hit area, grab cursor) — a manual pointer-capture drag
+(dnd-kit can't share one draggable id across several tabs), modeled on `SplitDividers`'s gutter pattern: dropped
+inside the bar it sends `groups.reorder{taskId, groupId, toIndex}` (the whole block moves, keeping members'
+relative order, snapped so it never lands inside another group); dropped outside the bar or onto another
+window it **detaches the whole group** through the same cross-window move/detach path a lone tab's drag uses
+— carrying the window's mark if it's a member of this group, else the group's first member. A **member tab's**
+own drag is clamped to its own group's contiguous span; a **lone tab** dropped inside a group snaps to that
+group's nearer edge instead of splitting it (ties favor the earlier/left edge). These rules live **only** in
+the backend (`Task.reorderSession`); the renderer sends the raw drop index computed on the task's full
+cross-window `sessionIds` order and the backend clamps/snaps it, so a preview that disagrees just snaps back
+on the next `sessionReordered`.
+
+**Moving or detaching a group.** Dragging/detaching **any** member — the group line, a member tab, or the
+split-shortcut-created session's anchor — moves **every** member of its group together: `moveSessionToWindow`
+/ `createWindowWithSession` both call `Task.moveToWindow(sessionId, windowId)`, which resolves
+`groupMembers(sessionId)` (`[sessionId]` for a lone session, so this subsumes that case with no branching),
+reassigns every member's `windowId` and returns the moved ids with `sessionId` **first**, then its groupmates
+in tab order — the use case just persists each returned session row and publishes one `sessionMovedToWindow`
+per member in that order. The directly-targeted session's event carries whatever `cause` the caller passed
+(none for a plain drag/move, `'windowClosed'` for `closeWindow`'s move-to-main disposition); **every other**
+riding-along member's event is forced to `cause: 'groupMove'` regardless, so the target window keeps its
+existing mark for them and marks **only** the member actually sent (§3.7). The group's tree/color is
+untouched — only each member's `windowId` row changes, so no `session_groups` write happens on a move.
+
+`createWindowWithSession`'s new window is created **hidden** (`main/window.ts`, shown on `ready-to-show`), so
+the still-focused source window can race ahead and re-report its own mark (`sessions.focus`) before the new
+window ever hydrates — too late for the detached session's own `task.setActiveSession` write (which this use
+case still makes, for cross-restart fallback only) to reliably reach the new window's first `getState`.
+Instead, `main/ipc-handlers.ts` keeps a one-shot `windowId → {taskId, sessionId}` registry (`initialMarks`),
+populated right after `createWindowWithSession` returns the new window's id, and hands it back ONLY in that
+window's own `getState` reply (`WindowedWorkspaceStateDTO.initialMark`) — every other window's reply omits
+it. The renderer's hydrate uses it, when present, in place of the task's persisted `activeSessionId` to pick
+the window's initial mark. The registry entry survives repeat `getState` calls for that window (a reload still
+sees it) and is dropped only when the window closes (`windowClosed`).
+
+**Window close.** "Move to main" scans the window's hosted sessions and calls `moveSessionToWindow` with
+`cause: 'windowClosed'` for each — the first member of a group it reaches already drags the rest along
+(tagged `groupMove`); when the scan later reaches those groupmates, `moveSessionToWindow`'s idempotent
+same-window no-op absorbs the repeat, so groups arrive at main **intact** with no duplicate events. "Kill
+sessions" closes every hosted session via `closeSession`, whose `Task.removeSession` drops each closed
+session's leaf (dissolving/emptying its group as it goes) — no special-casing needed in `closeWindow` either
+way.
+
+**Events.** Every group-mutating use case (join, leave, ungroup, reorder, resize, and `openSession`'s split
+path) persists via a shared helper (`persistGroups`: `upsertGroup` for every group present after, `deleteGroup`
+for every id present before but gone after) and publishes `groupsChanged{taskId, groups}` with the task's
+**full** group list — a replace, not a diff. Order changes (join, leave, reorder-group, a joining
+`openSession`) also publish `sessionReordered`. `groupsChanged` is not session-scoped, so the window registry
+(§6.7) broadcasts it to every window, like other task-level events.
+
+**"On screen" for §9.5.** Unchanged: only the **focused pane** is on screen. `isSessionFocused` keeps its
+meaning (the mark of the focused window's active task), so a visible but unfocused group pane still raises
+the ready-for-review dot and the state-change toast.
+
+**Default chords** (configurable and conflict-checked in Settings, and dropped by `TerminalPane`'s key guard so
+they never reach the PTY): split right `Ctrl+Shift+E` (`splitRightKey`), split down `Ctrl+Shift+O`
+(`splitDownKey`), focus pane left/down/up/right `Ctrl+Shift+H/J/K/L` (vim-style;
+`focusPaneLeftKey`/`DownKey`/`UpKey`/`RightKey`). They avoid the existing defaults and the debug chord. Being
+`Ctrl+Shift` chords, they take nothing from the terminal, since `TerminalPane` already drops every `Ctrl+Shift`
+chord. `Ctrl+Alt+Shift+Arrow` was rejected because GNOME/mutter grabs it for move-to-workspace, so the keydown
+never reaches the app. `Alt+Arrow` and `Alt+Shift+Arrow` were rejected because readline, emacs and org-mode use
+them. Note that the Settings conflict check sees only in-app chords, not window-manager grabs. The focus
+chords move the mark among the shown group's leaves via the same geometry (`neighbor`, in
+`store/split-layout.ts`) as before; they never change which group is shown.
+
+**No backend PTY, daemon or protocol change.** Groups are a `Task`/view construct only; each session is still
+shown in exactly one pane of one window, keyed by `sessionId` in main exactly as before.
 
 ---
 
@@ -604,6 +765,9 @@ CREATE TABLE windows (  -- phase 1.5: window records incl. monitor placement (§
   x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0,
   width INTEGER NOT NULL DEFAULT 1280, height INTEGER NOT NULL DEFAULT 800,
   created_at INTEGER NOT NULL);
+CREATE TABLE session_groups (  -- v9: a task's split-pane groups, opaque JSON layout (§5.7)
+  id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  layout TEXT NOT NULL, color INTEGER NOT NULL);
 ```
 
 **Persist:** task list/name/worktree/branch/base_ref/repo_root/order/active-session; session definitions
@@ -634,7 +798,12 @@ record — the same fresh-DB-`CREATE`-plus-guarded-upgrade pattern proven at v2/
 bumps it to 5:** a guarded `ALTER TABLE tasks ADD COLUMN managed INTEGER NOT NULL DEFAULT 1` plus a
 back-fill `UPDATE tasks SET managed = 0 WHERE base_ref IS NULL` — historically only adopted tasks left
 `base_ref` null, so this marks them unmanaged (left on disk on delete, §6.4) while every provisioned row
-keeps the `DEFAULT 1`.
+keeps the `DEFAULT 1`. Issues bump it to 8 (§13.2). **Split groups bump it to 9:** a `CREATE TABLE IF NOT
+EXISTS session_groups` (§5.7) — one row per group, `layout` an opaque JSON blob of the domain's group tree the
+backend never interprets, `color` the palette index. Its FK cascade removes a task's groups with it when the
+task is deleted. An unreleased dev build stamped v8 with a different, per-task-per-window `split_layouts`
+table (one renderer-owned split per task per window) and no `issues` table, so the v9 migration also re-runs
+the `issues` CREATE (IF NOT EXISTS) and `DROP TABLE IF EXISTS split_layouts` — both no-ops on a real v8 DB.
 
 **Configured projects (`settings.json#projects`, §5.4).** Beside `worktree.location`, `settings.json` gains
 a `projects` array of `{ path, defaultBranch? }`: `path` is always a repo's **main record** — its main

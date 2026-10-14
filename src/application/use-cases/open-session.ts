@@ -13,15 +13,32 @@
  * and rethrows: a brand-new session that never ran is not added to the task or
  * persisted (a session that never ran is not a durable definition). Both surface
  * an `error` event.
+ *
+ * `input.split` (DESIGN §5.7, the split shortcut / tab-menu "Split right|down")
+ * joins the new session into `anchorSessionId`'s group — forming one if the
+ * anchor is lone — in this SAME command, right after `task.addSession`. The
+ * anchor is validated BEFORE anything is mutated (session created, added, or
+ * started): if it no longer resolves to a session of this task in the new
+ * session's window (unknown id, another task, another window — all races
+ * between the renderer reading its mark and this command landing), the split is
+ * silently dropped and the session is created lone — losing the user's new
+ * terminal entirely would be worse than losing just the split. `task.join`
+ * reorders the new session's tab next to the anchor's, so that case persists
+ * every session row (like `joinGroup`) instead of only the new one, and
+ * publishes `groupsChanged` + `sessionReordered` after the existing
+ * `sessionCreated` so the mark/focus behavior the renderer already drives off
+ * `sessionCreated` is untouched.
  */
 
 import type { AppDependencies } from '../dependencies'
 import type { CreateSessionInput } from '../commands'
 import type { SessionConfig } from '../../domain/session-config'
+import type { Group } from '../../domain/task'
 import { Session } from '../../domain/session'
 import { InvariantViolationError } from '../../domain/errors'
 import { asTypeId, MAIN_WINDOW_ID, type TypeId } from '../../domain/ids'
 import { startSessionRuntime } from './start-session-runtime'
+import { persistGroups } from './persist-groups'
 
 export async function openSession(deps: AppDependencies, input: CreateSessionInput): Promise<void> {
   const task = deps.workspace.task(input.taskId)
@@ -59,6 +76,12 @@ export async function openSession(deps: AppDependencies, input: CreateSessionInp
 
   const id = deps.ids.newSessionId()
   const now = deps.clock.now()
+  // This is just the `Session`'s construction-time placeholder (the constructor
+  // requires an `order`): `task.addSession` below always re-stamps it to the
+  // task's actual tail position (`max(order)+1`, review C1), so a stale/removed
+  // session's gap in the existing order never collides with this value. Kept as
+  // `task.sessions().length` rather than e.g. `0` only because it still reads
+  // naturally as "roughly last" until that overwrite happens.
   const order = task.sessions().length
   const title = input.title ?? defaultTitle(provider.displayName, task.sessions())
 
@@ -74,7 +97,15 @@ export async function openSession(deps: AppDependencies, input: CreateSessionInp
 
   // Host the session in the window that requested it (V1.5, §6.7). Stamped before
   // toSnapshot() so the assignment is persisted and carried on `sessionCreated`.
-  session.assignToWindow(input.windowId ?? MAIN_WINDOW_ID)
+  const windowId = input.windowId ?? MAIN_WINDOW_ID
+  session.assignToWindow(windowId)
+
+  // Validate the split's anchor BEFORE any mutation (session create/add/start),
+  // so a losing race degrades to a lone create rather than leaving partial group
+  // state (DESIGN §5.7). `task.session` is scoped to THIS task, so an anchor from
+  // another task also fails here.
+  const anchor = input.split ? task.session(input.split.anchorSessionId) : undefined
+  const canJoin = anchor !== undefined && anchor.windowId === windowId
 
   // Start the runtime (Created → Starting → Running). On failure this throws after
   // marking StartFailed + disposing; the session is never added or persisted.
@@ -82,14 +113,41 @@ export async function openSession(deps: AppDependencies, input: CreateSessionInp
 
   task.addSession(session)
 
-  // Persist the session definition (I15) — its config re-creates it on restart.
+  let groupsBefore: readonly Group[] = []
+  let groupsAfter: readonly Group[] = []
+  let joined = false
+  if (input.split && canJoin && anchor) {
+    groupsBefore = task.groups()
+    task.join(session.id, anchor.id, input.split.dir, deps.ids.newGroupId())
+    groupsAfter = task.groups()
+    joined = true
+  }
+
+  // A join reorders the new session's tab next to the anchor's, so every
+  // session's (possibly renumbered) `order` must be persisted — same as
+  // `joinGroup`. Without a split only the new row needs writing.
+  const ordered = joined ? task.sessions() : [session]
+
   deps.persistence.transaction(() => {
-    deps.persistence.upsertSession(session.toSnapshot())
+    for (const s of ordered) {
+      deps.persistence.upsertSession(s.toSnapshot())
+    }
     // addSession may have made this the active session; persist the task too.
     deps.persistence.upsertTask(task.toSnapshot(deps.aggregator))
+    if (joined) {
+      persistGroups(deps.persistence, task.id, groupsBefore, groupsAfter)
+    }
   })
 
   deps.bus.publish({ type: 'sessionCreated', taskId: input.taskId, session: session.toSnapshot() })
+  if (joined) {
+    deps.bus.publish({ type: 'groupsChanged', taskId: task.id, groups: groupsAfter })
+    deps.bus.publish({
+      type: 'sessionReordered',
+      taskId: task.id,
+      orderedSessionIds: ordered.map((s) => s.id)
+    })
+  }
 }
 
 /**

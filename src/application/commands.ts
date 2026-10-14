@@ -9,12 +9,13 @@
  * will dispatch to recompute `TaskState`. Defined now, dispatched by nobody.
  */
 
-import type { TaskId, SessionId, TypeId, WindowId, IssueId } from '../domain/ids'
+import type { TaskId, SessionId, TypeId, WindowId, IssueId, GroupId } from '../domain/ids'
 import type { SessionConfig } from '../domain/session-config'
 import type { SessionState } from '../domain/state'
 import type { IssueStatus } from '../domain/issue'
 import type { StateChangeMeta } from '../ports/session-runtime'
 import type { ProjectSettings } from '../ports/settings-store'
+import type { SplitDirection, GroupPath } from '../domain/group-tree'
 
 /** Provision a brand-new worktree (New-Task modal "From New Worktree", §5.4). */
 export interface CreateTaskFromNewInput {
@@ -102,6 +103,16 @@ export interface CreateSessionInput {
   readonly config?: SessionConfig
   /** Which window hosts the new session (V1.5, §6.7). Omitted → main window. */
   readonly windowId?: WindowId
+  /**
+   * The split shortcut / tab-menu "Split right|down" (DESIGN §5.7): create the
+   * session, then join it into `anchorSessionId`'s group (forming one if the
+   * anchor is lone) in the SAME command — the renderer never carries a pending
+   * split intent across two round-trips. Omitted → the plain lone-tab create.
+   */
+  readonly split?: {
+    readonly anchorSessionId: SessionId
+    readonly dir: SplitDirection
+  }
 }
 
 export interface CloseSessionInput {
@@ -127,6 +138,50 @@ export interface SwitchSessionInput {
  */
 export interface FocusSessionInput {
   readonly sessionId: SessionId
+}
+
+/**
+ * Join `sessionId` into `anchorSessionId`'s group (DESIGN §5.7 tab-menu "Split
+ * right / Split down" and the split shortcut's resulting command). Forms a new
+ * group if the anchor is lone; if `sessionId` is already in a different group it
+ * leaves that one first. Both must be sessions of the same task and window —
+ * `Task.join` enforces it, so the input carries no `taskId` (resolved from
+ * `sessionId`, same as `RenameSessionInput`).
+ */
+export interface JoinGroupInput {
+  readonly sessionId: SessionId
+  readonly anchorSessionId: SessionId
+  readonly dir: SplitDirection
+}
+
+/**
+ * Remove `sessionId` from its group (DESIGN §5.7 tab-menu "Remove from group");
+ * it becomes lone and its tab moves to right after the group. Dissolves a group
+ * left with 1 member.
+ */
+export interface LeaveGroupInput {
+  readonly sessionId: SessionId
+}
+
+/** Dissolve a group entirely (DESIGN §5.7 group-line menu "Ungroup"): every member becomes lone; tabs stay in place. */
+export interface UngroupInput {
+  readonly taskId: TaskId
+  readonly groupId: GroupId
+}
+
+/** Move a whole group block to a new tab index (DESIGN §5.7, dragging the group line within the bar). */
+export interface ReorderGroupInput {
+  readonly taskId: TaskId
+  readonly groupId: GroupId
+  readonly toIndex: number
+}
+
+/** Set one of a group's split ratios (DESIGN §5.7, divider drag released). */
+export interface ResizeGroupInput {
+  readonly taskId: TaskId
+  readonly groupId: GroupId
+  readonly path: GroupPath
+  readonly ratio: number
 }
 
 export interface RenameSessionInput {
@@ -325,6 +380,11 @@ export type Command =
   | { readonly kind: 'focusSession'; readonly input: FocusSessionInput }
   | { readonly kind: 'renameSession'; readonly input: RenameSessionInput }
   | { readonly kind: 'reorderSession'; readonly input: ReorderSessionInput }
+  | { readonly kind: 'joinGroup'; readonly input: JoinGroupInput }
+  | { readonly kind: 'leaveGroup'; readonly input: LeaveGroupInput }
+  | { readonly kind: 'ungroup'; readonly input: UngroupInput }
+  | { readonly kind: 'reorderGroup'; readonly input: ReorderGroupInput }
+  | { readonly kind: 'resizeGroup'; readonly input: ResizeGroupInput }
   | { readonly kind: 'writeToPty'; readonly input: WriteToPtyInput }
   | { readonly kind: 'resizePty'; readonly input: ResizePtyInput }
   | { readonly kind: 'updateSettings'; readonly input: SettingsPatch }

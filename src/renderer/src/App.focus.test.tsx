@@ -47,7 +47,8 @@ const STATE: WindowedWorkspaceStateDTO = {
       ],
       activeSessionId: 's2',
       position: 0,
-      createdAt: 1000
+      createdAt: 1000,
+      groups: []
     }
   ],
   activeTaskId: 't1',

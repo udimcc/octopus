@@ -25,6 +25,12 @@ export type TypeId = Branded<string, 'TypeId'>
  * role live in persistence/main, never in the pure domain.
  */
 export type WindowId = Branded<string, 'WindowId'>
+/**
+ * Identifier of a split group (DESIGN §5.7): 2+ sessions of one task in one
+ * window sharing a layout tree and a color. Opaque — membership is the tree's
+ * leaves, not this id; it only names the group for commands/events/persistence.
+ */
+export type GroupId = Branded<string, 'GroupId'>
 
 /** Tag a raw string as a {@link TaskId}. */
 export const asTaskId = (raw: string): TaskId => raw as TaskId
@@ -36,6 +42,8 @@ export const asIssueId = (raw: string): IssueId => raw as IssueId
 export const asTypeId = (raw: string): TypeId => raw as TypeId
 /** Tag a raw string as a {@link WindowId}. */
 export const asWindowId = (raw: string): WindowId => raw as WindowId
+/** Tag a raw string as a {@link GroupId}. */
+export const asGroupId = (raw: string): GroupId => raw as GroupId
 
 /**
  * The stable id of the single main window (V1.5, DESIGN §3.7). Sessions default

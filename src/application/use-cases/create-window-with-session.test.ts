@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { createTask } from './create-task'
 import { openSession } from './open-session'
+import { joinGroup } from './join-group'
 import { createWindowWithSession } from './create-window-with-session'
 import { makeDeps, taskInput } from './test-fakes'
 import { asTaskId } from '../../domain/ids'
@@ -28,5 +29,51 @@ describe('createWindowWithSession (§3.7, §6.7 — detach onto empty desktop)',
     expect(created).toBeGreaterThanOrEqual(0)
     expect(moved).toBeGreaterThan(created)
     expect(fd.bus.ofType('sessionMovedToWindow')[0].toWindowId).toBe(windowId)
+  })
+
+  it('sets the detached session as the task persisted active session', async () => {
+    const fd = makeDeps()
+    await createTask(fd.deps, taskInput('T'))
+    const taskId = asTaskId('task-1')
+    await openSession(fd.deps, { taskId }) // becomes active by default (first session)
+    await openSession(fd.deps, { taskId })
+    const task = fd.workspace.task(taskId)!
+    const second = task.sessions()[1]
+
+    createWindowWithSession(fd.deps, { sessionId: second.id })
+
+    expect(task.activeSessionId).toBe(second.id)
+    expect(
+      fd.persistence.upsertedTasks.some((t) => t.id === taskId && t.activeSessionId === second.id)
+    ).toBe(true)
+  })
+
+  it('detaches a WHOLE group together: a grouped member drags its groupmates into the new window too', async () => {
+    const fd = makeDeps()
+    await createTask(fd.deps, taskInput('T'))
+    const taskId = asTaskId('task-1')
+    await openSession(fd.deps, { taskId })
+    await openSession(fd.deps, { taskId })
+    const task = fd.workspace.task(taskId)!
+    const [a, b] = task.sessions()
+    joinGroup(fd.deps, { sessionId: b.id, anchorSessionId: a.id, dir: 'row' })
+
+    // Detach via `b`, NOT `a`: `a` is both the default-active session and
+    // tab-first, so sending it can't distinguish "the detached member becomes
+    // active/sent-first" from "the FIRST member always does" (review Finding
+    // 2 / 12).
+    const windowId = createWindowWithSession(fd.deps, { sessionId: b.id })
+
+    expect(task.session(a.id)!.windowId).toBe(windowId)
+    expect(task.session(b.id)!.windowId).toBe(windowId)
+    const moved = fd.bus.ofType('sessionMovedToWindow')
+    expect(moved).toHaveLength(2)
+    expect(moved.map((e) => [e.sessionId, e.cause])).toEqual([
+      [b.id, undefined],
+      [a.id, 'groupMove']
+    ])
+    // Only the directly-detached member becomes the task's active session —
+    // even though it was NOT the pre-existing active session.
+    expect(task.activeSessionId).toBe(b.id)
   })
 })

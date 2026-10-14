@@ -27,15 +27,19 @@ import type {
   SessionTypeDTO,
   SettingsDTO,
   SessionConfigDTO,
-  IssueDTO
+  IssueDTO,
+  GroupDTO,
+  SplitNode
 } from '../shared/dto'
 import type { EventDTO } from '../shared/events'
 import type {
   TaskSnapshot,
   SessionSnapshot,
   WorktreeRefSnapshot,
-  IssueSnapshot
+  IssueSnapshot,
+  GroupSnapshot
 } from '../domain/snapshots'
+import type { GroupTree } from '../domain/group-tree'
 import type { DomainEvent } from '../ports/event-bus'
 import type { Settings } from '../ports/settings-store'
 import type { WindowRecord } from '../ports/workspace-persistence'
@@ -77,6 +81,36 @@ export function toSessionDTO(s: SessionSnapshot): SessionDTO {
   }
 }
 
+/**
+ * Re-brand a domain `GroupTree` to the wire `SplitNode` (DESIGN §5.7). The two
+ * are declared independently but kept STRUCTURALLY IDENTICAL by design (same
+ * discriminants, direction literals and field names) — see the `group-tree.ts`
+ * header comment — so this is a plain recursive walk that only widens
+ * `SessionId` to `string`, never a shape translation. A small mapper here
+ * (rather than a single structural cast) keeps the boundary crossing checked by
+ * the compiler against both shapes.
+ */
+export function toSplitNode(tree: GroupTree): SplitNode {
+  if (tree.kind === 'leaf') {
+    return { kind: 'leaf', sessionId: tree.sessionId }
+  }
+  return {
+    kind: 'split',
+    dir: tree.dir,
+    ratio: tree.ratio,
+    a: toSplitNode(tree.a),
+    b: toSplitNode(tree.b)
+  }
+}
+
+export function toGroupDTO(g: GroupSnapshot): GroupDTO {
+  return {
+    id: g.id,
+    layout: toSplitNode(g.tree),
+    colorIndex: g.colorIndex
+  }
+}
+
 export function toTaskDTO(t: TaskSnapshot): TaskDTO {
   return {
     id: t.id,
@@ -88,7 +122,11 @@ export function toTaskDTO(t: TaskSnapshot): TaskDTO {
     sessions: t.sessions.map(toSessionDTO),
     activeSessionId: t.activeSessionId,
     position: t.position,
-    createdAt: t.createdAt
+    createdAt: t.createdAt,
+    // Always present (DESIGN §5.7) — empty when the task has no grouped sessions —
+    // even though `TaskSnapshot.groups` is optional (pre-feature snapshots hydrate
+    // without it).
+    groups: (t.groups ?? []).map(toGroupDTO)
   }
 }
 
@@ -137,7 +175,13 @@ export function toSettingsDTO(s: Settings): SettingsDTO {
     searchKey: s.searchKey,
     copyKey: s.copyKey,
     pasteKey: s.pasteKey,
-    issuesKey: s.issuesKey
+    issuesKey: s.issuesKey,
+    splitRightKey: s.splitRightKey,
+    splitDownKey: s.splitDownKey,
+    focusPaneLeftKey: s.focusPaneLeftKey,
+    focusPaneRightKey: s.focusPaneRightKey,
+    focusPaneUpKey: s.focusPaneUpKey,
+    focusPaneDownKey: s.focusPaneDownKey
   }
 }
 
@@ -165,18 +209,25 @@ export function toWindowDTO(w: WindowRecord): WindowDTO {
  * Build the per-window hydration payload (V1.5, §5.6, §6.7): the base workspace
  * state widened with the CALLING window's identity (`thisWindowId`/role, resolved
  * by `main` from `e.sender`) and the full window list. Sessions stay unfiltered;
- * each renderer shows only those whose `windowId` matches its own.
+ * each renderer shows only those whose `windowId` matches its own. Groups
+ * (DESIGN §5.7) travel inside each task's `TaskDTO.groups` — no separate
+ * per-window layout channel, unlike the first split-pane version. `initialMark`
+ * is passed straight through from the caller (`ipc-handlers.ts`'s one-shot
+ * window→mark registry) onto the DTO, undefined for every window but the one
+ * just created to show a detached session.
  */
 export function toWindowedWorkspaceStateDTO(
   view: AppStateView,
   thisWindowId: string,
-  thisWindowRole: 'main' | 'secondary'
+  thisWindowRole: 'main' | 'secondary',
+  initialMark?: { taskId: string; sessionId: string }
 ): WindowedWorkspaceStateDTO {
   return {
     ...toWorkspaceStateDTO(view),
     thisWindowId,
     thisWindowRole,
-    windows: view.windows.map(toWindowDTO)
+    windows: view.windows.map(toWindowDTO),
+    initialMark
   }
 }
 
@@ -213,6 +264,8 @@ export function toEventDTO(e: DomainEvent): EventDTO {
         taskId: e.taskId,
         orderedSessionIds: [...e.orderedSessionIds]
       }
+    case 'groupsChanged':
+      return { type: 'groupsChanged', taskId: e.taskId, groups: e.groups.map(toGroupDTO) }
     case 'taskCreated':
       return { type: 'taskCreated', task: toTaskDTO(e.task) }
     case 'taskDeleted':

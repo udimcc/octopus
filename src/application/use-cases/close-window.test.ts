@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { createTask } from './create-task'
 import { openSession } from './open-session'
+import { joinGroup } from './join-group'
 import { moveSessionToWindow } from './move-session-to-window'
 import { createWindow } from './create-window'
 import { closeWindow } from './close-window'
@@ -100,5 +101,67 @@ describe('closeWindow (§3.7, §6.7)', () => {
     expect(fd.persistence.windows.has(windowId)).toBe(false)
     expect(fd.bus.ofType('windowClosed').map((e) => e.windowId)).toEqual([windowId])
     expect(fd.persistence.deletedSessions).toEqual([])
+  })
+})
+
+describe('closeWindow — grouped sessions (DESIGN §5.7)', () => {
+  async function seedWindowWithGroupedSessions(): Promise<
+    FakeDeps & { windowId: WindowId; sessionIds: SessionId[] }
+  > {
+    const fd = await seedWindowWithTwoSessions()
+    const [a, b] = fd.sessionIds
+    joinGroup(fd.deps, { sessionId: b, anchorSessionId: a, dir: 'row' })
+    return fd
+  }
+
+  it('move-to-main: the group stays intact — same tree/color, no groupsChanged published', async () => {
+    const fd = await seedWindowWithGroupedSessions()
+    const task = fd.workspace.task(asTaskId('task-1'))!
+    const groupBefore = task.groupOf(fd.sessionIds[0])!
+    fd.bus.events.length = 0
+
+    await closeWindow(fd.deps, { windowId: fd.windowId, disposition: 'move-to-main' })
+
+    const groupAfter = task.groupOf(fd.sessionIds[0])!
+    expect(groupAfter.id).toBe(groupBefore.id)
+    expect(groupAfter.tree).toEqual(groupBefore.tree)
+    expect(groupAfter.colorIndex).toBe(groupBefore.colorIndex)
+    for (const id of fd.sessionIds) {
+      expect(task.session(id)!.windowId).toBe(MAIN_WINDOW_ID)
+    }
+    // The loop's FIRST moveSessionToWindow call (for sessionIds[0]) already
+    // drags the whole group to main and publishes BOTH members' moves (the
+    // sent one tagged windowClosed, the groupmate tagged groupMove); the
+    // loop's SECOND call, reaching the groupmate directly, is the true no-op
+    // (idempotent same-window guard) and publishes nothing further (review
+    // Finding 12 — the previous comment here had this backwards).
+    const moves = fd.bus.ofType('sessionMovedToWindow')
+    expect(moves.map((e) => [e.sessionId, e.cause])).toEqual([
+      [fd.sessionIds[0], 'windowClosed'],
+      [fd.sessionIds[1], 'groupMove']
+    ])
+    // No groupsChanged either way: the group's own tree/color never changes.
+    expect(fd.bus.ofType('groupsChanged')).toEqual([])
+  })
+
+  it('kill-sessions: killing every hosted session removes the group entirely', async () => {
+    const fd = await seedWindowWithGroupedSessions()
+    const task = fd.workspace.task(asTaskId('task-1'))!
+    const groupId = task.groupOf(fd.sessionIds[0])!.id
+    // `seedWindowWithGroupedSessions`'s own `joinGroup` call already published
+    // a groupsChanged — clear it so the count below reflects only what
+    // `closeWindow` itself publishes.
+    fd.bus.events.length = 0
+
+    await closeWindow(fd.deps, { windowId: fd.windowId, disposition: 'kill-sessions' })
+
+    expect(task.groups()).toEqual([])
+    expect(fd.persistence.groups.has(groupId)).toBe(false)
+    // closeSession publishes groupsChanged once: removing the FIRST member
+    // dissolves the 2-member group immediately (leave at 1 member), so the
+    // second closeSession call has no group left to touch and publishes no
+    // further groupsChanged (review Finding 12: `toBeGreaterThan(0)` would
+    // also pass if it were spuriously published twice).
+    expect(fd.bus.ofType('groupsChanged').length).toBe(1)
   })
 })

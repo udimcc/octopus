@@ -603,6 +603,93 @@ state back to the task. **Zero changes** to Domain, Application use cases, Termi
 
 ---
 
+## Split Panes (Split Groups) — DESIGN §5.7
+
+Plan: `docs/plans/split-groups_2026-10-13-plan.md`. Supersedes the earlier, unshipped
+`docs/plans/split-panes_2026-10-12-plan.md` renderer-owned-per-window-layout design: groups are backend-owned
+on the `Task` aggregate instead.
+
+### Domain / Shared / Persistence / Application — DESIGN §5.7, §3.1, §6.3
+
+- [x] `src/domain/group-tree.ts` (new) — pure `GroupTree` ops: `leaf`, `leafIds`, `hasLeaf`, `split`,
+  `removeLeaf` (returns `undefined` to signal dissolve), `setRatio`, `validate` (sanitizes untrusted saved
+  JSON: dedupes/clamps/collapses, requires ≥2 leaves).
+- [x] `src/domain/task.ts` — `Group {id, tree, colorIndex}`, `GROUP_COLOR_PALETTE_SIZE = 6`, `_groups`;
+  `join`/`leave`/`ungroup`/`reorderGroup`/`resizeGroup`; `groups()`/`groupOf()`/`groupMembers()`;
+  `fromSnapshot` → `restoreGroups` drops any saved group that fails its invariants (bad tree, unknown/
+  duplicate/too-few/cross-window/non-contiguous leaves); `toSnapshot()` emits `groups`.
+- [x] `src/shared/dto.ts` — `TaskDTO.groups: readonly GroupDTO[]`, `GroupDTO {id, layout: SplitNode,
+  colorIndex}`, `SplitNode`/`SplitPath`, `CreateSessionInput.split?: {anchorSessionId, dir}`,
+  `JoinGroupInput`/`LeaveGroupInput`/`UngroupInput`/`ReorderGroupInput`/`ResizeGroupInput`; six chord settings
+  (`splitRightKey`, `splitDownKey`, `focusPane{Left,Right,Up,Down}Key`) threaded through settings store,
+  defaults and mapper.
+- [x] `src/shared/events.ts` — `groupsChanged{taskId, groups}` (full-list replace); `sessionMovedToWindow.cause?:
+  'windowClosed' | 'groupMove'`.
+- [x] `src/shared/ipc.ts` / `src/main/ipc-handlers.ts` — `group:join|leave|ungroup|reorder|resize` channels,
+  `OctopusAPI.groups.{join,leave,ungroup,reorder,resize}`, defensive-validated handlers.
+- [x] Schema **v9** (after the Issues v8): `session_groups` (id PK, task → tasks cascade, opaque JSON
+  `layout`, `color` index); the v9 migration also drops the unshipped `split_layouts` table and re-creates
+  `issues` if missing, healing dev DBs a split-pane build had stamped v8.
+- [x] Use cases `join-group.ts` / `leave-group.ts` / `ungroup.ts` / `reorder-group.ts` / `resize-group.ts` +
+  shared `persist-groups.ts` helper (diffs before/after group lists into `upsertGroup`/`deleteGroup`); join/leave
+  also publish `sessionReordered`.
+- [x] `open-session.ts` — atomic `input.split` (validated before mutation, degrades silently to a lone create
+  on a losing race); `move-session-to-window.ts` / `close-window.ts` — whole-group move via `groupMembers`,
+  `cause: 'groupMove'` for every riding-along member; `close-session.ts` — persists `groupsChanged` only when
+  the closed session was grouped.
+- [x] `window-registry.ts` — `groupsChanged` is not session-scoped, so it broadcasts to every window like other
+  task-level events.
+
+### UI (Renderer) — DESIGN §5.7, §5.3
+
+- [x] `src/renderer/src/store/split-layout.ts` — now **geometry-only**: `toRects`, `splitHandles`, `neighbor`,
+  `canSplit`, `setRatio` (local-preview-only, silent no-op), `leafIds`, `hasLeaf`; no mutation functions (the
+  tree is backend-owned).
+- [x] `src/renderer/src/store/store.ts` — `groupsByTask`, `groupOfSession`, `visiblePaneIds` (what-a-window-shows
+  selector); `withMark` is a plain mark-setter; `sessionMovedToWindow` reducer honors `cause`.
+- [x] `TerminalPane` — `active` split into `visible` + `focused`; key guard drops the six chords;
+  `terminal-metrics.ts` for `canSplit`.
+- [x] `SessionPane` / `TaskView` flat rect render keyed by session id, `showGroup` transient-state fallback;
+  `SplitDividers` (sibling-after-panes drag gutters: local rAF-throttled preview, one `groups.resize` on
+  release, preview clears on tree-identity-change not pointer-up).
+- [x] Tab bar (`SessionTabBar.tsx`): per-group colored line (bridged across gaps), line-as-drag-handle
+  (`startGroupDrag`/`finishGroupDrag` manual pointer-capture, dnd-kit can't share one id across tabs),
+  `clampToGroupSpan`/`snapInsertionIndex` renderer-duplicated member-drag-limit/lone-snap-to-edge rules,
+  `evaluateSplitMenu` enablement; tab menu Split right / Split down / Remove from group; group context menu
+  Ungroup.
+- [x] `tokens.ts` — `GROUP_COLOR_PALETTE` (6 colors, visually distinct from status-icon colors).
+- [x] Shortcuts (`useKeyboardShortcuts.ts`): split chords send an atomic `sessions.create({split})`; directional
+  focus chords move the mark among the shown group's leaves via `neighbor`; Settings fields.
+
+### Split Panes Testing — DESIGN §5.7
+
+> **Not done.** Verified by running `npm run test`: the groups implementation (Domain/Shared/Persistence/
+> Application and UI sections above) has **no test coverage of its own** anywhere in the repo — no
+> `group-tree.test.ts`, no group assertions in `task.test.ts`, no `*-group.test.ts` for any of the five use
+> cases, no `session_groups` coverage in `sqlite-store.test.ts`, no group assertions in `store.test.ts` /
+> `SessionTabBar.test.tsx` / `dto-mappers.test.ts` (their only "group" hits are the unrelated
+> `groupTasksByRepo` sidebar setting). Worse, the test suite still contains the **old, unshipped** split-panes
+> (v1) tests, now stale against the current API and **failing**: `npm run test` currently reports **154
+> failing tests across 10 files** — `split-layout.test.ts` (53 failures: imports `prune`/`split`/`remove`/
+> `siblingOf`/`replace`/`leaf`/`parseLayout`/`serializeLayout`, none of which `split-layout.ts` exports
+> anymore), `sqlite-store.test.ts` / `command-loop.test.ts` / `dto-mappers.test.ts` (`split_layouts`/
+> `saveSplitLayout`/`splitLayouts` DTO field, all removed), `SessionTabBar.test.tsx` / `SessionTab.test.tsx` /
+> `SplitDividers.test.tsx` / `TaskView.test.tsx` / `useKeyboardShortcuts.test.tsx` (`closePane`, `splitWith`,
+> `pendingSplit`/`cancelSplit`, `setSplitRatio`, all removed). The plan's own `## Testing` checklist
+> (`docs/plans/split-groups_2026-10-13-plan.md`) already lists this work as entirely unstarted (`[ ]`
+> throughout) — this subsection mirrors that, rather than the Subject 1–11 implementation items above, which
+> are genuinely done.
+- [ ] Unit: `group-tree.test.ts` (new); `task.test.ts` group invariants (join/leave/dissolve/ungroup/reorder/
+  resize, tolerant `fromSnapshot`); each group use case (new); `sqlite-store` v9 `session_groups` CRUD/cascade.
+- [ ] Never-remount test: joining, leaving, ungrouping, resizing and switching the mark between a group and a
+  lone session keep the same xterm instance.
+- [ ] Tab bar group-line/drag, shortcuts and Settings tests; edge cases (dissolve-at-1, cross-window move
+  dragging the whole group, window-close keeping groups intact).
+- [ ] Delete or rewrite the stale v1 split-panes tests listed above so `npm run test` passes again.
+- [ ] Manual: DOM-renderer cost on the VDI host with four visible panes.
+
+---
+
 ## Cross-Cutting Checklist (all phases) — DESIGN §7, §11
 
 - [ ] **Invariants I1–I17** upheld and unit-tested where applicable (DESIGN §7).

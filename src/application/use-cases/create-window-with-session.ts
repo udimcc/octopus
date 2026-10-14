@@ -11,7 +11,28 @@
  *
  * Reuses `createWindow` + `moveSessionToWindow` verbatim, so the invariants they
  * guard (secondary-only role, unchanged `taskId`/lifecycle, untouched PTY) hold
- * here too. Returns the new window id for `main` to open the OS window.
+ * here too — including `moveSessionToWindow`'s group handling (DESIGN §5.7): if
+ * `input.sessionId` is a group member, its WHOLE group is detached into the new
+ * window together, and only `input.sessionId` is marked there (groupmates ride
+ * along with `cause: 'groupMove'`). A lone session detaches alone, unchanged.
+ *
+ * Also marks `input.sessionId` as its task's persisted focused session (review
+ * IMP2), mirroring `focus-session.ts`'s own `setActiveSession` + `upsertTask`
+ * write. This does NOT make the new window show the detached session — the new
+ * window is created HIDDEN (`main/window.ts`, shown on `ready-to-show`), so the
+ * still-focused SOURCE window keeps reporting ITS OWN mark via `sessions.focus`
+ * in the meantime and overwrites this write before the new window ever hydrates.
+ * The new window's correct mark is carried instead by `initialMarks`, a one-shot
+ * `windowId → {taskId, sessionId}` registry `main/ipc-handlers.ts` populates right
+ * after this use case returns (keyed off the returned `windowId`) and hands back
+ * in that window's own `getState` reply (`WindowedWorkspaceStateDTO.initialMark`)
+ * — see `ipc-handlers.ts`'s `windowCreateWithSession` handler. This write's only
+ * remaining value is cross-RESTART: if the app quits and relaunches, the detached
+ * session is still the task's persisted `activeSessionId`, so whichever window
+ * hosts it falls back to marking it (`store.ts`'s `pickMark`) absent any
+ * `initialMark` (which doesn't survive a restart, only a reload).
+ *
+ * Returns the new window id for `main` to open the OS window.
  */
 
 import type { AppDependencies } from '../dependencies'
@@ -19,6 +40,8 @@ import type { CreateWindowWithSessionInput } from '../commands'
 import type { WindowId } from '../../domain/ids'
 import { createWindow } from './create-window'
 import { moveSessionToWindow } from './move-session-to-window'
+import { locateSession } from './locate-session'
+import { InvariantViolationError } from '../../domain/errors'
 
 export function createWindowWithSession(
   deps: AppDependencies,
@@ -26,5 +49,13 @@ export function createWindowWithSession(
 ): WindowId {
   const windowId = createWindow(deps, { role: 'secondary', bounds: input.bounds })
   moveSessionToWindow(deps, { sessionId: input.sessionId, targetWindowId: windowId })
+
+  const located = locateSession(deps.workspace, input.sessionId)
+  if (!located) {
+    throw new InvariantViolationError(`session ${input.sessionId} not found`)
+  }
+  located.task.setActiveSession(input.sessionId)
+  deps.persistence.upsertTask(located.task.toSnapshot(deps.aggregator))
+
   return windowId
 }

@@ -12,7 +12,7 @@
  * up state without a signature change (§10); nobody emits them in V1.
  */
 
-import type { TaskDTO, SessionDTO, IssueDTO } from './dto'
+import type { TaskDTO, SessionDTO, IssueDTO, GroupDTO } from './dto'
 
 export interface PtyDataEventDTO {
   readonly type: 'ptyData'
@@ -46,6 +46,27 @@ export interface SessionReorderedEventDTO {
   readonly type: 'sessionReordered'
   readonly taskId: string
   readonly orderedSessionIds: readonly string[]
+}
+
+/**
+ * A task's split-pane groups changed (DESIGN §5.7) — join, leave, ungroup,
+ * reorder-group (unchanged group list, published anyway for the uniform event
+ * shape), resize-group, or a member close dissolving/shrinking a group
+ * (`closeSession`, including the `closeWindow` `kill-sessions` disposition,
+ * which reuses it per session). A `closeWindow` `move-to-main` disposition does
+ * NOT publish this: it only reassigns `windowId` via `moveSessionToWindow`,
+ * which never touches a group's tree/color, so groups ride along intact with no
+ * event. Carries the task's FULL group list (not a delta): simplest for the
+ * renderer to fold, and cheap since groups are few and tiny. Not session-scoped,
+ * so the window registry broadcasts it to every window, like other task events
+ * (a group's members all share one window, but every window's renderer needs
+ * the up-to-date list to answer "is this session grouped" for sessions it might
+ * acquire later).
+ */
+export interface GroupsChangedEventDTO {
+  readonly type: 'groupsChanged'
+  readonly taskId: string
+  readonly groups: readonly GroupDTO[]
 }
 
 export interface TaskCreatedEventDTO {
@@ -143,12 +164,17 @@ export interface SessionMovedToWindowEventDTO {
   readonly fromWindowId: string
   readonly toWindowId: string
   /**
-   * Set when the move is the "move sessions to main" disposition of closing a window
-   * (§6.7). The receiving renderer then KEEPS its existing mark for the task instead of
-   * marking the moved session; an explicit drag / "Move to" (no cause) marks the moved
-   * session in the target window.
+   * Set when this move was NOT the one the user directly asked for, so the receiving
+   * renderer KEEPS its existing mark for the task instead of marking the moved
+   * session — an explicit drag / "Move to" (no `cause`) marks the moved session in the
+   * target window. Two sources today:
+   *  - `'windowClosed'`: the "move sessions to main" disposition of closing a window
+   *    (§6.7).
+   *  - `'groupMove'`: an EXTRA member riding along because the user moved/detached one
+   *    member of its group and the whole group moves together (DESIGN §5.7) — the
+   *    target window marks only the member actually sent, not these passengers.
    */
-  readonly cause?: 'windowClosed'
+  readonly cause?: 'windowClosed' | 'groupMove'
 }
 
 // ── Dormant V2 state seams (§10) — emitted by nobody in V1 ───────────────────
@@ -225,6 +251,7 @@ export type EventDTO =
   | SessionClosedEventDTO
   | SessionRenamedEventDTO
   | SessionReorderedEventDTO
+  | GroupsChangedEventDTO
   | TaskCreatedEventDTO
   | TaskDeletedEventDTO
   | TaskRenamedEventDTO

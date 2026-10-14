@@ -25,7 +25,13 @@ const seededState: WindowedWorkspaceStateDTO = {
     searchKey: 'Ctrl+Shift+KeyF',
     copyKey: 'Ctrl+Shift+KeyC',
     pasteKey: 'Ctrl+Shift+KeyV',
-    issuesKey: 'Alt+Shift+KeyI'
+    issuesKey: 'Alt+Shift+KeyI',
+    splitRightKey: 'Ctrl+Shift+KeyE',
+    splitDownKey: 'Ctrl+Shift+KeyO',
+    focusPaneLeftKey: 'Ctrl+Shift+KeyH',
+    focusPaneRightKey: 'Ctrl+Shift+KeyL',
+    focusPaneUpKey: 'Ctrl+Shift+KeyK',
+    focusPaneDownKey: 'Ctrl+Shift+KeyJ'
   },
   version: 1,
   thisWindowId: 'main',
@@ -92,6 +98,49 @@ describe('<SettingsModal>', () => {
     expect(screen.getByLabelText('toggle issues shortcut')).toHaveTextContent('Alt+Shift+I')
   })
 
+  it('renders the six split-pane fields with their defaults (§5.7)', () => {
+    installStubBridge({ state: seededState })
+    render(<SettingsModal onClose={vi.fn()} />)
+    openKeyBindings()
+    expect(screen.getByLabelText('split pane right shortcut')).toHaveTextContent('Ctrl+Shift+E')
+    expect(screen.getByLabelText('split pane down shortcut')).toHaveTextContent('Ctrl+Shift+O')
+    expect(screen.getByLabelText('focus pane left shortcut')).toHaveTextContent('Ctrl+Shift+H')
+    expect(screen.getByLabelText('focus pane right shortcut')).toHaveTextContent('Ctrl+Shift+L')
+    expect(screen.getByLabelText('focus pane up shortcut')).toHaveTextContent('Ctrl+Shift+K')
+    expect(screen.getByLabelText('focus pane down shortcut')).toHaveTextContent('Ctrl+Shift+J')
+  })
+
+  it('rebinds a split-pane chord and saves it (§5.7)', () => {
+    const bridge = installStubBridge({ state: seededState })
+    render(<SettingsModal onClose={vi.fn()} />)
+    openKeyBindings()
+    const splitRightBtn = screen.getByLabelText('split pane right shortcut')
+    fireEvent.click(splitRightBtn)
+    fireEvent.keyDown(splitRightBtn, { code: 'KeyR', ctrlKey: true, shiftKey: true })
+    expect(splitRightBtn).toHaveTextContent('Ctrl+Shift+R')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(bridge.api.app.updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ splitRightKey: 'Ctrl+Shift+KeyR' })
+    )
+  })
+
+  it('blocks saving when a new pane chord collides with an existing configurable action (§5.7)', () => {
+    installStubBridge({ state: seededState })
+    render(<SettingsModal onClose={vi.fn()} />)
+    openKeyBindings()
+    const focusLeftBtn = screen.getByLabelText('focus pane left shortcut')
+    fireEvent.click(focusLeftBtn)
+    // Bind focus-pane-left to the (default) next-session chord → cross-action collision.
+    fireEvent.keyDown(focusLeftBtn, { code: 'ArrowRight', ctrlKey: true, shiftKey: true })
+    const alerts = screen.getAllByRole('alert')
+    expect(alerts.some((a) => a.textContent?.includes('Already used by Next session'))).toBe(true)
+    expect(alerts.some((a) => a.textContent?.includes('Already used by Focus pane left'))).toBe(
+      true
+    )
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
+
   it('saves a patch and refetches state, then closes', async () => {
     const bridge = installStubBridge({ state: seededState })
     const onClose = vi.fn()
@@ -116,7 +165,13 @@ describe('<SettingsModal>', () => {
       searchKey: 'Ctrl+Shift+KeyF',
       copyKey: 'Ctrl+Shift+KeyC',
       pasteKey: 'Ctrl+Shift+KeyV',
-      issuesKey: 'Alt+Shift+KeyI'
+      issuesKey: 'Alt+Shift+KeyI',
+      splitRightKey: 'Ctrl+Shift+KeyE',
+      splitDownKey: 'Ctrl+Shift+KeyO',
+      focusPaneLeftKey: 'Ctrl+Shift+KeyH',
+      focusPaneRightKey: 'Ctrl+Shift+KeyL',
+      focusPaneUpKey: 'Ctrl+Shift+KeyK',
+      focusPaneDownKey: 'Ctrl+Shift+KeyJ'
     })
     // updateSettings emits nothing → the modal must refetch getState to reflect it.
     await waitFor(() => expect(bridge.api.app.getState).toHaveBeenCalled())
@@ -141,7 +196,13 @@ describe('<SettingsModal>', () => {
       searchKey: 'Ctrl+Shift+KeyF',
       copyKey: 'Ctrl+Shift+KeyC',
       pasteKey: 'Ctrl+Shift+KeyV',
-      issuesKey: 'Alt+Shift+KeyI'
+      issuesKey: 'Alt+Shift+KeyI',
+      splitRightKey: 'Ctrl+Shift+KeyE',
+      splitDownKey: 'Ctrl+Shift+KeyO',
+      focusPaneLeftKey: 'Ctrl+Shift+KeyH',
+      focusPaneRightKey: 'Ctrl+Shift+KeyL',
+      focusPaneUpKey: 'Ctrl+Shift+KeyK',
+      focusPaneDownKey: 'Ctrl+Shift+KeyJ'
     })
   })
 

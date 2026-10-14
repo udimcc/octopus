@@ -2,18 +2,26 @@ import { describe, it, expect } from 'vitest'
 import {
   taskToRow,
   sessionToRow,
+  groupToRow,
+  rowToGroupSnapshot,
   rowToTaskSnapshot,
   rowToSessionSnapshot,
   issueToRow,
   rowToIssueSnapshot,
   type SessionRow,
-  type IssueRow
+  type IssueRow,
+  type GroupRow
 } from './mappers'
-import { asTaskId, asSessionId, asTypeId, asWindowId, asIssueId } from '../../domain/ids'
+import { asTaskId, asSessionId, asTypeId, asWindowId, asIssueId, asGroupId } from '../../domain/ids'
 import { TaskState, SessionState } from '../../domain/state'
 import { TaskLifecycle, SessionLifecycle } from '../../domain/lifecycle'
 import { IssueStatus } from '../../domain/issue'
-import type { TaskSnapshot, SessionSnapshot, IssueSnapshot } from '../../domain/snapshots'
+import type {
+  TaskSnapshot,
+  SessionSnapshot,
+  IssueSnapshot,
+  GroupSnapshot
+} from '../../domain/snapshots'
 
 function sessionSnapshot(over: Partial<SessionSnapshot> = {}): SessionSnapshot {
   return {
@@ -153,6 +161,70 @@ describe('sessionToRow (§6.3, §10)', () => {
   })
 })
 
+function groupSnapshot(over: Partial<GroupSnapshot> = {}): GroupSnapshot {
+  return {
+    id: asGroupId('g1'),
+    tree: {
+      kind: 'split',
+      dir: 'row',
+      ratio: 0.5,
+      a: { kind: 'leaf', sessionId: asSessionId('s1') },
+      b: { kind: 'leaf', sessionId: asSessionId('s2') }
+    },
+    colorIndex: 1,
+    ...over
+  }
+}
+
+describe('groupToRow (§5.7)', () => {
+  it('serializes the tree as JSON and carries the color index', () => {
+    const row = groupToRow(asTaskId('t1'), groupSnapshot())
+    expect(row.id).toBe('g1')
+    expect(row.task_id).toBe('t1')
+    expect(row.color).toBe(1)
+    expect(JSON.parse(row.layout)).toEqual({
+      kind: 'split',
+      dir: 'row',
+      ratio: 0.5,
+      a: { kind: 'leaf', sessionId: 's1' },
+      b: { kind: 'leaf', sessionId: 's2' }
+    })
+  })
+})
+
+describe('rowToGroupSnapshot (§5.7)', () => {
+  it('parses a well-formed layout back into the tree', () => {
+    const row: GroupRow = {
+      id: 'g1',
+      task_id: 't1',
+      layout: JSON.stringify({ kind: 'leaf', sessionId: 's1' }),
+      color: 4
+    }
+    const snap = rowToGroupSnapshot(row)
+    expect(snap.id).toBe(asGroupId('g1'))
+    expect(snap.colorIndex).toBe(4)
+    expect(snap.tree).toEqual({ kind: 'leaf', sessionId: 's1' })
+  })
+
+  it('on malformed JSON, keeps the row id but returns a single-leaf marker tree, not undefined', () => {
+    // DESIGN §5.7 / review round-2: an id-dropping failure would be invisible to
+    // `reconcileStaleGroups`'s stale-row sweep (it diffs ids, so a lost id can
+    // never be found stale and the row sits in `session_groups` forever). The
+    // single-leaf marker always fails `Task.restoreGroups`' 2-leaf floor, so it is
+    // dropped from the live snapshot the same as any other corrupt saved group —
+    // but its id survives into `TaskSnapshot.groups` for the sweep to find.
+    const row: GroupRow = {
+      id: 'g-corrupt',
+      task_id: 't1',
+      layout: 'not valid json {{{',
+      color: 2
+    }
+    const snap = rowToGroupSnapshot(row)
+    expect(snap.id).toBe(asGroupId('g-corrupt'))
+    expect(snap.tree).toEqual({ kind: 'leaf', sessionId: '' })
+  })
+})
+
 describe('rowToSessionSnapshot (I13, §6.3 — fresh on reload)', () => {
   it('resets lifecycle to Created and state to Unknown, clearing exit time', () => {
     const row: SessionRow = {
@@ -269,6 +341,106 @@ describe('rowToTaskSnapshot (I13/I14, §6.3)', () => {
     expect(snap.worktree).toBeUndefined()
     expect(snap.lifecycle).toBe(TaskLifecycle.Ready)
     expect(snap.state).toBe(TaskState.Unknown)
+  })
+
+  it('carries groupRows through the repo_less branch too, not just the worktree branch (review MP2)', () => {
+    // The repo_less branch builds its own return object rather than falling
+    // through to the worktree branch's — a copy/paste that hardcoded `groups: []`
+    // there instead of the mapped `groups` would still pass the sibling
+    // "defaults groups to []" test above (groupRows is [] there too) AND the
+    // non-repo_less "maps each groupRow" test below (different branch). Only a
+    // repo_less row with a NON-EMPTY groupRows list distinguishes it.
+    const groupRows: GroupRow[] = [
+      {
+        id: 'g1',
+        task_id: 't1',
+        layout: JSON.stringify({ kind: 'leaf', sessionId: 's1' }),
+        color: 0
+      }
+    ]
+    const snap = rowToTaskSnapshot(
+      {
+        id: 't1',
+        name: 'scratch',
+        worktree: '',
+        branch: null,
+        base_ref: null,
+        repo_root: null,
+        created_at: 1,
+        position: 0,
+        active_session_id: null,
+        managed: 0,
+        repo_less: 1
+      },
+      [],
+      groupRows
+    )
+    expect(snap.repoLess).toBe(true)
+    expect(snap.groups).toHaveLength(1)
+    expect(snap.groups![0].id).toBe(asGroupId('g1'))
+  })
+
+  it('defaults groups to [] when groupRows is omitted (callers that predate groups)', () => {
+    const snap = rowToTaskSnapshot(
+      {
+        id: 't1',
+        name: 't',
+        worktree: '/wt',
+        branch: null,
+        base_ref: null,
+        repo_root: null,
+        created_at: 1,
+        position: 0,
+        active_session_id: null,
+        managed: 1,
+        repo_less: 0
+      },
+      []
+    )
+    expect(snap.groups).toEqual([])
+  })
+
+  it('maps each groupRow via rowToGroupSnapshot into TaskSnapshot.groups (§5.7)', () => {
+    const groupRows: GroupRow[] = [
+      {
+        id: 'g1',
+        task_id: 't1',
+        layout: JSON.stringify({
+          kind: 'split',
+          dir: 'row',
+          ratio: 0.5,
+          a: { kind: 'leaf', sessionId: 's1' },
+          b: { kind: 'leaf', sessionId: 's2' }
+        }),
+        color: 0
+      },
+      {
+        id: 'g2',
+        task_id: 't1',
+        layout: JSON.stringify({ kind: 'leaf', sessionId: 's3' }),
+        color: 1
+      }
+    ]
+    const snap = rowToTaskSnapshot(
+      {
+        id: 't1',
+        name: 't',
+        worktree: '/wt',
+        branch: null,
+        base_ref: null,
+        repo_root: null,
+        created_at: 1,
+        position: 0,
+        active_session_id: null,
+        managed: 1,
+        repo_less: 0
+      },
+      [],
+      groupRows
+    )
+    expect(snap.groups).toHaveLength(2)
+    expect(snap.groups![0].id).toBe(asGroupId('g1'))
+    expect(snap.groups![1].id).toBe(asGroupId('g2'))
   })
 })
 

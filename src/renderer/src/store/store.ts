@@ -24,10 +24,12 @@ import type {
   SettingsDTO,
   WorktreeRefDTO,
   WindowDTO,
-  IssueDTO
+  IssueDTO,
+  GroupDTO
 } from '../../../shared/dto'
 import type { EventDTO } from '../../../shared/events'
 import { type DisplayState, DISPLAY_RANK } from './display-state'
+import { leafIds, hasLeaf } from './split-layout'
 
 /** Normalized task record: task-level metadata + an ordered list of session ids. */
 export interface TaskEntry {
@@ -91,6 +93,15 @@ export interface StoreData {
    * session" (the focused window's mark), used to seed marks on hydrate.
    */
   readonly activeSessionByTask: Readonly<Record<string, string>>
+  /**
+   * Each task's split-pane groups (DESIGN §5.7, split-groups design), as last received
+   * from the backend: `TaskDTO.groups` on `hydrate`/`taskCreated`, replaced wholesale on
+   * `groupsChanged`. The renderer never mutates a group — it sends ids in commands
+   * (`window.octopusAPI.groups.join/leave/ungroup/reorder/resize`) and the backend's reply
+   * arrives as the same `groupsChanged` event. A session absent from every group of its
+   * task is lone. See {@link groupOfSession}.
+   */
+  readonly groupsByTask: Readonly<Record<string, readonly GroupDTO[]>>
   readonly sessionTypes: readonly SessionTypeDTO[]
   readonly settings: SettingsDTO
   readonly version: number
@@ -273,6 +284,14 @@ export interface StoreActions {
    * for the cancelled draft is ignored rather than selecting the created issue.
    */
   cancelNewIssue(): void
+  /**
+   * Focus a pane (DESIGN §5.7, split-groups design) by session id alone (a pane click, a
+   * focus-pane chord): moves this window's mark like {@link StoreActions.setActiveSession},
+   * but deliberately WITHOUT its local ready-for-review clear — the moved mark re-runs
+   * `markVisibleSessionSeen`, which clears and relays "seen" to every window (§9.5). A pure
+   * mark move — it never touches a group; the backend owns groups.
+   */
+  focusPane(sessionId: string): void
 }
 
 export type Store = StoreData & StoreActions
@@ -292,7 +311,13 @@ const DEFAULT_SETTINGS: SettingsDTO = {
   searchKey: 'Ctrl+Shift+KeyF',
   copyKey: 'Ctrl+Shift+KeyC',
   pasteKey: 'Ctrl+Shift+KeyV',
-  issuesKey: 'Alt+Shift+KeyI'
+  issuesKey: 'Alt+Shift+KeyI',
+  splitRightKey: 'Ctrl+Shift+KeyE',
+  splitDownKey: 'Ctrl+Shift+KeyO',
+  focusPaneLeftKey: 'Ctrl+Shift+KeyH',
+  focusPaneRightKey: 'Ctrl+Shift+KeyL',
+  focusPaneUpKey: 'Ctrl+Shift+KeyK',
+  focusPaneDownKey: 'Ctrl+Shift+KeyJ'
 }
 
 /** The empty projection before hydration (also used to reset the store in tests). */
@@ -303,6 +328,7 @@ export function initialData(): StoreData {
     taskOrder: [],
     activeTaskId: undefined,
     activeSessionByTask: {},
+    groupsByTask: {},
     sessionTypes: [],
     settings: DEFAULT_SETTINGS,
     version: 1,
@@ -363,13 +389,41 @@ function pickMark(
   return hosted[0]
 }
 
-/** Set (or, for `undefined`, drop) this window's mark for a task; identity when unchanged. */
+/**
+ * Set (or, for `undefined`, drop) this window's mark for a task; identity when unchanged.
+ * A pure mark move — it NEVER touches a group (DESIGN §5.7, split-groups design): the
+ * backend owns groups, and moving the mark to a grouped session just focuses that pane
+ * within whatever group it already belongs to (or shows it alone if it is lone). Every
+ * mark-setting call site funnels through here (the two exceptions, `hydrateData` and
+ * `taskDeleted`'s teardown, pick the mark directly because there is no "old mark" to
+ * compare against).
+ */
 function withMark(data: StoreData, taskId: string, sessionId: string | undefined): StoreData {
   if (data.activeSessionByTask[taskId] === sessionId) return data
   if (sessionId === undefined) {
     return { ...data, activeSessionByTask: omit(data.activeSessionByTask, taskId) }
   }
   return { ...data, activeSessionByTask: { ...data.activeSessionByTask, [taskId]: sessionId } }
+}
+
+/**
+ * The nearest entry to `index` in `list` that is NOT in `exclude` (right first, else
+ * left) — used by the `sessionMovedToWindow` IMP1 fix to re-mark a tab outside a whole
+ * moving group rather than a structurally-adjacent one that might be a groupmate also
+ * about to leave. `undefined` if every other entry is excluded (drop the mark).
+ */
+function nearestOutside(
+  list: readonly string[],
+  index: number,
+  exclude: ReadonlySet<string>
+): string | undefined {
+  for (let j = index + 1; j < list.length; j++) {
+    if (!exclude.has(list[j])) return list[j]
+  }
+  for (let j = index - 1; j >= 0; j--) {
+    if (!exclude.has(list[j])) return list[j]
+  }
+  return undefined
 }
 
 /** Start a new focus flash (§5.4). */
@@ -380,8 +434,20 @@ function armFlash(data: StoreData): StoreData {
 /**
  * Project a workspace snapshot into this window's store. Each task's mark (§3.7) is the
  * previous mark if still hosted here (a SettingsModal re-hydrate must not reset what each
- * window shows), else the persisted last-focused session if hosted here, else this
- * window's first hosted tab.
+ * window shows), else `state.initialMark`'s session if it names THIS task and is hosted
+ * here (IMP2 fix — a window created to show a detached session, §6.7
+ * `windows.createWithSession`, must open ON that session rather than the task's persisted
+ * last-focused one), else the persisted last-focused session if hosted here, else this
+ * window's first hosted tab. Groups travel inside the task DTO (DESIGN §5.7, split-groups
+ * design) — there is no separate layout channel to prune or reconcile; the backend is
+ * authoritative and already enforces its invariants, so `groupsByTask` is just the DTO's
+ * `groups` per task, as-is.
+ *
+ * `activeTaskId` always comes from `state.activeTaskId` (never from `initialMark`): a
+ * renderer crash-reload (`window.ts`'s `render-process-gone`) re-runs this hydrate with no
+ * prior state, and overriding the active task here would yank the window back to the
+ * detach-time task even if the user had since switched away from it. `initialMark` only
+ * ever feeds `pickMark` above, scoped to its own task.
  */
 function hydrateData(
   state: WindowedWorkspaceStateDTO,
@@ -391,14 +457,19 @@ function hydrateData(
   const tasks: Record<string, TaskEntry> = {}
   const sessions: Record<string, SessionDTO> = {}
   const activeSessionByTask: Record<string, string> = {}
+  const groupsByTask: Record<string, readonly GroupDTO[]> = {}
+  const initialMark = state.initialMark
 
   const ordered = [...state.tasks].sort((a, b) => a.position - b.position)
   for (const t of ordered) {
     const { entry, sessions: ss } = normalizeTask(t)
     tasks[entry.id] = entry
     for (const s of ss) sessions[s.id] = s
+    groupsByTask[entry.id] = t.groups
     const hosted = ss.filter((s) => s.windowId === state.thisWindowId).map((s) => s.id)
-    const mark = pickMark(hosted, prevMarks[entry.id], entry.activeSessionId)
+    const initialMarkSessionId =
+      initialMark && initialMark.taskId === entry.id ? initialMark.sessionId : undefined
+    const mark = pickMark(hosted, prevMarks[entry.id], initialMarkSessionId, entry.activeSessionId)
     if (mark) activeSessionByTask[entry.id] = mark
   }
 
@@ -412,6 +483,7 @@ function hydrateData(
     taskOrder: ordered.map((t) => t.id),
     activeTaskId: state.activeTaskId,
     activeSessionByTask,
+    groupsByTask,
     sessionTypes: state.sessionTypes,
     settings: state.settings,
     version: state.version,
@@ -454,6 +526,21 @@ export function activeSessionInWindow(
   const active = data.activeSessionByTask[taskId]
   if (active && ids.includes(active)) return active
   return ids[0]
+}
+
+/**
+ * The group `sessionId` belongs to within `taskId`'s groups (DESIGN §5.7, split-groups
+ * design), or `undefined` if it is lone. Membership is the group's layout tree's leaves —
+ * there is no separate member list to go out of sync.
+ */
+export function groupOfSession(
+  data: StoreData,
+  taskId: string,
+  sessionId: string
+): GroupDTO | undefined {
+  const groups = data.groupsByTask[taskId]
+  if (!groups) return undefined
+  return groups.find((g) => hasLeaf(g.layout, sessionId))
 }
 
 /**
@@ -631,11 +718,18 @@ function removeSession(data: StoreData, taskId: string, sessionId: string): Stor
   if (task) {
     const sessionIds = task.sessionIds.filter((id) => id !== sessionId)
     next = patchTask(next, taskId, { sessionIds })
-    // Closing this window's marked tab re-marks the LAST tab still in this window (§3.7);
-    // other windows' marks are untouched.
+    // Closing this window's marked tab re-marks a neighbour (§3.7). Prefer the closed
+    // session's groupmate (next, else previous, in the group's own tab order) over the
+    // window's last tab: `sessionClosed` arrives BEFORE `groupsChanged` (dissolving the
+    // group at 1 member, DESIGN §5.7, is reconciled separately), so `data.groupsByTask`
+    // — read from the OLD `data`, not `next` — still has the closed session as a leaf.
+    // Falls back to the window's last tab for a lone session, or one whose last
+    // groupmate is also gone.
     if (next.activeSessionByTask[taskId] === sessionId) {
       const ids = sessionIdsInWindow(next, taskId, data.windowId)
-      next = withMark(next, taskId, ids[ids.length - 1])
+      const group = groupOfSession(data, taskId, sessionId)
+      const neighbour = group ? neighbourInGroup(task.sessionIds, group, sessionId, ids) : undefined
+      next = withMark(next, taskId, neighbour ?? ids[ids.length - 1])
     }
     // The removed session no longer contributes to the task rollup — recompute its
     // worst-wins state so a closed `Working`/`NeedsInput` session stops pinning the
@@ -643,6 +737,29 @@ function removeSession(data: StoreData, taskId: string, sessionId: string): Stor
     next = recomputeTaskState(next, taskId)
   }
   return next
+}
+
+/**
+ * The adjacent member to `sessionId` within `group`'s TAB order (next, else previous)
+ * that is still in `hosted` (IMP3 fix): closing a grouped tab prefers a groupmate over
+ * jumping to the window's last tab. `fullOrder` is the task's session order from BEFORE
+ * the removal (closing is reconciled before `groupsChanged`, so `group` still lists
+ * `sessionId` as a leaf) — tab order, not the group's tree a/b order.
+ */
+function neighbourInGroup(
+  fullOrder: readonly string[],
+  group: GroupDTO,
+  sessionId: string,
+  hosted: readonly string[]
+): string | undefined {
+  const members = new Set(leafIds(group.layout))
+  const tabOrdered = fullOrder.filter((id) => members.has(id))
+  const i = tabOrdered.indexOf(sessionId)
+  const next = tabOrdered[i + 1]
+  if (next !== undefined && hosted.includes(next)) return next
+  const prev = tabOrdered[i - 1]
+  if (prev !== undefined && hosted.includes(prev)) return prev
+  return undefined
 }
 
 /**
@@ -843,6 +960,7 @@ export function reduceEvent(
           ...data,
           tasks: { ...data.tasks, [entry.id]: entry },
           sessions,
+          groupsByTask: { ...data.groupsByTask, [entry.id]: event.task.groups },
           taskOrder: isNew ? [...data.taskOrder, entry.id] : data.taskOrder
         },
         entry.id,
@@ -853,6 +971,9 @@ export function reduceEvent(
     case 'taskDeleted': {
       const tasks = omit(data.tasks, event.taskId)
       const activeSessionByTask = omit(data.activeSessionByTask, event.taskId)
+      // Drop this window's groups for the doomed task (DESIGN §5.7, split-groups design) —
+      // the backend's rows are cascaded away, nothing to reconcile against.
+      const groupsByTask = omit(data.groupsByTask, event.taskId)
       const doomed = data.tasks[event.taskId]?.sessionIds ?? []
       const sessions = { ...data.sessions }
       for (const id of doomed) delete sessions[id]
@@ -861,6 +982,7 @@ export function reduceEvent(
         tasks,
         sessions,
         activeSessionByTask,
+        groupsByTask,
         taskOrder: data.taskOrder.filter((id) => id !== event.taskId),
         activeTaskId: data.activeTaskId === event.taskId ? undefined : data.activeTaskId
       }
@@ -927,9 +1049,18 @@ export function reduceEvent(
         ? task.sessionIds
         : [...task.sessionIds, s.id]
       const added = patchTask(next, event.taskId, { sessionIds })
-      // Every window learns of the session; only the window hosting it marks it (§3.7).
+      // Every window learns of the session; only the window hosting it marks it (§3.7). A
+      // split-chord creation (`CreateSessionInput.split`, DESIGN §5.7) joins it into the
+      // anchor's group on the backend in the SAME command; that result arrives separately
+      // as `groupsChanged`, so there is nothing group-shaped to do here.
       return s.windowId === data.windowId ? withMark(added, event.taskId, s.id) : added
     }
+
+    case 'groupsChanged':
+      // Consistent with the other per-task reducers (e.g. `taskRenamed`): a task this
+      // window doesn't know about yet (or ever) can't own a group list.
+      if (!data.tasks[event.taskId]) return data
+      return { ...data, groupsByTask: { ...data.groupsByTask, [event.taskId]: event.groups } }
 
     case 'sessionExited': {
       // The session stays as a tab (§6.1) but is now dead; only lifecycle changes.
@@ -1104,26 +1235,69 @@ export function reduceEvent(
       // window's filter drop the pane and the target window's filter mount it. The
       // session may be unknown to a window that never held it (harmless no-op).
       //
-      // Marks (§3.7): the TARGET window marks the moved session — the user put it there
-      // to look at it — unless the move is the "move sessions to main" disposition of
-      // closing a window (`cause: 'windowClosed'`), which must not replace what the
-      // target was showing (it marks the moved session only if it had no mark). The
-      // SOURCE window, if the moved session was its mark, re-marks the neighbouring tab
-      // (right, else left).
+      // A whole-group move (DESIGN §5.7 "every group member shares one window") sends
+      // ONE event per member — the directly-sent one first, the rest tagged `cause:
+      // 'groupMove'` — but the backend moves the whole group atomically, so this window
+      // must too (IMP1 fix): on the FIRST event to land for the group, reassign EVERY
+      // member's `windowId` here, in this single reducer step, rather than waiting for
+      // each member's own later event. Without this, a groupmate whose own event hasn't
+      // arrived yet would still read its OLD `windowId` — making `sessionIdsInWindow`
+      // (hence `activeSessionInWindow`'s `ids[0]` fallback) treat it as still hosted
+      // and briefly "on screen" here, wrongly clearing its review dot
+      // (`markVisibleSessionSeen`) and getting persisted as focused
+      // (`usePersistFocusedSession`), both wrong per CLAUDE_STATE_PRD. Every LATER event
+      // for another member of the same move is then an idempotent no-op: by the time it
+      // arrives its own session already carries `windowId === toWindowId` (moved on the
+      // first event), caught by the guard below — so it re-marks nothing in either
+      // window and leaves whatever the first event already decided.
+      //
+      // Marks (§3.7): the TARGET window marks the DIRECTLY-sent session — the user put
+      // it there to look at it — unless the move is a disposition that must not replace
+      // what the target was showing (it keeps the target's existing mark instead): the
+      // "move sessions to main" disposition of closing a window (`cause:
+      // 'windowClosed'`), or this being an EXTRA group member riding along with the
+      // directly-moved one (`cause: 'groupMove'` — only the directly-sent member, no
+      // `cause`, is ever marked in the target). The SOURCE window, if the moved group's
+      // mark was one of the moving members, re-marks the nearest tab OUTSIDE the whole
+      // moving set.
       const s = data.sessions[event.sessionId]
       if (!s) return data
+      // Idempotent no-op: this member already moved (as part of the group it belongs
+      // to, on an earlier event in this same move) — nothing left to do in either
+      // window.
+      if (s.windowId === event.toWindowId) return data
+
       const before = sessionIdsInWindow(data, s.taskId, data.windowId)
-      const next: StoreData = {
-        ...data,
-        sessions: { ...data.sessions, [event.sessionId]: { ...s, windowId: event.toWindowId } }
+      // The WHOLE moving set: the moved session's group's leaves, restricted to members
+      // CURRENTLY hosted in the session's own (FROM) window — defensive; the "members
+      // share a window" invariant guarantees they all are — or just the session itself
+      // if it's lone.
+      const group = groupOfSession(data, s.taskId, s.id)
+      const movingSet = group
+        ? new Set(leafIds(group.layout).filter((id) => data.sessions[id]?.windowId === s.windowId))
+        : new Set([s.id])
+
+      let sessions = data.sessions
+      for (const id of movingSet) {
+        const member = sessions[id]
+        if (member) sessions = { ...sessions, [id]: { ...member, windowId: event.toWindowId } }
       }
+      const next: StoreData = { ...data, sessions }
+
       if (event.toWindowId === data.windowId) {
-        const keep = event.cause === 'windowClosed' ? next.activeSessionByTask[s.taskId] : undefined
+        const keep =
+          event.cause === 'windowClosed' || event.cause === 'groupMove'
+            ? next.activeSessionByTask[s.taskId]
+            : undefined
         return withMark(next, s.taskId, keep ?? s.id)
       }
-      if (data.activeSessionByTask[s.taskId] === s.id) {
+
+      // Moving OUT of this window: re-mark only if the CURRENT mark is somewhere in the
+      // whole moving set, to the nearest tab OUTSIDE it.
+      const mark = data.activeSessionByTask[s.taskId]
+      if (mark !== undefined && movingSet.has(mark)) {
         const i = before.indexOf(s.id)
-        return withMark(next, s.taskId, before[i + 1] ?? before[i - 1])
+        return withMark(next, s.taskId, nearestOutside(before, i, movingSet))
       }
       return next
     }
@@ -1336,7 +1510,18 @@ export const useStore = create<Store>((set, get) => ({
   cancelDiscard: () => set({ discardPrompt: null }),
 
   cancelNewIssue: () =>
-    set((data) => bumpSession({ ...data, issueDraft: false, issueEditDirty: false }))
+    set((data) => bumpSession({ ...data, issueDraft: false, issueEditDirty: false })),
+  // Like `setActiveSession` minus its local ready-for-review clear (§9.5): a pane focus
+  // sends no `sessions.switch`, so a local clear would be the ONLY clear — other windows'
+  // rollups would keep the flag. Leaving it set lets `markVisibleSessionSeen` (re-run by
+  // the moved mark) clear it here and relay "seen" to every window. A pure mark move — it
+  // never touches a group (DESIGN §5.7, split-groups design).
+  focusPane: (sessionId) =>
+    set((data) => {
+      const session = data.sessions[sessionId]
+      if (!session || session.windowId !== data.windowId) return data
+      return withMark(data, session.taskId, sessionId)
+    })
 }))
 
 /** Return `map` with `sessionId` cleared, or `map` unchanged if it wasn't set (§9.5). */

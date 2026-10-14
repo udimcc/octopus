@@ -21,17 +21,20 @@ import {
   asTypeId,
   asWindowId,
   asIssueId,
+  asGroupId,
   type TaskId,
   type SessionId,
   type WindowId,
-  type IssueId
+  type IssueId,
+  type GroupId
 } from '../../domain/ids'
 import type { SessionConfig } from '../../domain/session-config'
 import type {
   WorkspaceSnapshot,
   TaskSnapshot,
   SessionSnapshot,
-  IssueSnapshot
+  IssueSnapshot,
+  GroupSnapshot
 } from '../../domain/snapshots'
 import type { DomainEvent, EventBus, EventHandler, Unsubscribe } from '../../ports/event-bus'
 import type { IdGenerator } from '../../ports/id-generator'
@@ -204,6 +207,8 @@ export class FakePersistence implements WorkspacePersistence {
   readonly savedLastCwd = new Map<SessionId, string>()
   /** Persisted window records keyed by id (V1.5, mirrors the `windows` table). */
   readonly windows = new Map<WindowId, WindowRecord>()
+  /** Persisted split groups keyed by id (DESIGN §5.7, mirrors the `session_groups` table). */
+  readonly groups = new Map<GroupId, { taskId: TaskId; group: GroupSnapshot }>()
   transactions = 0
   checkpointed = false
   private readonly initial: WorkspaceSnapshot
@@ -226,6 +231,10 @@ export class FakePersistence implements WorkspacePersistence {
       if (issue.taskId === taskId) {
         this.issues.set(issue.id, { ...issue, taskId: undefined })
       }
+    }
+    // Mirror the real ON DELETE CASCADE: dropping the task drops its groups.
+    for (const [id, row] of this.groups) {
+      if (row.taskId === taskId) this.groups.delete(id)
     }
   }
   upsertIssue(issue: IssueSnapshot): void {
@@ -268,6 +277,12 @@ export class FakePersistence implements WorkspacePersistence {
   }
   deleteWindow(id: WindowId): void {
     this.windows.delete(id)
+  }
+  upsertGroup(taskId: TaskId, group: GroupSnapshot): void {
+    this.groups.set(group.id, { taskId, group })
+  }
+  deleteGroup(groupId: GroupId): void {
+    this.groups.delete(groupId)
   }
   transaction<T>(fn: () => T): T {
     this.transactions++
@@ -484,6 +499,7 @@ export class SeqIdGenerator implements IdGenerator {
   private s = 0
   private w = 0
   private i = 0
+  private g = 0
   newTaskId(): TaskId {
     this.t++
     return asTaskId(`task-${this.t}`)
@@ -499,6 +515,10 @@ export class SeqIdGenerator implements IdGenerator {
   newIssueId(): IssueId {
     this.i++
     return asIssueId(`issue-${this.i}`)
+  }
+  newGroupId(): GroupId {
+    this.g++
+    return asGroupId(`group-${this.g}`)
   }
 }
 

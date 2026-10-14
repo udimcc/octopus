@@ -11,10 +11,12 @@ import {
   asSessionId,
   asWindowId,
   asIssueId,
+  asGroupId,
   type TaskId,
   type SessionId,
   type WindowId,
-  type IssueId
+  type IssueId,
+  type GroupId
 } from '../../domain/ids'
 
 export class UuidIdGenerator implements IdGenerator {
@@ -32,5 +34,9 @@ export class UuidIdGenerator implements IdGenerator {
 
   newIssueId(): IssueId {
     return asIssueId(randomUUID())
+  }
+
+  newGroupId(): GroupId {
+    return asGroupId(randomUUID())
   }
 }

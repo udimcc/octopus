@@ -8,12 +8,13 @@
  * stays free of any storage-engine types.
  */
 
-import type { TaskId, SessionId, WindowId, IssueId } from '../domain/ids'
+import type { TaskId, SessionId, WindowId, IssueId, GroupId } from '../domain/ids'
 import type {
   WorkspaceSnapshot,
   TaskSnapshot,
   SessionSnapshot,
-  IssueSnapshot
+  IssueSnapshot,
+  GroupSnapshot
 } from '../domain/snapshots'
 
 /**
@@ -38,6 +39,8 @@ export interface WorkspacePersistence {
   /**
    * Load the full persisted workspace on startup (empty on first run) (§6.3).
    * Includes `issues` (I19, v8 schema).
+   * Each task's split groups (§5.7) load with it, attached to `TaskSnapshot.groups`
+   * — there is no separate group-load call.
    */
   load(): WorkspaceSnapshot
 
@@ -86,6 +89,19 @@ export interface WorkspacePersistence {
   upsertWindow(record: WindowRecord): void
   /** Delete a window row (its sessions are reassigned by the use case, not cascaded) (V1.5). */
   deleteWindow(id: WindowId): void
+
+  /**
+   * Insert or update a task's split group (DESIGN §5.7): 2+ sessions of that
+   * task, in one window, sharing a layout tree and a palette color. The tree
+   * (leaves are member session ids) is persisted as an OPAQUE JSON blob — the
+   * backend never interprets it, like window bounds being presentation-only.
+   * `taskId` is the FK; `GroupSnapshot` itself carries no task reference (it
+   * only ever travels inside `TaskSnapshot.groups`). The task's FK cascades, so
+   * deleting the task drops its group rows with no explicit cleanup here.
+   */
+  upsertGroup(taskId: TaskId, group: GroupSnapshot): void
+  /** Delete a group row (ungroup / dissolve-at-1 / member removed) (§5.7). */
+  deleteGroup(groupId: GroupId): void
 
   /** Run `fn` inside a single transaction; used for the delete sequence (§6.6). */
   transaction<T>(fn: () => T): T

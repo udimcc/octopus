@@ -39,6 +39,13 @@ import type {
   SessionCwdInput,
   RefreshSessionStateInput,
   MarkSessionSeenInput,
+  JoinGroupInput,
+  LeaveGroupInput,
+  UngroupInput,
+  ReorderGroupInput,
+  ResizeGroupInput,
+  SplitDirection,
+  SplitPath,
   CreateWindowInput,
   CloseWindowInput,
   MoveSessionInput,
@@ -75,8 +82,11 @@ import {
   asTypeId,
   asWindowId,
   asIssueId,
+  asGroupId,
   MAIN_WINDOW_ID,
-  type WindowId
+  type WindowId,
+  type TaskId,
+  type SessionId
 } from '../domain/ids'
 import { parseIssueStatus, type IssueStatus } from '../domain/issue'
 import { toWindowedWorkspaceStateDTO, toSessionConfig } from './dto-mappers'
@@ -102,6 +112,7 @@ function parseIssueStatusInput(status: IssueStatusDTO | undefined): {
   }
   return { status: parsed }
 }
+import { locateSession } from '../application/use-cases/locate-session'
 
 function ack(result: CommandResult): CommandAck {
   return {
@@ -119,6 +130,24 @@ function ack(result: CommandResult): CommandAck {
     // Id of an issue just created by `createIssue` ("Issues", §13.4).
     issueId: result.issueId
   }
+}
+
+/** A rejected `CommandAck` for malformed input, never reaching the command loop. */
+function invalidAck(error: string): CommandAck {
+  return { ok: false, error }
+}
+
+function isNonEmptyString(v: unknown): v is string {
+  return typeof v === 'string' && v.length > 0
+}
+
+function isSplitDirection(v: unknown): v is SplitDirection {
+  return v === 'row' || v === 'col'
+}
+
+/** A {@link SplitPath}: an array of only `'a'`/`'b'` steps (possibly empty). */
+function isSplitPath(v: unknown): v is SplitPath {
+  return Array.isArray(v) && v.every((step) => step === 'a' || step === 'b')
 }
 
 export interface IpcHandlerHooks {
@@ -168,6 +197,23 @@ export function registerIpcHandlers(
   deps: AppDependencies,
   hooks: IpcHandlerHooks
 ): void {
+  // One-shot window→mark registry (DESIGN §3.7, §5.7 round 2): recorded ONLY for a
+  // window just opened via `windows:createWithSession` (`windowCreateWithSession`
+  // below), so that window's first `getState` can mark the detached session
+  // instead of falling back to the task's persisted (and, for a hidden-until-shown
+  // new window, stale) `activeSessionId`. Deleted in `appGetState` right after it is
+  // read, so a LATER re-hydrate of the same window (SettingsModal's re-hydrate, or a
+  // renderer crash-reload) falls through to the normal mark priority instead of
+  // replaying the detach-time session every time. The `windowClosed` cleanup
+  // (subscribed below) only matters for a window that closes before ever calling
+  // `getState`.
+  const initialMarks = new Map<WindowId, { taskId: TaskId; sessionId: SessionId }>()
+  deps.bus.subscribe((event) => {
+    if (event.type === 'windowClosed') {
+      initialMarks.delete(event.windowId)
+    }
+  })
+
   // Health check (kept from V0).
   ipcMain.handle(CHANNELS.ping, () => 'pong')
 
@@ -228,6 +274,26 @@ export function registerIpcHandlers(
   ipcMain.handle(
     CHANNELS.sessionCreate,
     async (e, input: CreateSessionInput): Promise<CommandAck> => {
+      // Split intent (DESIGN §5.7): the split shortcut / tab-menu "Split right|down"
+      // creates the session already joined into the anchor's group, in one command.
+      // Malformed input is rejected outright rather than silently created lone — a
+      // defensive check in the handler's existing style (cf. the group:* handlers).
+      // `input?.split` + an explicit `null` check (review#5): a bare
+      // `input.split !== undefined` check lets `split: null` through (`null !==
+      // undefined` is true), and the very next line then dereferences
+      // `input.split.anchorSessionId` on `null` and throws — crashing the handler
+      // instead of returning `{ ok: false }`. A present-but-`null`/non-object
+      // `split` is rejected the same way a malformed non-null one is.
+      const split = input?.split
+      if (
+        split !== undefined &&
+        (split === null ||
+          typeof split !== 'object' ||
+          !isNonEmptyString(split.anchorSessionId) ||
+          !isSplitDirection(split.dir))
+      ) {
+        return invalidAck('session:create: invalid split input')
+      }
       // Host the new session in the window that asked for it (V1.5, §6.7). Resolve
       // the calling renderer the same way getState/windowAtPoint do — the renderer
       // needn't pass its own id over the wire.
@@ -239,7 +305,11 @@ export function registerIpcHandlers(
           typeId: input.typeId !== undefined ? asTypeId(input.typeId) : undefined,
           title: input.title,
           config: input.config !== undefined ? toSessionConfig(input.config) : undefined,
-          windowId
+          windowId,
+          split:
+            split !== undefined
+              ? { anchorSessionId: asSessionId(split.anchorSessionId), dir: split.dir }
+              : undefined
         }
       })
       return ack(result)
@@ -282,6 +352,13 @@ export function registerIpcHandlers(
   ipcMain.handle(
     CHANNELS.sessionReorder,
     async (_e, input: ReorderSessionInput): Promise<CommandAck> => {
+      // Validated at the wire boundary (m1), consistent with `group:reorder` below:
+      // `Task.reorderSession` now throws on a non-integer/negative `toIndex` too,
+      // but rejecting it here avoids a round trip through the command loop/domain
+      // error path for input that is obviously malformed before it ever leaves IPC.
+      if (!Number.isInteger(input?.toIndex) || input.toIndex < 0) {
+        return invalidAck('session:reorder: invalid input')
+      }
       const result = await loop.dispatch({
         kind: 'reorderSession',
         input: {
@@ -317,6 +394,98 @@ export function registerIpcHandlers(
     }
   )
 
+  // ── Group commands (DESIGN §5.7) ────────────────────────────────────────────
+  // Each mutates the `Task` aggregate and resolves to a `CommandAck`; the result
+  // itself arrives separately as a `groupsChanged` event (plus `sessionReordered`
+  // when membership reorders tabs) — same split as the session commands above.
+  // Malformed input is rejected with `{ ok: false }` before it ever reaches the
+  // loop, the defensive style the removed `layout:save` handler used.
+  ipcMain.handle(CHANNELS.groupJoin, async (_e, input: JoinGroupInput): Promise<CommandAck> => {
+    if (
+      !isNonEmptyString(input?.sessionId) ||
+      !isNonEmptyString(input?.anchorSessionId) ||
+      !isSplitDirection(input?.dir)
+    ) {
+      return invalidAck('group:join: invalid input')
+    }
+    const result = await loop.dispatch({
+      kind: 'joinGroup',
+      input: {
+        sessionId: asSessionId(input.sessionId),
+        anchorSessionId: asSessionId(input.anchorSessionId),
+        dir: input.dir
+      }
+    })
+    return ack(result)
+  })
+
+  ipcMain.handle(CHANNELS.groupLeave, async (_e, input: LeaveGroupInput): Promise<CommandAck> => {
+    if (!isNonEmptyString(input?.sessionId)) {
+      return invalidAck('group:leave: invalid input')
+    }
+    const result = await loop.dispatch({
+      kind: 'leaveGroup',
+      input: { sessionId: asSessionId(input.sessionId) }
+    })
+    return ack(result)
+  })
+
+  ipcMain.handle(CHANNELS.groupUngroup, async (_e, input: UngroupInput): Promise<CommandAck> => {
+    if (!isNonEmptyString(input?.taskId) || !isNonEmptyString(input?.groupId)) {
+      return invalidAck('group:ungroup: invalid input')
+    }
+    const result = await loop.dispatch({
+      kind: 'ungroup',
+      input: { taskId: asTaskId(input.taskId), groupId: asGroupId(input.groupId) }
+    })
+    return ack(result)
+  })
+
+  ipcMain.handle(
+    CHANNELS.groupReorder,
+    async (_e, input: ReorderGroupInput): Promise<CommandAck> => {
+      if (
+        !isNonEmptyString(input?.taskId) ||
+        !isNonEmptyString(input?.groupId) ||
+        !Number.isInteger(input?.toIndex) ||
+        input.toIndex < 0
+      ) {
+        return invalidAck('group:reorder: invalid input')
+      }
+      const result = await loop.dispatch({
+        kind: 'reorderGroup',
+        input: {
+          taskId: asTaskId(input.taskId),
+          groupId: asGroupId(input.groupId),
+          toIndex: input.toIndex
+        }
+      })
+      return ack(result)
+    }
+  )
+
+  ipcMain.handle(CHANNELS.groupResize, async (_e, input: ResizeGroupInput): Promise<CommandAck> => {
+    if (
+      !isNonEmptyString(input?.taskId) ||
+      !isNonEmptyString(input?.groupId) ||
+      !isSplitPath(input?.path) ||
+      typeof input?.ratio !== 'number' ||
+      !Number.isFinite(input.ratio)
+    ) {
+      return invalidAck('group:resize: invalid input')
+    }
+    const result = await loop.dispatch({
+      kind: 'resizeGroup',
+      input: {
+        taskId: asTaskId(input.taskId),
+        groupId: asGroupId(input.groupId),
+        path: input.path,
+        ratio: input.ratio
+      }
+    })
+    return ack(result)
+  })
+
   // ── Window commands (V1.5, §6.7) ────────────────────────────────────────────
   ipcMain.handle(
     CHANNELS.windowCreate,
@@ -340,10 +509,25 @@ export function registerIpcHandlers(
   ipcMain.handle(
     CHANNELS.windowCreateWithSession,
     async (_e, input: CreateWindowWithSessionInput): Promise<CommandAck> => {
+      const sessionId = asSessionId(input.sessionId)
       const result = await loop.dispatch({
         kind: 'createWindowWithSession',
-        input: { sessionId: asSessionId(input.sessionId), bounds: input.bounds }
+        input: { sessionId, bounds: input.bounds }
       })
+      // Record the new window's one-shot mark (see `initialMarks` above) so its
+      // OWN first `getState` shows the detached session — not whatever the task's
+      // persisted `activeSessionId` says — even though the new window is created
+      // hidden and the SOURCE window (still focused) races ahead and re-marks the
+      // task via `sessions.focus` before the new window ever hydrates. `located`
+      // is re-resolved post-move rather than reusing anything from the command: the
+      // session's `taskId` never changes across a window move, so this is just
+      // the simplest way to get it.
+      if (result.ok && result.windowId) {
+        const located = locateSession(deps.workspace, sessionId)
+        if (located) {
+          initialMarks.set(result.windowId, { taskId: located.task.id, sessionId })
+        }
+      }
       return ack(result)
     }
   )
@@ -504,7 +688,9 @@ export function registerIpcHandlers(
     const view = getState(deps)
     const record = view.windows.find((w) => w.id === windowId)
     const role: 'main' | 'secondary' = record?.role ?? 'main'
-    const dto = toWindowedWorkspaceStateDTO(view, windowId, role)
+    const dto = toWindowedWorkspaceStateDTO(view, windowId, role, initialMarks.get(windowId))
+    // One-shot (see `initialMarks` above): consumed by this window's first getState only.
+    initialMarks.delete(windowId)
     // This window registered onEvent before the call; flush its buffered events.
     hooks.onHydrate?.(windowId)
     return dto

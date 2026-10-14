@@ -43,7 +43,8 @@ function seed(sessions: SessionDTO[], thisWindowId: string): void {
     sessions,
     activeSessionId: sessions[0]?.id,
     position: 0,
-    createdAt: 1000
+    createdAt: 1000,
+    groups: []
   }
   const state: WindowedWorkspaceStateDTO = {
     tasks: [t],

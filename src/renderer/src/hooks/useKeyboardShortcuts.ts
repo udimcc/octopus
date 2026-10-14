@@ -6,18 +6,25 @@
  * chord is user-configurable and the settings dialog enforces ≥1 modifier, so a
  * binding can never shadow a bare terminal keystroke.
  *
- * CONFIGURABLE KEYS: all nine actions are FREE-FORM chords read from `settings` —
+ * CONFIGURABLE KEYS: all fifteen actions are FREE-FORM chords read from `settings` —
  * `sessionNextKey` / `sessionPrevKey` (cycle sessions), `taskNextKey` / `taskPrevKey`
  * (move between tasks), `newSessionKey` (new terminal in the active task), `newTaskKey`
  * (open the New-Task modal), `closeSessionKey` (close the active session), `searchKey`
- * (terminal search), and `issuesKey` (toggle the Issues drawer). Each is a canonical
- * chord string (see `keybindings/chords.ts`). Defaults: session next/prev
- * `Ctrl+Shift+ArrowRight` / `Ctrl+Shift+ArrowLeft`; task next/prev
- * `Ctrl+Shift+ArrowDown` / `Ctrl+Shift+ArrowUp`; new session `Ctrl+Shift+N`; new task
- * `Ctrl+Shift+T`; close session `Ctrl+Shift+W`; search `Ctrl+Shift+F`; toggle issues
- * `Alt+Shift+I`. Each is bound independently (no "opposite" inference) and matched
- * with `matchesChord`. The settings dialog blocks a collision between them (and
- * against `RESERVED_CHORDS` in `chords.ts`, currently empty).
+ * (terminal search), `issuesKey` (toggle the Issues drawer), `splitRightKey` /
+ * `splitDownKey` (split the focused pane with a new terminal, §5.7), and
+ * `focusPaneLeftKey` / `focusPaneRightKey` / `focusPaneUpKey` / `focusPaneDownKey` (move
+ * focus to the adjacent pane, §5.7). Each is a canonical chord string (see
+ * `keybindings/chords.ts`). Defaults: session next/prev `Ctrl+Shift+ArrowRight` /
+ * `Ctrl+Shift+ArrowLeft`; task next/prev `Ctrl+Shift+ArrowDown` / `Ctrl+Shift+ArrowUp`;
+ * new session `Ctrl+Shift+N`; new task `Ctrl+Shift+T`; close session `Ctrl+Shift+W`;
+ * search `Ctrl+Shift+F`; toggle issues `Alt+Shift+I`; split right/down `Ctrl+Shift+E` /
+ * `Ctrl+Shift+O`; focus pane left/down/up/right `Ctrl+Shift+H/J/K/L` (vim-style; NOT
+ * `Ctrl+Alt+Shift+Arrow`, which GNOME grabs for move-to-workspace before the keydown ever
+ * reaches us). Each is bound independently (no "opposite" inference) and matched with
+ * `matchesChord`, which compares the FULL modifier set, not a subset — so e.g. a custom
+ * `Ctrl+Alt+Shift+ArrowRight` never also matches a `Ctrl+Shift+ArrowRight` binding
+ * (session next). The settings dialog blocks a collision between them (and against
+ * `RESERVED_CHORDS` in `chords.ts`, currently empty).
  *
  * ISSUES DRAWER (`issuesKey`, PRD "Issues window"): the drawer exists only in the main
  * window (§13.4/§13.5). In the main window the chord toggles the store's own guarded
@@ -45,8 +52,8 @@
  * the workspace, only `issuesKey` itself and the task/session navigation chords
  * (`sessionNextKey`/`sessionPrevKey`/`taskNextKey`/`taskPrevKey`) still act — navigating
  * is harmless, since the drawer stays open and the workspace underneath just switches.
- * Everything else that acts on the now-hidden session (new/close session, search) is a
- * no-op while the drawer is open, rather than operating invisibly behind it.
+ * Everything else that acts on the now-hidden session (new/close session, search, split,
+ * pane focus) is a no-op while the drawer is open, rather than operating invisibly behind it.
  *
  * COPY/PASTE (`Ctrl+Shift+C/V`, §5.4) are NOT handled here: they act on a specific
  * terminal's selection/buffer, so they're bound in `TerminalPane` (which holds the
@@ -55,15 +62,31 @@
  * native `Ctrl+C` copies nothing — the pane copies `term.getSelection()` to the OS
  * clipboard (through `octopusAPI.clipboard`) and pastes via `term.paste()` instead.
  *
+ * SPLIT PANES (§5.7, split-groups design): a split chord asks the backend to create a new
+ * terminal already joined into the focused pane's group in ONE command (`sessions.create`'s
+ * `split` intent) — forming a group if the focused pane is lone. There is no renderer-held
+ * pending intent to track or cancel: the backend validates the anchor and joins atomically,
+ * then publishes the usual `sessionCreated` (which marks the new session in its window) plus
+ * `groupsChanged`/`sessionReordered`. The directional focus chords move the mark to the pane
+ * adjacent to the focused one within the mark's OWN group's layout (`groupOfSession` +
+ * `split-layout`'s `neighbor`) via the pure, local `focusPane` — a mark move never touches a
+ * group. Next/prev session (`sessionNextKey`/`sessionPrevKey`) need no group-aware logic
+ * here — they dispatch `sessions.switch`, which only moves the mark; `TaskView` derives
+ * what's shown from the mark's group (`groupOfSession`, store.ts) at render time, so
+ * cycling tabs never changes which group (if any) is shown.
+ *
  * New task and search are surfaced via callbacks because they drive React-local UI
  * (the modal / the terminal search box) that the store doesn't own; everything else
  * dispatches straight to the backend.
  */
 
 import { useEffect } from 'react'
-import { useStore, activeSessionInWindow } from '../store/store'
+import { useStore, activeSessionInWindow, groupOfSession } from '../store/store'
 import { groupTasksByRepo } from '../store/group-tasks'
 import { matchesChord } from '../keybindings/chords'
+import { canSplit, neighbor, type PaneDirection } from '../store/split-layout'
+import { measurePane } from '../terminal/terminal-metrics'
+import type { SplitDirection } from '../../../shared/dto'
 
 /**
  * The FIXED chord that toggles the state-detection debug overlay (§11). Not a
@@ -172,6 +195,60 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
         if (sid) void window.octopusAPI.sessions.close({ sessionId: sid })
       }
 
+      // Split chord (§5.7, split-groups design): create a NEW terminal already joined into
+      // the focused pane's group, next to its pane (forming a group if it's lone), in ONE
+      // backend command. Refuses (with a toast, no split) when the focused pane is
+      // measurable and halving it would leave either side under the minimum size
+      // (`canSplit`); an unmeasurable pane (not yet mounted/registered) doesn't block the
+      // split. No pending intent to record: the backend validates the anchor and joins
+      // atomically, so there's nothing here to cancel on a failed ack.
+      const trySplit = (dir: SplitDirection): void => {
+        // A held chord auto-repeats: one split per press, not a burst of new sessions.
+        if (e.repeat) return
+        // Same gate as `newSession`: only a `ready` task can host a new session.
+        if (!activeTaskId || store.tasks[activeTaskId]?.lifecycle !== 'ready') return
+        const mark = activeSessionInWindow(store, activeTaskId, store.windowId)
+        if (!mark) return
+        const metrics = measurePane(mark)
+        if (
+          metrics &&
+          !canSplit(
+            metrics.widthPx,
+            metrics.heightPx,
+            metrics.cellWidthPx,
+            metrics.cellHeightPx,
+            dir
+          )
+        ) {
+          store.pushToast('info', 'Pane too small to split')
+          return
+        }
+        void window.octopusAPI.sessions
+          .create({
+            taskId: activeTaskId,
+            split: { anchorSessionId: mark, dir }
+          })
+          .then((ack) => {
+            if (!ack.ok) store.pushToast('error', ack.error ?? 'Failed to split')
+          })
+          .catch(() => store.pushToast('error', 'Failed to split'))
+      }
+
+      // Directional focus chord (§5.7, split-groups design): move the mark to the pane
+      // adjacent to the focused one WITHIN THE MARK'S OWN GROUP's layout — groups enforce
+      // same-window membership, so every neighbor found this way is already hosted here. A
+      // no-op (the mark is lone here, or there's no neighbor that way) still consumes the
+      // keydown — same as every other chord below when it has nothing to do.
+      const focusDirection = (direction: PaneDirection): void => {
+        if (!activeTaskId) return
+        const mark = activeSessionInWindow(store, activeTaskId, store.windowId)
+        if (!mark) return
+        const group = groupOfSession(store, activeTaskId, mark)
+        if (!group) return
+        const target = neighbor(group.layout, mark, direction)
+        if (target) store.focusPane(target)
+      }
+
       // Every configurable chord comes from settings and is bound independently. A
       // custom chord (e.g. `Alt+K`) may not be Ctrl+Shift, so we match on the chord
       // itself; settings guarantees ≥1 modifier so a binding never shadows a bare key.
@@ -184,7 +261,13 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
         newTaskKey,
         closeSessionKey,
         searchKey,
-        issuesKey
+        issuesKey,
+        splitRightKey,
+        splitDownKey,
+        focusPaneLeftKey,
+        focusPaneRightKey,
+        focusPaneUpKey,
+        focusPaneDownKey
       } = store.settings
       if (matchesChord(e, sessionNextKey)) {
         e.preventDefault()
@@ -236,6 +319,36 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
         } else {
           store.toggleIssuesDrawer()
         }
+        return
+      }
+      if (matchesChord(e, splitRightKey)) {
+        e.preventDefault()
+        if (!suppressedByDrawer) trySplit('row')
+        return
+      }
+      if (matchesChord(e, splitDownKey)) {
+        e.preventDefault()
+        if (!suppressedByDrawer) trySplit('col')
+        return
+      }
+      if (matchesChord(e, focusPaneLeftKey)) {
+        e.preventDefault()
+        if (!suppressedByDrawer) focusDirection('left')
+        return
+      }
+      if (matchesChord(e, focusPaneRightKey)) {
+        e.preventDefault()
+        if (!suppressedByDrawer) focusDirection('right')
+        return
+      }
+      if (matchesChord(e, focusPaneUpKey)) {
+        e.preventDefault()
+        if (!suppressedByDrawer) focusDirection('up')
+        return
+      }
+      if (matchesChord(e, focusPaneDownKey)) {
+        e.preventDefault()
+        if (!suppressedByDrawer) focusDirection('down')
         return
       }
       // Fixed diagnostic chord (§11): toggle the state-detection debug overlay.

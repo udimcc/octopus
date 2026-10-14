@@ -19,6 +19,20 @@ async function seedNoRepoTask(): Promise<FakeDeps & { taskId: ReturnType<typeof 
   return { ...fd, taskId: asTaskId('task-1') }
 }
 
+/**
+ * The persisted (last-upserted) order of every live session matches the
+ * task's current order — stronger than "every id appears somewhere".
+ */
+function expectRowsMatch(
+  fd: FakeDeps,
+  task: { sessions(): readonly { id: unknown; order: number }[] }
+) {
+  const last = new Map<unknown, number>()
+  for (const s of fd.persistence.upsertedSessions) last.set(s.id, s.order)
+  const live = task.sessions().map((s) => [s.id, s.order] as const)
+  expect(live.every(([id, order]) => last.get(id) === order)).toBe(true)
+}
+
 describe('openSession happy path (§3.6, §6.1)', () => {
   it('creates a Running session, registers the runtime, persists, and emits sessionCreated', async () => {
     const fd = await seedReadyTask()
@@ -174,6 +188,160 @@ describe('openSession window hosting (V1.5, §6.7)', () => {
 
     const session = fd.workspace.task(fd.taskId)!.sessions()[0]
     expect(session.windowId).toBe(MAIN_WINDOW_ID)
+  })
+})
+
+describe('openSession split intent (§5.7)', () => {
+  it('joins the new session into the anchor group in the same command: sessionCreated, then groupsChanged, then sessionReordered', async () => {
+    const fd = await seedReadyTask()
+    await openSession(fd.deps, { taskId: fd.taskId }) // anchor: Terminal 1
+    const task = fd.workspace.task(fd.taskId)!
+    const anchor = task.sessions()[0]
+    fd.bus.events.length = 0
+
+    await openSession(fd.deps, {
+      taskId: fd.taskId,
+      split: { anchorSessionId: anchor.id, dir: 'row' }
+    })
+
+    const sessions = task.sessions()
+    expect(sessions).toHaveLength(2)
+    const newSession = sessions.find((s) => s.id !== anchor.id)!
+    expect(task.groupOf(anchor.id)?.id).toBe(task.groupOf(newSession.id)?.id)
+    expect(task.groupMembers(anchor.id)).toEqual([anchor.id, newSession.id])
+
+    expect(fd.bus.events.map((e) => e.type)).toEqual([
+      'sessionCreated',
+      'groupsChanged',
+      'sessionReordered'
+    ])
+    // Both session rows persisted (new tab moved next to the anchor's),
+    // exact last-written order per id — not just "was written at some
+    // point" (review Finding 1).
+    expectRowsMatch(fd, task)
+    // The full resulting order is published, not just the new session's id
+    // (review U7/U8).
+    const reordered = fd.bus.ofType('sessionReordered')[0]!
+    expect(reordered.orderedSessionIds).toEqual(task.sessions().map((s) => s.id))
+    expect(fd.persistence.groups.size).toBe(1)
+  })
+
+  it('persists a THIRD, uninvolved session whose order shifted as a side effect of the join (review U7b)', async () => {
+    // The happy-path test above has only 2 sessions, so the newly-created one's
+    // own row is the ONLY row whose order changes — a mutant that persists just
+    // `session` (the new one) instead of looping over `ordered` would still pass
+    // it. Seed a THIRD, uninvolved session so that moving the new session's tab
+    // next to the anchor's pushes it one slot over, forcing ITS row to be
+    // re-persisted too.
+    const fd = await seedReadyTask()
+    await openSession(fd.deps, { taskId: fd.taskId }) // anchor, order 0
+    const task = fd.workspace.task(fd.taskId)!
+    const anchor = task.sessions()[0]
+    await openSession(fd.deps, { taskId: fd.taskId }) // uninvolved, order 1
+    const uninvolved = task.sessions()[1]
+    fd.bus.events.length = 0
+
+    await openSession(fd.deps, {
+      taskId: fd.taskId,
+      split: { anchorSessionId: anchor.id, dir: 'row' }
+    })
+
+    const sessions = task.sessions()
+    expect(sessions).toHaveLength(3)
+    // The new session landed right after the anchor, pushing the uninvolved
+    // session from order 1 to order 2.
+    expect(task.session(uninvolved.id)!.order).toBe(2)
+    expectRowsMatch(fd, task)
+  })
+
+  it('forms a brand-new group when the anchor was lone, in the requested dir', async () => {
+    const fd = await seedReadyTask()
+    await openSession(fd.deps, { taskId: fd.taskId })
+    const task = fd.workspace.task(fd.taskId)!
+    const anchor = task.sessions()[0]
+    expect(task.groupOf(anchor.id)).toBeUndefined()
+
+    await openSession(fd.deps, {
+      taskId: fd.taskId,
+      split: { anchorSessionId: anchor.id, dir: 'col' }
+    })
+
+    expect(task.groupOf(anchor.id)).toBeDefined()
+    expect(task.groups()).toHaveLength(1)
+    // The requested 'col' direction must actually reach `task.join` — a
+    // mutant that hardcodes 'row' would be invisible to a test that only
+    // checks group membership (review U10b).
+    expect(task.groupOf(anchor.id)!.tree).toMatchObject({ dir: 'col' })
+  })
+
+  it('drops the split silently and creates a lone session for an unknown anchor', async () => {
+    const fd = await seedReadyTask()
+    fd.bus.events.length = 0
+
+    await openSession(fd.deps, {
+      taskId: fd.taskId,
+      split: { anchorSessionId: asSessionId('ghost'), dir: 'row' }
+    })
+
+    const task = fd.workspace.task(fd.taskId)!
+    expect(task.sessions()).toHaveLength(1)
+    expect(task.groups()).toEqual([])
+    // Only sessionCreated — no group events for a dropped split.
+    expect(fd.bus.events.map((e) => e.type)).toEqual(['sessionCreated'])
+  })
+
+  it('drops the split silently when the anchor belongs to a different task', async () => {
+    const fd = await seedReadyTask()
+    await createTask(fd.deps, taskInput('other'))
+    const otherTaskId = asTaskId('task-2')
+    await openSession(fd.deps, { taskId: otherTaskId })
+    const otherAnchor = fd.workspace.task(otherTaskId)!.sessions()[0]
+
+    await openSession(fd.deps, {
+      taskId: fd.taskId,
+      split: { anchorSessionId: otherAnchor.id, dir: 'row' }
+    })
+
+    const task = fd.workspace.task(fd.taskId)!
+    expect(task.sessions()).toHaveLength(1)
+    expect(task.groups()).toEqual([])
+  })
+
+  it('drops the split silently when the anchor is hosted in a different window (raced mark)', async () => {
+    const fd = await seedReadyTask()
+    await openSession(fd.deps, { taskId: fd.taskId, windowId: asWindowId('win-2') })
+    const task = fd.workspace.task(fd.taskId)!
+    const anchor = task.sessions()[0]
+    fd.bus.events.length = 0
+
+    // New session defaults to the main window; the anchor is in win-2.
+    await openSession(fd.deps, {
+      taskId: fd.taskId,
+      split: { anchorSessionId: anchor.id, dir: 'row' }
+    })
+
+    expect(task.sessions()).toHaveLength(2)
+    expect(task.groups()).toEqual([])
+    expect(fd.bus.events.map((e) => e.type)).toEqual(['sessionCreated'])
+  })
+})
+
+describe('openSession plain create tab order (§6.1, review C1)', () => {
+  it('lands a new plain session at the tail, not in a gap left by a closed one', async () => {
+    const fd = await seedReadyTask()
+    await openSession(fd.deps, { taskId: fd.taskId }) // Terminal 1, order 0
+    await openSession(fd.deps, { taskId: fd.taskId }) // Terminal 2, order 1
+    await openSession(fd.deps, { taskId: fd.taskId }) // Terminal 3, order 2
+    const task = fd.workspace.task(fd.taskId)!
+    const terminal1 = task.sessions().find((s) => s.title === 'Terminal 1')!
+    await closeSession(fd.deps, { sessionId: terminal1.id }) // frees order 0
+    const maxOrderBeforeNew = Math.max(...task.sessions().map((s) => s.order))
+
+    await openSession(fd.deps, { taskId: fd.taskId })
+
+    const newSession = task.sessions().find((s) => s.title === 'Terminal 4')!
+    // Lands strictly after the current tail, not back-filled into the gap at 0.
+    expect(newSession.order).toBe(maxOrderBeforeNew + 1)
   })
 })
 

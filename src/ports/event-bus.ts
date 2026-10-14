@@ -16,7 +16,12 @@
 
 import type { TaskId, SessionId, WindowId, IssueId } from '../domain/ids'
 import type { SessionState, TaskState } from '../domain/state'
-import type { TaskSnapshot, SessionSnapshot, IssueSnapshot } from '../domain/snapshots'
+import type {
+  TaskSnapshot,
+  SessionSnapshot,
+  IssueSnapshot,
+  GroupSnapshot
+} from '../domain/snapshots'
 import type { StateChangeMeta } from './session-runtime'
 
 /** High-frequency terminal output for one session (§6.5, §5.2). */
@@ -54,6 +59,26 @@ export interface SessionReorderedEvent {
   readonly type: 'sessionReordered'
   readonly taskId: TaskId
   readonly orderedSessionIds: readonly SessionId[]
+}
+
+/**
+ * A task's split groups changed (DESIGN §5.7). Published by: `joinGroup`,
+ * `leaveGroup`, `ungroup`, `reorderGroup`, `resizeGroup`; `openSession`'s split
+ * path (`CreateSessionInput.split`), which can join the brand-new session into a
+ * group in the same command; and `closeSession`, whenever removing a session's
+ * leaf dissolves or shrinks a group it belonged to. `closeWindow` itself never
+ * publishes this directly: its `kill-sessions` disposition routes every hosted
+ * session through `closeSession` (which publishes as above), and its
+ * `move-to-main` disposition never touches group membership at all — a group's
+ * tree/color is untouched by a window move (only each member's `windowId`
+ * changes), so nothing publishes there. Carries the task's FULL group list (not
+ * a delta), mirroring `GroupsChangedEventDTO`. Not session-scoped:
+ * `window-registry` broadcasts it to every window.
+ */
+export interface GroupsChangedEvent {
+  readonly type: 'groupsChanged'
+  readonly taskId: TaskId
+  readonly groups: readonly GroupSnapshot[]
 }
 
 // ── Task lifecycle events (§6.5) ────────────────────────────────────────────────
@@ -146,12 +171,17 @@ export interface SessionMovedToWindowEvent {
   readonly fromWindowId: WindowId
   readonly toWindowId: WindowId
   /**
-   * Set when the move is the "move sessions to main" disposition of closing a window
-   * (§6.7). The receiving renderer then KEEPS its existing mark for the task instead of
-   * marking the moved session; an explicit drag / "Move to" (no cause) marks the moved
-   * session in the target window.
+   * Set when the move is NOT the one the user directly targeted, so the receiving
+   * renderer KEEPS its existing mark for the task instead of marking the moved
+   * session; an explicit drag / "Move to" (no cause) marks the moved session in the
+   * target window.
+   *  - `'windowClosed'`: the "move sessions to main" disposition of closing a window
+   *    (§6.7).
+   *  - `'groupMove'` (DESIGN §5.7): an EXTRA member riding along because the user
+   *    moved/detached one member of its group and the whole group moves together —
+   *    the target marks only the member that was directly sent, not these.
    */
-  readonly cause?: 'windowClosed'
+  readonly cause?: 'windowClosed' | 'groupMove'
 }
 
 // ── Issue lifecycle events ("Issues", §13.3) ──────────────────────────────────────
@@ -190,6 +220,7 @@ export type DomainEvent =
   | SessionClosedEvent
   | SessionRenamedEvent
   | SessionReorderedEvent
+  | GroupsChangedEvent
   | TaskCreatedEvent
   | TaskDeletedEvent
   | TaskRenamedEvent

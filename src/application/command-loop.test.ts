@@ -132,6 +132,163 @@ describe('CommandLoop error translation (§7)', () => {
     expect(result).toEqual({ ok: true })
   })
 
+  it('dispatches joinGroup through to the use case, publishing groupsChanged (§5.7)', async () => {
+    const { deps, bus } = makeDeps()
+    const loop = new CommandLoop(deps)
+    await loop.dispatch({ kind: 'createTask', input: taskInput('a') })
+    const taskId = asTaskId('task-1')
+    await loop.dispatch({
+      kind: 'createSession',
+      input: { taskId, typeId: asTypeId('terminal') }
+    })
+    await loop.dispatch({
+      kind: 'createSession',
+      input: { taskId, typeId: asTypeId('terminal') }
+    })
+    const sessionIds = deps.workspace
+      .task(taskId)!
+      .sessions()
+      .map((s) => s.id)
+    bus.events.length = 0
+
+    const result = await loop.dispatch({
+      kind: 'joinGroup',
+      input: { sessionId: sessionIds[1], anchorSessionId: sessionIds[0], dir: 'row' }
+    })
+
+    expect(result).toEqual({ ok: true })
+    expect(bus.events.map((e) => e.type)).toEqual(['groupsChanged', 'sessionReordered'])
+  })
+
+  it('dispatches leaveGroup through to the use case, publishing groupsChanged then sessionReordered (review C1)', async () => {
+    const { deps, bus } = makeDeps()
+    const loop = new CommandLoop(deps)
+    await loop.dispatch({ kind: 'createTask', input: taskInput('a') })
+    const taskId = asTaskId('task-1')
+    await loop.dispatch({ kind: 'createSession', input: { taskId, typeId: asTypeId('terminal') } })
+    await loop.dispatch({ kind: 'createSession', input: { taskId, typeId: asTypeId('terminal') } })
+    const sessionIds = deps.workspace
+      .task(taskId)!
+      .sessions()
+      .map((s) => s.id)
+    await loop.dispatch({
+      kind: 'joinGroup',
+      input: { sessionId: sessionIds[1], anchorSessionId: sessionIds[0], dir: 'row' }
+    })
+    bus.events.length = 0
+
+    const result = await loop.dispatch({
+      kind: 'leaveGroup',
+      input: { sessionId: sessionIds[1] }
+    })
+
+    expect(result).toEqual({ ok: true })
+    expect(bus.events.map((e) => e.type)).toEqual(['groupsChanged', 'sessionReordered'])
+  })
+
+  it('dispatches reorderGroup through to the use case, publishing groupsChanged then sessionReordered (review C3)', async () => {
+    const { deps, bus } = makeDeps()
+    const loop = new CommandLoop(deps)
+    await loop.dispatch({ kind: 'createTask', input: taskInput('a') })
+    const taskId = asTaskId('task-1')
+    for (let i = 0; i < 4; i++) {
+      await loop.dispatch({
+        kind: 'createSession',
+        input: { taskId, typeId: asTypeId('terminal') }
+      })
+    }
+    const sessionIds = deps.workspace
+      .task(taskId)!
+      .sessions()
+      .map((s) => s.id)
+    await loop.dispatch({
+      kind: 'joinGroup',
+      input: { sessionId: sessionIds[1], anchorSessionId: sessionIds[0], dir: 'row' }
+    })
+    const groupId = deps.workspace.task(taskId)!.groupOf(sessionIds[0])!.id
+    bus.events.length = 0
+
+    const result = await loop.dispatch({
+      kind: 'reorderGroup',
+      input: { taskId, groupId, toIndex: 2 }
+    })
+
+    expect(result).toEqual({ ok: true })
+    expect(bus.events.map((e) => e.type)).toEqual(['groupsChanged', 'sessionReordered'])
+  })
+
+  it('dispatches ungroup through to the use case, publishing groupsChanged only (review C2)', async () => {
+    const { deps, bus } = makeDeps()
+    const loop = new CommandLoop(deps)
+    await loop.dispatch({ kind: 'createTask', input: taskInput('a') })
+    const taskId = asTaskId('task-1')
+    await loop.dispatch({ kind: 'createSession', input: { taskId, typeId: asTypeId('terminal') } })
+    await loop.dispatch({ kind: 'createSession', input: { taskId, typeId: asTypeId('terminal') } })
+    const sessionIds = deps.workspace
+      .task(taskId)!
+      .sessions()
+      .map((s) => s.id)
+    await loop.dispatch({
+      kind: 'joinGroup',
+      input: { sessionId: sessionIds[1], anchorSessionId: sessionIds[0], dir: 'row' }
+    })
+    const groupId = deps.workspace.task(taskId)!.groupOf(sessionIds[0])!.id
+    bus.events.length = 0
+
+    const result = await loop.dispatch({ kind: 'ungroup', input: { taskId, groupId } })
+
+    expect(result).toEqual({ ok: true })
+    expect(bus.events.map((e) => e.type)).toEqual(['groupsChanged'])
+    expect(deps.workspace.task(taskId)!.groups()).toEqual([])
+  })
+
+  it('dispatches resizeGroup through to the use case, publishing groupsChanged only (review C4)', async () => {
+    const { deps, bus } = makeDeps()
+    const loop = new CommandLoop(deps)
+    await loop.dispatch({ kind: 'createTask', input: taskInput('a') })
+    const taskId = asTaskId('task-1')
+    await loop.dispatch({ kind: 'createSession', input: { taskId, typeId: asTypeId('terminal') } })
+    await loop.dispatch({ kind: 'createSession', input: { taskId, typeId: asTypeId('terminal') } })
+    const sessionIds = deps.workspace
+      .task(taskId)!
+      .sessions()
+      .map((s) => s.id)
+    await loop.dispatch({
+      kind: 'joinGroup',
+      input: { sessionId: sessionIds[1], anchorSessionId: sessionIds[0], dir: 'row' }
+    })
+    const groupId = deps.workspace.task(taskId)!.groupOf(sessionIds[0])!.id
+    bus.events.length = 0
+
+    const result = await loop.dispatch({
+      kind: 'resizeGroup',
+      input: { taskId, groupId, path: [], ratio: 0.3 }
+    })
+
+    expect(result).toEqual({ ok: true })
+    expect(bus.events.map((e) => e.type)).toEqual(['groupsChanged'])
+    expect(deps.workspace.task(taskId)!.groupOf(sessionIds[0])!.tree).toMatchObject({ ratio: 0.3 })
+  })
+
+  it('translates an unknown-session joinGroup into ok:false with no event (§7)', async () => {
+    const { deps, bus } = makeDeps()
+    const loop = new CommandLoop(deps)
+    await loop.dispatch({ kind: 'createTask', input: taskInput('a') })
+    bus.events.length = 0
+
+    const result = await loop.dispatch({
+      kind: 'joinGroup',
+      input: {
+        sessionId: asSessionId('ghost-1'),
+        anchorSessionId: asSessionId('ghost-2'),
+        dir: 'row'
+      }
+    })
+
+    expect(result.ok).toBe(false)
+    expect(bus.events).toEqual([])
+  })
+
   it('reports success for a synchronous command', async () => {
     const { deps } = makeDeps()
     const loop = new CommandLoop(deps)

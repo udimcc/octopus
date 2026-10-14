@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { createTask } from './create-task'
 import { openSession } from './open-session'
 import { closeSession } from './close-session'
+import { joinGroup } from './join-group'
 import { handleRuntimeExit } from './handle-runtime-exit'
 import { makeDeps, taskInput, type FakeDeps } from './test-fakes'
 import { asTaskId, asSessionId } from '../../domain/ids'
@@ -68,6 +69,82 @@ describe('closeSession — user-driven close (§3.6, §6.1)', () => {
   it('is idempotent for an already-gone session', async () => {
     const { deps } = makeDeps()
     await expect(closeSession(deps, { sessionId: asSessionId('ghost') })).resolves.toBeUndefined()
+  })
+})
+
+describe('closeSession — grouped sessions (DESIGN §5.7)', () => {
+  async function seedGroupOfThree(): Promise<
+    FakeDeps & { taskId: ReturnType<typeof asTaskId>; sessionIds: ReturnType<typeof asSessionId>[] }
+  > {
+    const fd = makeDeps()
+    await createTask(fd.deps, taskInput('T'))
+    const taskId = asTaskId('task-1')
+    await openSession(fd.deps, { taskId })
+    await openSession(fd.deps, { taskId })
+    await openSession(fd.deps, { taskId })
+    const [s1, s2, s3] = fd.workspace.task(taskId)!.sessions()
+    joinGroup(fd.deps, { sessionId: s2.id, anchorSessionId: s1.id, dir: 'row' })
+    joinGroup(fd.deps, { sessionId: s3.id, anchorSessionId: s2.id, dir: 'col' })
+    return { ...fd, taskId, sessionIds: [s1.id, s2.id, s3.id] }
+  }
+
+  it('closing one member of a 3+ group just drops its leaf — the group survives', async () => {
+    const fd = await seedGroupOfThree()
+    const [s1, s2, s3] = fd.sessionIds
+    const task = fd.workspace.task(fd.taskId)!
+    const groupId = task.groupOf(s1)!.id
+    fd.bus.events.length = 0
+
+    await closeSession(fd.deps, { sessionId: s3 })
+
+    const group = task.groupOf(s1)!
+    expect(group.id).toBe(groupId)
+    expect(task.groups()).toHaveLength(1)
+    expect(task.groupMembers(s1).sort()).toEqual([s1, s2].sort())
+    expect(fd.persistence.groups.get(groupId)?.group.tree).toEqual(group.tree)
+  })
+
+  it('closing one member of a 2-member group dissolves it entirely', async () => {
+    const fd = makeDeps()
+    await createTask(fd.deps, taskInput('T'))
+    const taskId = asTaskId('task-1')
+    await openSession(fd.deps, { taskId })
+    await openSession(fd.deps, { taskId })
+    const [s1, s2] = fd.workspace.task(taskId)!.sessions()
+    joinGroup(fd.deps, { sessionId: s2.id, anchorSessionId: s1.id, dir: 'row' })
+    const task = fd.workspace.task(taskId)!
+    const groupId = task.groupOf(s1.id)!.id
+    fd.bus.events.length = 0
+
+    await closeSession(fd.deps, { sessionId: s2.id })
+
+    expect(task.groups()).toEqual([])
+    expect(task.groupOf(s1.id)).toBeUndefined()
+    expect(fd.persistence.groups.has(groupId)).toBe(false)
+  })
+
+  it('publishes sessionClosed, then groupsChanged, then taskStateChanged for a grouped close', async () => {
+    const fd = await seedGroupOfThree()
+    const [, , s3] = fd.sessionIds
+    fd.bus.events.length = 0
+
+    await closeSession(fd.deps, { sessionId: s3 })
+
+    expect(fd.bus.events.map((e) => e.type)).toEqual([
+      'sessionClosed',
+      'groupsChanged',
+      'taskStateChanged'
+    ])
+  })
+
+  it('does NOT publish groupsChanged when closing a lone (ungrouped) session', async () => {
+    const fd = await seedWithSession()
+    fd.bus.events.length = 0
+
+    await closeSession(fd.deps, { sessionId: fd.sessionId })
+
+    expect(fd.bus.events.map((e) => e.type)).toEqual(['sessionClosed', 'taskStateChanged'])
+    expect(fd.bus.ofType('groupsChanged')).toEqual([])
   })
 })
 

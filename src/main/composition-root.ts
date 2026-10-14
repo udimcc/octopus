@@ -10,8 +10,9 @@
  *   3. Build adapters behind their ports (clock, ids, bus, settings, persistence,
  *      script runner, worktree provider, PTY manager, session-type registry +
  *      Terminal provider, ajv config validator).
- *   4. `persistence.load()` → `Workspace.hydrate` → `reconcileOnStartup` (missing
- *      worktree → Stale, I14).
+ *   4. `persistence.load()` → `Workspace.hydrate` → `reconcileStaleGroups` (sweep
+ *      `session_groups` rows hydrate rejected, review I1) → `reconcileOnStartup`
+ *      (missing worktree → Stale, I14).
  *   5. `new CommandLoop(deps)`; late-bind `deps.onRuntimeExit` to route a runtime's
  *      spontaneous exit back through the loop as `handleRuntimeExit` (single-writer,
  *      §6.6). Also dispatch the one-shot `seedProjects` command here, fire-and-forget
@@ -73,7 +74,7 @@ import {
   type SessionStateNotification
 } from '../application/dependencies'
 import { CommandLoop } from '../application/command-loop'
-import { reconcileOnStartup } from '../application/reconcile'
+import { reconcileOnStartup, reconcileStaleGroups } from '../application/reconcile'
 import { shutdown } from '../application/quit'
 import { worstStatusWins } from '../domain/task-state-aggregator'
 import { Workspace } from '../domain/workspace'
@@ -355,6 +356,16 @@ export function bootstrap(): AppContext {
     // session starts (use-cases read it lazily via `has`, §6.2).
     liveDaemonSessions
   }
+
+  // 4c. Sweep any `session_groups` rows `Task.fromSnapshot`/`restoreGroups`
+  //     rejected at hydrate above (review I1) — an unknown/duplicate leaf, <2
+  //     surviving members, members split across windows, non-contiguous tabs, or
+  //     a tree that failed to validate. `snapshot` is persistence's own
+  //     pre-hydrate read, the only place the full as-persisted group id list is
+  //     still available (`Task` never keeps the rejects). Must run before the
+  //     command loop accepts any command (§6.6), same ordering as
+  //     `reconcileOnStartup` below.
+  reconcileStaleGroups(deps, snapshot)
 
   reconcileOnStartup(deps, { existsDir })
 

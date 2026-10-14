@@ -21,6 +21,8 @@
  */
 
 import type { AppDependencies } from './dependencies'
+import type { WorkspaceSnapshot } from '../domain/snapshots'
+import type { GroupId } from '../domain/ids'
 import { TaskLifecycle } from '../domain/lifecycle'
 
 export interface ReconcileProbe {
@@ -45,4 +47,49 @@ export function reconcileOnStartup(deps: AppDependencies, probe: ReconcileProbe)
       deps.bus.publish({ type: 'taskStale', taskId: task.id })
     }
   }
+}
+
+/**
+ * Sweep `session_groups` rows that `Task.fromSnapshot`/`restoreGroups` rejected
+ * at hydrate (review I1): an unknown/duplicate leaf, fewer than 2 surviving
+ * members, members split across windows, non-contiguous tabs, or a tree that
+ * failed to parse/validate (DESIGN §5.7 "loading tolerates bad saved data") — a
+ * row whose JSON itself fails to parse still reaches `raw` with its real id
+ * (`mappers.ts`'s `rowToGroupSnapshot` carries it through as a single-leaf
+ * marker tree, which `restoreGroups` rejects same as any other invalid tree —
+ * see that function's own doc), so this sweep can still find and delete it.
+ * Those rows are never written to `restored`, so nothing in the normal
+ * group-mutation path (which only ever upserts/deletes groups it KNOWS about,
+ * via `persistGroups`) ever reaches them again — left alone, a dropped row sits
+ * in the table forever and could later win a duplicate-leaf race against a
+ * brand-new, valid group, or silently "revive" if the sessions it references
+ * are ever recreated with the same ids.
+ *
+ * `raw` is the pre-hydrate `WorkspaceSnapshot` (persistence's own read, before
+ * `Workspace.hydrate` dropped anything) — the only place the FULL as-persisted
+ * group id list is still available, since `Task` never kept the rejects. The
+ * diff against each live task's SURVIVING `groups()` is exactly the dropped
+ * set. Deletes run in one transaction; call this once, right after hydrate,
+ * before the command loop accepts any user command (same ordering guarantee
+ * `reconcileOnStartup` relies on, §6.6).
+ */
+export function reconcileStaleGroups(deps: AppDependencies, raw: WorkspaceSnapshot): void {
+  const staleIds: GroupId[] = []
+  for (const taskSnap of raw.tasks) {
+    const task = deps.workspace.task(taskSnap.id)
+    const survivingIds = new Set(task ? task.groups().map((g) => g.id) : [])
+    for (const g of taskSnap.groups ?? []) {
+      if (!survivingIds.has(g.id)) {
+        staleIds.push(g.id)
+      }
+    }
+  }
+  if (staleIds.length === 0) {
+    return
+  }
+  deps.persistence.transaction(() => {
+    for (const id of staleIds) {
+      deps.persistence.deleteGroup(id)
+    }
+  })
 }

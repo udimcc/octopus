@@ -121,6 +121,11 @@ export class Session {
    * Reassign the window that renders this session (V1.5, §3.7, I18). An opaque
    * view move: `taskId` (I7) and lifecycle are untouched, so the PTY — keyed by
    * `sessionId` in main — keeps running. Mirrors `rename`/`setOrder` (in-place).
+   *
+   * Public so `Task.moveToWindow` can call it per-member, but callers outside
+   * `Task` should go through `Task.moveToWindow` rather than this directly — a
+   * grouped session's whole group must move together (DESIGN §5.7 "members
+   * share a window"), an invariant `Task` enforces, not `Session` (review I2).
    */
   assignToWindow(windowId: WindowId): void {
     this._windowId = windowId

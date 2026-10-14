@@ -16,6 +16,13 @@
  * the stop/close transitions but is still removed + its row deleted, so the UI's
  * close always takes effect. Removing the active session re-points the task's
  * active session to the first remaining one (Task.removeSession, I10).
+ *
+ * `Task.removeSession` also drops the closed session's leaf from its group, if
+ * any — dissolving the group at 1 remaining member (DESIGN §5.7, same as `leave`,
+ * except there is no tab to reposition since the leaving session itself is gone).
+ * `finishClose` persists that group diff and publishes `groupsChanged` whenever
+ * the closed session WAS grouped, so a leaf drop/dissolve is announced the same
+ * way every other group mutation is.
  */
 
 import type { AppDependencies } from '../dependencies'
@@ -23,6 +30,7 @@ import type { CloseSessionInput } from '../commands'
 import type { Task } from '../../domain/task'
 import { SessionLifecycle } from '../../domain/lifecycle'
 import { locateSession } from './locate-session'
+import { persistGroups } from './persist-groups'
 
 export async function closeSession(deps: AppDependencies, input: CloseSessionInput): Promise<void> {
   const located = locateSession(deps.workspace, input.sessionId)
@@ -68,7 +76,13 @@ function finishClose(
   sessionId: CloseSessionInput['sessionId']
 ): void {
   const taskId = task.id
+  // Capture whether — and what — this session's group looked like BEFORE removal
+  // (DESIGN §5.7): `removeSession` drops its leaf (dissolving at 1 member), and
+  // only a session that WAS grouped can have changed the group list.
+  const wasGrouped = task.groupOf(sessionId) !== undefined
+  const groupsBefore = task.groups()
   task.removeSession(sessionId)
+  const groupsAfter = task.groups()
 
   // Free the in-memory scrollback buffer immediately — a user close removes the
   // session for good (unlike a spontaneous exit, which keeps it). The persisted
@@ -80,9 +94,15 @@ function finishClose(
     deps.persistence.deleteSession(sessionId)
     // active_session_id may have shifted to another tab; persist the task row too.
     deps.persistence.upsertTask(task.toSnapshot(deps.aggregator))
+    if (wasGrouped) {
+      persistGroups(deps.persistence, taskId, groupsBefore, groupsAfter)
+    }
   })
 
   deps.bus.publish({ type: 'sessionClosed', taskId, sessionId })
+  if (wasGrouped) {
+    deps.bus.publish({ type: 'groupsChanged', taskId, groups: groupsAfter })
+  }
   // The removed session no longer contributes to the task rollup; announce the
   // recomputed worst-wins state so a late-joining window (or one that missed the
   // close→recompute in its own store) stays consistent (§3.4, §6.6).

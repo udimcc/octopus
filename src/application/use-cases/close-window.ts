@@ -6,9 +6,18 @@
  *   - `move-to-main` — reassign every hosted session back to the main window
  *     (reusing `moveSessionToWindow`, so PTYs keep running and re-home in the main
  *     window's `TaskView`). Nothing is killed. Each move carries
- *     `cause: 'windowClosed'` so the main window keeps its existing marks.
+ *     `cause: 'windowClosed'` so the main window keeps its existing marks. All of
+ *     a group's members are hosted in the same window by invariant (§5.7), so this
+ *     loop's `moveSessionToWindow` call for the first member it reaches already
+ *     drags the rest of that group to main together (keeping the group intact,
+ *     tagged `cause: 'groupMove'`); when the loop later reaches those groupmates,
+ *     `moveSessionToWindow`'s idempotent same-window guard makes the call a no-op,
+ *     so no duplicate events are published and no extra code is needed here.
  *   - `kill-sessions` — close every hosted session (reusing `closeSession`, the
- *     full Running→Stopping→Closed teardown + row delete).
+ *     full Running→Stopping→Closed teardown + row delete). `closeSession` itself
+ *     persists the group diff and publishes `groupsChanged` when removing a
+ *     session drops a leaf, so a killed group's members (also all hosted here by
+ *     invariant) dissolve/empty its group correctly without special-casing here.
  *
  * A window is never a domain aggregate, so "the window's sessions" is a two-level
  * scan (workspace → tasks → sessions filtered by `windowId`), mirroring

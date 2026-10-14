@@ -18,12 +18,19 @@
  *    columns are written for record fidelity but intentionally NOT resurrected.
  */
 
-import { asTaskId, asSessionId, asTypeId, asWindowId, asIssueId } from '../../domain/ids'
+import { asTaskId, asSessionId, asTypeId, asWindowId, asIssueId, asGroupId } from '../../domain/ids'
 import { SessionState, TaskState } from '../../domain/state'
 import { TaskLifecycle, SessionLifecycle } from '../../domain/lifecycle'
 import { IssueStatus, parseIssueStatus } from '../../domain/issue'
 import type { SessionConfig } from '../../domain/session-config'
-import type { TaskSnapshot, SessionSnapshot, IssueSnapshot } from '../../domain/snapshots'
+import type { GroupTree } from '../../domain/group-tree'
+import type { TaskId } from '../../domain/ids'
+import type {
+  TaskSnapshot,
+  SessionSnapshot,
+  IssueSnapshot,
+  GroupSnapshot
+} from '../../domain/snapshots'
 import type { WindowRecord } from '../../ports/workspace-persistence'
 
 /** A `tasks` row (§6.3). Nullable columns surface as `null` from better-sqlite3. */
@@ -89,6 +96,18 @@ export interface WindowRow {
   width: number
   height: number
   created_at: number
+}
+
+/**
+ * A `session_groups` row (DESIGN §5.7). `layout` is JSON of the domain's
+ * `GroupTree` (leaves are member session ids); `color` is the palette index
+ * (`0..GROUP_COLOR_PALETTE_SIZE-1`).
+ */
+export interface GroupRow {
+  id: string
+  task_id: string
+  layout: string
+  color: number
 }
 
 /**
@@ -188,6 +207,56 @@ export function windowToRow(record: WindowRecord): WindowRow {
 }
 
 /**
+ * Serialize a split group for persistence (DESIGN §5.7). `taskId` is passed in
+ * rather than carried on `GroupSnapshot` itself — groups travel inside
+ * `TaskSnapshot.groups`, so the row needs the FK supplied by the caller, the same
+ * way `sessionToRow` reads `taskId` off the snapshot but a group snapshot has
+ * none of its own.
+ */
+export function groupToRow(taskId: TaskId, group: GroupSnapshot): GroupRow {
+  return {
+    id: group.id,
+    task_id: taskId,
+    layout: JSON.stringify(group.tree),
+    color: group.colorIndex
+  }
+}
+
+/**
+ * Reconstruct a group snapshot from its row (§5.7). The JSON parse is guarded
+ * here, but a malformed row is NOT dropped (review round-2 fix) — it comes back
+ * with its real `id` and a single-leaf `tree` marker that `Task.restoreGroups`
+ * (via `validateGroupTree`, which rejects anything under 2 leaves) always
+ * drops, same as before. Carrying the id through — rather than returning
+ * `undefined` and losing it before it ever reaches a `TaskSnapshot` — matters
+ * because `reconcileStaleGroups` (`application/reconcile.ts`) diffs the
+ * pre-hydrate snapshot's group ids against each task's SURVIVING groups to find
+ * stale `session_groups` rows to delete; an id that never makes it into the
+ * snapshot can never be found stale and sits in the table forever. Everything
+ * else (unknown or duplicate leaves, fewer than 2 members, members split across
+ * windows, non-contiguous tab order) is cross-session validation that only
+ * `Task.fromSnapshot` can do (DESIGN §5.7 "loading tolerates bad saved data"),
+ * since this mapper has no visibility into the task's sessions.
+ */
+export function rowToGroupSnapshot(row: GroupRow): GroupSnapshot {
+  let tree: GroupTree
+  try {
+    tree = JSON.parse(row.layout) as GroupTree
+  } catch {
+    // Invalid-layout marker: a lone leaf has only 1 member, so
+    // `validateGroupTree`/`Task.restoreGroups` always rejects it (a group needs
+    // 2+), just like any other corrupt saved group — but the id survives into
+    // the snapshot for the stale-group sweep to find.
+    tree = { kind: 'leaf', sessionId: asSessionId('') }
+  }
+  return {
+    id: asGroupId(row.id),
+    tree,
+    colorIndex: row.color
+  }
+}
+
+/**
  * Reconstruct a task snapshot from its row and its (ordered) session rows. The
  * task is `Ready` on reload (worktree present, or repo-less). The load-bearing
  * provenance — `baseRef` (source branch) and `repoRoot` (the task's repo dir) —
@@ -199,8 +268,19 @@ export function windowToRow(record: WindowRecord): WindowRow {
  * A repo-less task (§5.4) is detected by `repo_less` BEFORE reading `worktree`:
  * its `worktree` column is the sentinel `''` (never a path), so it reloads as a
  * `Ready` task with NO worktree and `repoLess: true` (its sessions re-open at home).
+ *
+ * `groupRows` (DESIGN §5.7) is optional and defaults to none, so callers that
+ * predate groups (and existing tests) still compile; `Task.fromSnapshot` drops
+ * any individually-invalid row rather than failing the load. `rowToGroupSnapshot`
+ * never drops a row itself (not even on malformed JSON — see its own doc), so
+ * every id reaches this snapshot and, through it, the stale-group sweep.
  */
-export function rowToTaskSnapshot(row: TaskRow, sessionRows: readonly SessionRow[]): TaskSnapshot {
+export function rowToTaskSnapshot(
+  row: TaskRow,
+  sessionRows: readonly SessionRow[],
+  groupRows: readonly GroupRow[] = []
+): TaskSnapshot {
+  const groups = groupRows.map(rowToGroupSnapshot)
   if (row.repo_less !== 0) {
     return {
       id: asTaskId(row.id),
@@ -212,7 +292,8 @@ export function rowToTaskSnapshot(row: TaskRow, sessionRows: readonly SessionRow
       sessions: sessionRows.map(rowToSessionSnapshot),
       activeSessionId: row.active_session_id ? asSessionId(row.active_session_id) : undefined,
       position: row.position,
-      createdAt: row.created_at
+      createdAt: row.created_at,
+      groups
     }
   }
   return {
@@ -236,7 +317,8 @@ export function rowToTaskSnapshot(row: TaskRow, sessionRows: readonly SessionRow
     sessions: sessionRows.map(rowToSessionSnapshot),
     activeSessionId: row.active_session_id ? asSessionId(row.active_session_id) : undefined,
     position: row.position,
-    createdAt: row.created_at
+    createdAt: row.created_at,
+    groups
   }
 }
 
