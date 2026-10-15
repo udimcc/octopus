@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { createIssue } from './create-issue'
 import { makeDeps } from './test-fakes'
-import { IssueStatus } from '../../domain/issue'
+import { IssueStatus, IssueSource } from '../../domain/issue'
 
 describe('createIssue ("Issues" §13.3)', () => {
   it('creates an unbound Todo issue by default', () => {
@@ -23,6 +23,8 @@ describe('createIssue ("Issues" §13.3)', () => {
     expect(issue!.status).toBe(IssueStatus.Todo)
     expect(issue!.taskId).toBeUndefined()
     expect(issue!.projectPath).toBeUndefined()
+    expect(issue!.source).toBe(IssueSource.Local)
+    expect(issue!.jiraKey).toBeUndefined()
   })
 
   it('throws on an empty/whitespace-only name, before persisting or touching the workspace', () => {

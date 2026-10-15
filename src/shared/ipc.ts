@@ -52,7 +52,15 @@ import type {
   DeleteIssueInput,
   BindIssueInput,
   UnbindIssueInput,
-  OpenExternalInput
+  OpenExternalInput,
+  JiraProjectDTO,
+  JiraSprintDTO,
+  JiraFiltersDTO,
+  JiraSearchPageDTO,
+  JiraResultDTO,
+  ImportJiraIssuesInput,
+  ImportJiraIssuesResultDTO,
+  SetJiraKeyInput
 } from './dto'
 import type { EventDTO } from './events'
 
@@ -193,6 +201,27 @@ export const CHANNELS = {
    */
   clipboardRead: 'clipboard:read',
   clipboardWrite: 'clipboard:write',
+
+  /**
+   * Jira import queries (request/reply, DESIGN §13.7). `jiraProjects`, `jiraSprints`
+   * and `jiraSearch` are stateless main-side QUERIES that bypass the command loop,
+   * like `dialogPickDirectory` — they only read through the gateway and classify
+   * against the current workspace, never mutate it. `jiraImport` DOES mutate (it
+   * creates issues), so it dispatches through the loop after main fetches the
+   * issues outside it.
+   */
+  jiraProjects: 'jira:projects',
+  jiraSprints: 'jira:sprints',
+  jiraSearch: 'jira:search',
+  jiraImport: 'jira:import',
+
+  /**
+   * The Jira API key (request/reply, DESIGN §13.7, I16). Backed by
+   * `CredentialsProvider`, encrypted at rest; the key itself never returns to the
+   * renderer — `credentialsHasJiraKey` resolves only a boolean.
+   */
+  credentialsSetJiraKey: 'credentials:setJiraKey',
+  credentialsHasJiraKey: 'credentials:hasJiraKey',
 
   /** Streaming events (backend → UI, webContents.send). Carries a discriminated EventDTO. */
   event: 'app:event'
@@ -406,6 +435,35 @@ export interface OctopusAPI {
      * Resolves to whether it opened.
      */
     openExternal(input: OpenExternalInput): Promise<boolean>
+  }
+
+  /**
+   * Jira import (DESIGN §13.7): manual, read-only fetch from the LiteLLM gateway, fed
+   * to the Jira Import modal. `projects`/`sprints`/`search` are stateless queries that
+   * bypass the command loop, like `dialog.pickDirectory`; `import` mutates (it creates
+   * issues) and dispatches through the loop internally.
+   */
+  jira: {
+    /** All Jira projects visible through the gateway, with their ticket counts. */
+    projects(): Promise<JiraResultDTO<readonly JiraProjectDTO[]>>
+    /** A project's sprints, ordered active → future → closed (discovered from search hits). */
+    sprints(project: string): Promise<JiraResultDTO<readonly JiraSprintDTO[]>>
+    /** One page of matching issues, each already classified against the workspace. */
+    search(filters: JiraFiltersDTO, cursor?: string): Promise<JiraResultDTO<JiraSearchPageDTO>>
+    /** Import the given keys as new Octopus issues; duplicates/conflicts are skipped. */
+    import(input: ImportJiraIssuesInput): Promise<ImportJiraIssuesResultDTO>
+  }
+
+  /**
+   * The Jira API key (DESIGN §13.7, I16). Backed by `CredentialsProvider`, encrypted
+   * at rest via `safeStorage`. The key is set-only from the renderer's point of
+   * view — it is NEVER read back; `hasJiraKey` exposes only its presence.
+   */
+  credentials: {
+    /** Set (non-empty string) or clear (`null`) the Jira API key. */
+    setJiraKey(input: SetJiraKeyInput): Promise<CommandAck>
+    /** Whether a Jira API key is currently stored. Never the key itself. */
+    hasJiraKey(): Promise<boolean>
   }
 
   /** Subscribe to the backend event stream; returns an unsubscribe fn (§5.2). */

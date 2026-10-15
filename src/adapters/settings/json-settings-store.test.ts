@@ -168,6 +168,136 @@ describe('parseSettings (§6.3)', () => {
   })
 })
 
+describe('pickJira / Settings.jira (Jira import)', () => {
+  it('is absent by default and a fresh load has no jira key', () => {
+    expect(DEFAULT_SETTINGS.jira).toBeUndefined()
+    expect('jira' in DEFAULT_SETTINGS).toBe(false)
+    expect(parseSettings('{}').jira).toBeUndefined()
+  })
+
+  it('round-trips a lastFilters patch through serialize → parse', () => {
+    const withJira = mergeSettings(DEFAULT_SETTINGS, {
+      jira: {
+        lastFilters: {
+          project: 'OCTO',
+          assignee: 'udim',
+          issueKey: 'OCTO-123',
+          days: 14,
+          sprint: { kind: 'id', id: 42, name: 'Sprint 7' }
+        }
+      }
+    })
+    expect(withJira.jira).toEqual({
+      lastFilters: {
+        project: 'OCTO',
+        assignee: 'udim',
+        issueKey: 'OCTO-123',
+        days: 14,
+        sprint: { kind: 'id', id: 42, name: 'Sprint 7' }
+      }
+    })
+    const reparsed = parseSettings(serializeSettings(withJira))
+    expect(reparsed.jira).toEqual(withJira.jira)
+  })
+
+  it('round-trips the name-shaped sprint filter', () => {
+    const withJira = mergeSettings(DEFAULT_SETTINGS, {
+      jira: { lastFilters: { sprint: { kind: 'name', text: 'Current' } } }
+    })
+    expect(withJira.jira).toEqual({ lastFilters: { sprint: { kind: 'name', text: 'Current' } } })
+    const reparsed = parseSettings(serializeSettings(withJira))
+    expect(reparsed.jira).toEqual(withJira.jira)
+  })
+
+  it('drops unknown keys from lastFilters without invalidating the rest', () => {
+    const parsed = parseSettings(
+      JSON.stringify({ jira: { lastFilters: { project: 'OCTO', bogus: 'nope' } } })
+    )
+    expect(parsed.jira).toEqual({ lastFilters: { project: 'OCTO' } })
+  })
+
+  it('drops non-string values for the string fields', () => {
+    const parsed = parseSettings(
+      JSON.stringify({
+        jira: {
+          lastFilters: { project: 42, assignee: null, issueKey: ['x'] }
+        }
+      })
+    )
+    expect(parsed.jira).toEqual({ lastFilters: {} })
+  })
+
+  it('requires days to be a positive integer, rejecting 0, negative, non-integer, and non-number', () => {
+    expect(parseSettings(JSON.stringify({ jira: { lastFilters: { days: 0 } } })).jira).toEqual({
+      lastFilters: {}
+    })
+    expect(parseSettings(JSON.stringify({ jira: { lastFilters: { days: -5 } } })).jira).toEqual({
+      lastFilters: {}
+    })
+    expect(parseSettings(JSON.stringify({ jira: { lastFilters: { days: 1.5 } } })).jira).toEqual({
+      lastFilters: {}
+    })
+    expect(parseSettings(JSON.stringify({ jira: { lastFilters: { days: '7' } } })).jira).toEqual({
+      lastFilters: {}
+    })
+    expect(parseSettings(JSON.stringify({ jira: { lastFilters: { days: 7 } } })).jira).toEqual({
+      lastFilters: { days: 7 }
+    })
+  })
+
+  it('drops a sprint that matches neither documented shape', () => {
+    // Wrong kind.
+    expect(
+      parseSettings(JSON.stringify({ jira: { lastFilters: { sprint: { kind: 'bogus' } } } })).jira
+    ).toEqual({ lastFilters: {} })
+    // 'id' shape missing/mistyped fields.
+    expect(
+      parseSettings(
+        JSON.stringify({ jira: { lastFilters: { sprint: { kind: 'id', id: 'nope' } } } })
+      ).jira
+    ).toEqual({ lastFilters: {} })
+    expect(
+      parseSettings(JSON.stringify({ jira: { lastFilters: { sprint: { kind: 'id', id: 1 } } } }))
+        .jira // missing name
+    ).toEqual({ lastFilters: {} })
+    // 'name' shape with a blank text.
+    expect(
+      parseSettings(
+        JSON.stringify({ jira: { lastFilters: { sprint: { kind: 'name', text: '   ' } } } })
+      ).jira
+    ).toEqual({ lastFilters: {} })
+    // Both id and text fields on one object — not one of the two exact shapes.
+    expect(
+      parseSettings(
+        JSON.stringify({
+          jira: { lastFilters: { sprint: { kind: 'id', id: 1, name: 'x', text: 'y' } } }
+        })
+      ).jira
+    ).toEqual({ lastFilters: { sprint: { kind: 'id', id: 1, name: 'x' } } })
+  })
+
+  it('an unrelated patch leaves an existing jira.lastFilters untouched', () => {
+    const withJira = mergeSettings(DEFAULT_SETTINGS, {
+      jira: { lastFilters: { project: 'OCTO', days: 7 } }
+    })
+    const merged = mergeSettings(withJira, { groupTasksByRepo: false })
+    expect(merged.jira).toEqual({ lastFilters: { project: 'OCTO', days: 7 } })
+    expect(merged.groupTasksByRepo).toBe(false)
+
+    const mergedWorktree = mergeSettings(withJira, { worktree: { location: '/wt' } })
+    expect(mergedWorktree.jira).toEqual({ lastFilters: { project: 'OCTO', days: 7 } })
+    expect(mergedWorktree.worktree.location).toBe('/wt')
+  })
+
+  it('a malformed jira block (non-object) leaves an existing lastFilters untouched', () => {
+    const withJira = mergeSettings(DEFAULT_SETTINGS, {
+      jira: { lastFilters: { project: 'OCTO' } }
+    })
+    const merged = mergeSettings(withJira, { jira: 'not an object' as unknown as never })
+    expect(merged.jira).toEqual({ lastFilters: { project: 'OCTO' } })
+  })
+})
+
 describe('mergeSettings (deep-merge, §6.4)', () => {
   it('keeps sibling nested keys when patching only one', () => {
     const base = mergeSettings(DEFAULT_SETTINGS, {

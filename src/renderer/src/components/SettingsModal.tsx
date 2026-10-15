@@ -22,9 +22,15 @@
  * so after a successful save we re-fetch `app.getState()` and re-`hydrate` to pull
  * the persisted values back into the store. The patch is a deep-partial
  * (`SettingsPatchDTO`): only edited fields are sent.
+ *
+ * The General tab also hosts the Jira API key (DESIGN §13.7, invariant I16: never
+ * persist secrets). That field is a wholly separate save/clear flow through
+ * `credentials.setJiraKey`/`hasJiraKey` — it never joins `SettingsPatchDTO`, never
+ * calls `app.updateSettings`, and never enters the store. The key itself is never
+ * read back from the backend, only whether one is currently stored.
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useStore } from '../store/store'
 import { overlayStyle, modalCardStyle, color, fontSize, radius } from '../style/tokens'
 import {
@@ -140,6 +146,53 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
   // state lives above), so this only chooses what's visible — never what's saved.
   const [category, setCategory] = useState<CategoryId>('general')
 
+  // The Jira API key (DESIGN §13.7, I16): a SEPARATE save flow from the rest of this
+  // form. It never joins `settings`/`SettingsPatchDTO` —
+  // the key must never reach `app.updateSettings` (settings.json) or the store, only
+  // the encrypted-at-rest `credentials` port. The field always starts empty; we only
+  // ever learn whether a key is CURRENTLY stored, never its value.
+  const [hasJiraKey, setHasJiraKey] = useState(false)
+  const [jiraKeyInput, setJiraKeyInput] = useState('')
+  const [jiraKeyBusy, setJiraKeyBusy] = useState(false)
+  const [jiraKeyError, setJiraKeyError] = useState<string | null>(null)
+
+  useEffect(() => {
+    void window.octopusAPI.credentials.hasJiraKey().then(setHasJiraKey)
+  }, [])
+
+  // Store (`key`) or clear (`null`) the Jira key. Resolves true on success; on any
+  // failure — a rejected ack OR a rejected promise (m10) — shows the error inline and
+  // resolves false. `busy` always resets.
+  const writeJiraKey = async (key: string | null): Promise<boolean> => {
+    setJiraKeyBusy(true)
+    setJiraKeyError(null)
+    try {
+      const ack = await window.octopusAPI.credentials.setJiraKey({ key })
+      if (!ack.ok) {
+        setJiraKeyError(ack.error ?? 'secure storage unavailable')
+        return false
+      }
+      setJiraKeyInput('')
+      setHasJiraKey(key !== null)
+      return true
+    } catch {
+      setJiraKeyError('secure storage unavailable')
+      return false
+    } finally {
+      setJiraKeyBusy(false)
+    }
+  }
+
+  const saveJiraKey = (): void => {
+    const key = jiraKeyInput.trim()
+    if (key === '') return
+    void writeJiraKey(key)
+  }
+
+  const clearJiraKey = (): void => {
+    void writeJiraKey(null)
+  }
+
   // Name of the action already bound to `chord`, or null if free. Checks the fixed
   // shortcuts (`RESERVED_CHORDS`) and every OTHER configurable chord, so two actions
   // can never fire on one keypress (§5.4).
@@ -204,10 +257,19 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
   )
   const saveBlocked = CHORD_FIELDS.some((f) => conflicts[f.key] !== null)
 
-  const save = (): void => {
+  const save = async (): Promise<void> => {
     if (saveBlocked) return
     setBusy(true)
     setError(null)
+    // A typed-but-unsaved Jira key is saved too (H2) — the footer Save is the obvious
+    // first-time path. On failure the modal stays open with the key's inline error.
+    const typedKey = jiraKeyInput.trim()
+    if (typedKey !== '' && !(await writeJiraKey(typedKey))) {
+      setBusy(false)
+      // The key's own error renders in the General tab; this one is visible from any tab.
+      setError('Failed to save the Jira API key (see General)')
+      return
+    }
     const patch: SettingsPatchDTO = {
       worktree: { location: location.trim() },
       terminal: {
@@ -390,6 +452,49 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
                   </span>
                 </span>
               </label>
+
+              {/* The Jira API key (DESIGN §13.7, I16): a separate save/clear flow that
+                  never touches `app.updateSettings` or this form's own Save — see the
+                  state comment above for why. The field never shows the stored key; it
+                  only ever starts empty and reports whether one is currently saved. */}
+              <div style={{ ...field, gap: 8 }}>
+                <span style={{ color: color.text }}>Jira API key</span>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <input
+                    type="password"
+                    aria-label="jira api key"
+                    autoComplete="off"
+                    value={jiraKeyInput}
+                    placeholder={hasJiraKey ? 'Key saved' : 'Paste your LiteLLM API key'}
+                    disabled={jiraKeyBusy}
+                    onChange={(e) => setJiraKeyInput(e.target.value)}
+                    style={{ flex: 1 }}
+                  />
+                  <button
+                    type="button"
+                    aria-label="save jira api key"
+                    disabled={jiraKeyBusy || jiraKeyInput.trim() === ''}
+                    onClick={saveJiraKey}
+                  >
+                    Save
+                  </button>
+                  {hasJiraKey ? (
+                    <button
+                      type="button"
+                      aria-label="clear jira api key"
+                      disabled={jiraKeyBusy}
+                      onClick={clearJiraKey}
+                    >
+                      Clear key
+                    </button>
+                  ) : null}
+                </div>
+                {jiraKeyError ? (
+                  <span role="alert" style={{ color: color.errorText }}>
+                    {jiraKeyError}
+                  </span>
+                ) : null}
+              </div>
             </div>
           ) : (
             <div style={pane} role="tabpanel" aria-label="Key Bindings">
@@ -449,7 +554,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
           <button
             type="button"
             className="btn-primary"
-            onClick={save}
+            onClick={() => void save()}
             disabled={busy || saveBlocked}
           >
             Save

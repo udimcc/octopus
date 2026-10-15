@@ -73,6 +73,8 @@ Issues are created manually and stored locally. They survive restart.
   2. **In progress**
   3. **In review**
   4. **Done**
+- **Source**: **Local** or **Jira**. Read-only; the user can never change it. Every issue created by hand
+  is Local. See *Importing from Jira* below.
 
 ### Issues and tasks
 
@@ -200,9 +202,64 @@ Hovering the icon shows the issue name; clicking it opens the Issues window on i
 with that issue selected and scrolled into view. On the List tab, a collapsed group (e.g. Done)
 expands to show it.
 
+### Importing from Jira
+
+A **"Fetch from Jira"** button in the Issues drawer header, next to **+ New Issue**, opens the Jira
+Import modal. Jira data behind it is a cache that refreshes every few hours, not live Jira, and a hint
+in the modal says so — fetching is manual only, never automatic or on a timer.
+
+**Filters:**
+- **Project** is a dropdown of Jira projects. Required unless an Issue key is given.
+- **Assignee** is free text, matched as a partial name.
+- **Issue key** fetches exactly that issue and ignores every other filter.
+- **Created in last N days** is a number.
+- **Sprint** loads once a project is chosen: when sprints are found, a dropdown lists **None** (the
+  default), then the active sprint(s), then future, then closed; when the project has no sprints, it
+  falls back to free-text sprint-name matching.
+- The last-used filters are remembered and pre-filled the next time the modal opens.
+
+**Results:**
+- **Fetch** loads results in pages of 50, with **Load more**.
+- Each row shows a checkbox, the key, the summary, and the Jira status, type and assignee — these are
+  informational only; the Jira status is never imported.
+- Clicking a row opens a read-only detail pane: key, summary, status, priority, type, assignee,
+  reporter, created, sprint, and the Description and Definition of Done rendered as markdown.
+- The footer has **Select all** (selects only importable rows), an "N selected" count, and **Import**.
+
+**Duplicates and conflicts.** Each fetched issue is matched against existing Octopus issues by its
+stored Jira key:
+
+| State | Rule | Display |
+|---|---|---|
+| New | No Octopus issue has this key | Selectable |
+| Duplicate | Same key, and identical name and description | Grayed out, not selectable, label "Duplicated by \<Octopus issue name\>" |
+| Conflict | Same key, but the name or description differs | Grayed out, not selectable, label "Conflicts with \<Octopus issue name\>" |
+
+Conflicts are view-only; there is no overwrite. Deleting the Octopus issue frees its key, so the Jira
+issue is New again on the next fetch.
+
+**Imported issue shape:**
+- **Name:** `KEY: Summary`, e.g. `TM-2608: Broken CI - creds doesnt getting through`.
+- **Description:** the Jira Description as markdown, followed by a "Definition of Done" section with
+  the DOD content — added only when DOD is non-empty.
+- **Status:** Todo. The Jira status is never imported.
+- **Project:** none; the user sets it later per issue, like any other issue.
+- **Source:** Jira (see *Fields* above), read-only, with the Jira key.
+- Name and description stay editable. A local edit makes the issue show as a Conflict on the next
+  fetch of the same key.
+- An import is all-or-nothing: either every selected New issue is created, or none is.
+
+**Display:** a small "Jira" badge marks imported rows in the issue list; the issue detail shows a
+read-only "Source: Jira (KEY)" or "Source: Local" line.
+
+**API key and errors.** A "Jira API key" password field in Settings holds the key used to reach the
+gateway; it is never shown again after saving, and can be cleared. The modal has distinct states for:
+- **No key set**, with an Open Settings button.
+- **Key rejected**, with an Open Settings button.
+- **Gateway unreachable**, with a Retry button.
+
 ### Future
 
-- Fetch issues from Jira; instructions will come later.
 - A project filter on the List and Board tabs.
 - Start a Claude brainstorm conversation from a generated prompt based on the issue description.
 

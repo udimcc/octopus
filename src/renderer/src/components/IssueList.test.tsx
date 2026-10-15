@@ -18,6 +18,7 @@ function issue(id: string, over: Partial<IssueDTO> = {}): IssueDTO {
     status: 'todo',
     createdAt: 1000,
     updatedAt: 1000,
+    source: 'local',
     ...over
   }
 }
@@ -190,6 +191,16 @@ describe('<IssueList>', () => {
     const bare = issueRow('Bare')
     expect(bare.textContent).toBe('Bare')
     expect(within(bare).queryByTitle(/^Linked task/)).not.toBeInTheDocument()
+  })
+
+  it('shows the Jira badge only on rows sourced from Jira', () => {
+    seed([
+      issue('local1', { name: 'Local one', source: 'local' }),
+      issue('jira1', { name: 'Jira one', source: 'jira', jiraKey: 'PROJ-1' })
+    ])
+    render(<IssueList />)
+    expect(within(issueRow('Local one')).queryByText('Jira')).not.toBeInTheDocument()
+    expect(within(issueRow('Jira one')).getByText('Jira')).toBeInTheDocument()
   })
 })
 

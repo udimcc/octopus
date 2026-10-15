@@ -25,7 +25,8 @@ import type {
   WorktreeRefDTO,
   WindowDTO,
   IssueDTO,
-  GroupDTO
+  GroupDTO,
+  JiraFiltersDTO
 } from '../../../shared/dto'
 import type { EventDTO } from '../../../shared/events'
 import { type DisplayState, DISPLAY_RANK } from './display-state'
@@ -204,6 +205,12 @@ export interface StoreData {
    * Renderer-local view-state; survives `hydrate()` like the other drawer fields.
    */
   readonly issueEditSession: number
+  /**
+   * Whether the Settings modal is open in THIS window. Renderer-local view-state, like
+   * {@link issuesDrawerOpen}: NEVER persisted and NEVER sent over the wire, starts closed
+   * on every launch, and survives a `hydrate()` re-hydration (see {@link useStore.hydrate}).
+   */
+  readonly settingsOpen: boolean
 }
 
 /**
@@ -234,6 +241,13 @@ export interface StoreActions {
    * reset toasts), so this patches just the one settings field.
    */
   setGroupTasksByRepo(value: boolean): void
+  /**
+   * Optimistically patch `settings.jira.lastFilters` in place (DESIGN §13.7), same pattern
+   * as {@link setGroupTasksByRepo}: the Jira Import modal calls `app.updateSettings` itself
+   * to persist it, so reopening the modal prefills from this local copy without a
+   * round-trip re-hydrate.
+   */
+  setJiraLastFilters(filters: JiraFiltersDTO): void
   pushToast(kind: ToastKind, message: string): void
   dismissToast(id: number): void
   /**
@@ -312,6 +326,10 @@ export interface StoreActions {
    * mark move — it never touches a group; the backend owns groups.
    */
   focusPane(sessionId: string): void
+  /** Open the Settings modal in THIS window. Renderer-local view-state. */
+  openSettings(): void
+  /** Close the Settings modal in THIS window. Renderer-local view-state. */
+  closeSettings(): void
 }
 
 export type Store = StoreData & StoreActions
@@ -374,7 +392,8 @@ export function initialData(): StoreData {
     issueDraft: false,
     issueEditDirty: false,
     discardPrompt: null,
-    issueEditSession: 1
+    issueEditSession: 1,
+    settingsOpen: false
   }
 }
 
@@ -1436,6 +1455,10 @@ export const useStore = create<Store>((set, get) => ({
         // reset it, the same way the window-focus fields above survive.
         issuesDrawerOpen: data.issuesDrawerOpen,
         issuesDrawerTab: data.issuesDrawerTab,
+        // Settings modal open-state is likewise renderer-local view-state (never carried
+        // on the wire) — a re-hydration triggered BY the SettingsModal's own save must not
+        // close the modal that's still showing its own success/pending UI.
+        settingsOpen: data.settingsOpen,
         selectedIssueId,
         issueDraft: data.issueDraft,
         // Dropping a stale selection discards any dirty edit tied to it too,
@@ -1467,6 +1490,11 @@ export const useStore = create<Store>((set, get) => ({
 
   setGroupTasksByRepo: (value) =>
     set((data) => ({ settings: { ...data.settings, groupTasksByRepo: value } })),
+
+  setJiraLastFilters: (filters) =>
+    set((data) => ({
+      settings: { ...data.settings, jira: { ...data.settings.jira, lastFilters: filters } }
+    })),
 
   pushToast: (kind, message) => set((data) => pushToastData(data, kind, message)),
 
@@ -1546,7 +1574,11 @@ export const useStore = create<Store>((set, get) => ({
       const session = data.sessions[sessionId]
       if (!session || session.windowId !== data.windowId) return data
       return withMark(data, session.taskId, sessionId)
-    })
+    }),
+
+  openSettings: () => set({ settingsOpen: true }),
+
+  closeSettings: () => set({ settingsOpen: false })
 }))
 
 /** Return `map` with `sessionId` cleared, or `map` unchanged if it wasn't set (§9.5). */

@@ -747,7 +747,10 @@ back. tmux remains a possible alternative durable backend but is not implemented
 ### 6.3 Persistence
 
 **SQLite** at `$XDG_DATA_HOME/octopus/octopus.db` (Linux) / `%APPDATA%\octopus\octopus.db` (Windows). Global
-settings in a sibling `settings.json` (small, human-editable). Schema (simplified):
+settings in a sibling `settings.json` (small, human-editable). A sibling `credentials/` directory (mode
+0700) holds secrets encrypted at rest by `CredentialsProvider` (I16) — one file per ref (e.g. the Jira API
+key, §13.7) — kept outside both the DB and `settings.json` so neither file nor its backups ever carry a
+secret. Schema (simplified):
 
 ```sql
 CREATE TABLE tasks (
@@ -804,6 +807,11 @@ backend never interprets, `color` the palette index. Its FK cascade removes a ta
 task is deleted. An unreleased dev build stamped v8 with a different, per-task-per-window `split_layouts`
 table (one renderer-owned split per task per window) and no `issues` table, so the v9 migration also re-runs
 the `issues` CREATE (IF NOT EXISTS) and `DROP TABLE IF EXISTS split_layouts` — both no-ops on a real v8 DB.
+**Jira import bumps it to 10 (§13.7):** `issues` gains `source`/`jira_key` columns and a `jira_key` unique
+index — see §13.7 for why the index is created unconditionally in `SqliteStore.create`, strictly after both
+bootstrap and migrations, rather than inside the v10 `Migration` itself. Upgrading writes the usual
+pre-migration `octopus.db.bak-v9` backup; an older build refuses a v10 DB (`IncompatibleDbError`) rather
+than risk corrupting it.
 
 **Configured projects (`settings.json#projects`, §5.4).** Beside `worktree.location`, `settings.json` gains
 a `projects` array of `{ path, defaultBranch? }`: `path` is always a repo's **main record** — its main
@@ -1093,7 +1101,11 @@ once) — `ptyData` in the register→`getState` gap is unbounded in principle.
   the config is not re-applied (the process already exists; `initialCommand` is not re-run).
 - **I16.** Never persist secrets. Jenkins config stores a `credentialsRef`; a `CredentialsProvider` port
   resolves it from the OS keychain (libsecret) at runtime. Define this port's shape in phase 1's persistence
-  design so phase 3 doesn't retrofit secret handling.
+  design so phase 3 doesn't retrofit secret handling. **Implemented for the Jira API key (§13.7):**
+  `SafeStorageCredentials` encrypts it at rest via Electron's `safeStorage` (mode 0600, under
+  `credentialsDir`), never writes it to the SQLite DB or `settings.json`, and never returns it to the
+  renderer over any IPC channel. `safeStorage` is only usable after `app.whenReady()`, so every call is
+  deferred to method-invocation time — the adapter never touches it from its constructor.
 - **I17.** User scripts, native `git` invocations, and terminal commands are a trust boundary: run via
   `ScriptRunner` with explicit cwd, **no shell-string interpolation of untrusted names** (branch names,
   paths, and repo dirs are passed as argv elements with `shell:false`), timeouts, captured exit/stderr.
@@ -1510,7 +1522,8 @@ phases.
 - **Seams to leave (explicit):** `capabilities.EvaluatesState` (Terminal off); `EventBus` carries state events
   (dormant); aggregator called but yields `Unknown`; view resolution already keyed by `typeId`; `SessionConfig`
   already validated against `configSchema`; `OCTOPUS_SESSION_ID` injected into every PTY (the key phase 2's
-  out-of-band Claude bridge later correlates on, §9.1); `CredentialsProvider` port shape defined. *(The earlier
+  out-of-band Claude bridge later correlates on, §9.1); `CredentialsProvider` port shape defined (now
+  implemented — Jira import, §13.7). *(The earlier
   plan also reserved a `stateEvaluator()` runtime seam + an `OCTOPUS_STATE_SOCKET` per-session socket; phase 2
   replaced that with the out-of-band bridge (§9.6), so neither exists.)*
 
@@ -1834,3 +1847,196 @@ and re-hydrate, columns/order/empty column, shared selection and unsaved edits a
 drag — a cross-column drop calls `issues.update`, same-column/outside drops, Esc and close-mid-drag make
 no call, and the selection is unchanged). A `scripts/probe-sqlite-store.cjs` run exercises the migration
 and constraints against the real `better-sqlite3` binary, matching the existing real-SQLite probe pattern.
+
+### 13.7 Jira import
+
+**Product spec:** `PRD.md` → *Issues* → *Importing from Jira* (authoritative for behavior; this section
+is the architecture). A manual, read-only import of Jira issues into §13's `Issue` aggregate: the user
+fetches from a Jira Import modal, previews each hit as New/Duplicate/Conflict, and imports the selected
+New rows as `source: 'jira'` issues. Octopus runs on the internal network; Jira lives on the external one,
+so the only route is the **LiteLLM MCP gateway**, a cache refreshed every few hours, not live Jira —
+fetching is user-triggered only, never polled or scheduled.
+
+**Domain.** `Issue` (§13.1) gains a read-only `source: IssueSource` (`local | jira`, default `local`) and
+an optional `jiraKey`. The constructor enforces the pairing both ways — a `jiraKey` without
+`source: 'jira'`, or `source: 'jira'` without a `jiraKey`, both throw `InvariantViolationError` — so the
+two fields can never drift apart (`src/domain/issue.ts`). Neither field has a setter: provenance is fixed
+at creation.
+
+A new pure module, `src/domain/jira-import.ts`, holds the import rules with no I/O and no gateway shape —
+the adapter below has already mapped the gateway's wire format into its plain `JiraIssue`/`JiraSprint`/
+`JiraProject` value types before any of this runs:
+- `composeJiraIssue(issue)` → `{name, description}`. `name` is `"KEY: Summary"`, run through the same
+  `normalizeIssueName` trim/empty-check `Issue.create`/`rename` use, so a composed name can never silently
+  differ from what `Issue.create` would store. `description` is the description markdown (trimmed), with
+  a `"## Definition of Done"` section appended only when the DOD markdown is non-empty. Composing is
+  **deterministic and idempotent**: the same `JiraIssue` always composes to byte-identical output, which is
+  what lets classification compare stored text against freshly-composed text exactly (see Classification
+  below) instead of needing a fuzzy diff.
+- `classifyJiraIssue(composed, jiraKey, existingIssues)` → `JiraClassification`: matches the workspace's
+  issues on `jiraKey` first. No match → `{kind: 'new'}`. A match whose stored name/description are exactly
+  equal to `composed` → `{kind: 'duplicate', issueId, issueName}`. A match that differs in either field
+  (e.g. a local edit after import) → `{kind: 'conflict', issueId, issueName}`. Deleting the matching
+  Octopus issue removes it from `existingIssues`, so the same Jira issue classifies as `new` again.
+- `orderSprints(sprints)` dedupes by id (last occurrence wins) and sorts active → future → closed, newest
+  (highest id) first within a state — the Sprint dropdown's order. `matchesSprintFilter(issue, filter)`
+  matches an exact sprint id (the dropdown) or a case-insensitive name substring (the free-text fallback
+  for a project with no discoverable sprints; an empty filter text matches everything).
+
+**Ports.** `JiraIssueSource` (`src/ports/jira-issue-source.ts`): `listProjects()`, `listSprints(project)`,
+`search(filters, cursor?)` (cursor-paged), `getIssues(keys)` (silently drops keys the gateway can't find —
+never throws for a missing key). Every method throws `JiraSourceError` with
+`kind: 'noKey' | 'unauthorized' | 'unreachable' | 'gateway'` instead of returning an error value.
+`CredentialsProvider` (`src/ports/credentials-provider.ts`, defined since phase 1, §10/I16) gets its
+**first real implementation** here: `resolve(ref)` (already existed) plus new `set(ref, secret|null)` and
+`has(ref)`, and a `JIRA_API_KEY_REF` constant. Jenkins config (phase 3) is expected to reuse the same
+shape with its own `credentialsRef`.
+
+**Adapters.**
+- **`LiteLLMJiraSource`** (`src/adapters/jira/litellm-jira-source.ts`) implements `JiraIssueSource` over
+  `POST {baseUrl}/mcp-rest/tools/call`, which proxies to the upstream "JiraSSE" MCP server holding the real
+  Jira credentials. The wire tool name carries the gateway's server alias prefix (`jira_jira_search` for
+  the upstream `jira_search`), confirmed against the live gateway. **Every response is text, not structured
+  JSON** — three line-oriented formats, each parsed by a pure exported `parse*Text` function so adapter
+  tests can target them directly against the captured fixtures:
+  - `jira_search` text: a `"Found N total issues …"` header gives the total; one `• [PROJ] KEY - Summary`
+    bullet per hit gives the keys, in order. `"No issues found with filters: …"` is an empty page, not an
+    error — `isError` is `false` even then.
+  - `jira_get_issue` text: one or more `Issue KEY details:` blocks, each followed by a raw JSON object and
+    a `---` separator (not guaranteed after the *last* block). A string-aware brace scan extracts each
+    JSON block (so braces inside quoted string values never throw off the count) rather than trusting a
+    naive regex; a block that fails to parse is skipped, never failing the whole batch. Summary,
+    Description and the `dod` custom field map through `adfToMarkdown`; Sprint (`null` → `[]`), Status/
+    Priority/Type names, Assignee/Reporter display names, Created and Project round out the shape.
+  - `jira_get_all_projects` text: `  • KEY: N tickets` lines.
+  - **Errors:** no key configured → `noKey`, thrown before any fetch. HTTP 401/403 → `unauthorized`. A
+    fetch rejection, DNS failure, or the per-request `AbortSignal.timeout` firing (also while the body is
+    being read) → `unreachable`. Any other non-2xx status, a malformed envelope, or `isError: true` →
+    `gateway`. A stored key that can't be decrypted, or that isn't printable ASCII (it could never be sent
+    as a header), → `noKey`, so the modal offers Open Settings. Messages are capped and never include the
+    API key, the `Authorization` header, or a lower-level `error.message` — an `unreachable` message carries
+    only the error's name and its `code` (e.g. `UNABLE_TO_VERIFY_LEAF_SIGNATURE`).
+  - **Batching:** `getIssues` dedupes, then requests in batches of 10 comma-separated keys (the gateway's
+    own limit), in order. `search` with an `issueKey` filter skips `jira_search` entirely and calls
+    `getIssues([key])` (total 1, no cursor) — the key overrides every other filter. Otherwise it pages
+    through `jira_search` at a limit of 50 and fetches details for the hits; `nextCursor` is the next
+    offset (advanced by the hits actually returned) while it is still below the gateway-reported total. A **sprint filter** is applied in the app,
+    not the gateway (there is no sprint tool): it keeps scanning whole 50-hit search pages — never
+    splitting one across cursors — until it has 50 matches or the results run out, capped at a bounded
+    number of pages per call (still returning `nextCursor` at the cap, so Load More keeps progressing
+    rather than silently truncating). `listSprints(project)` searches the project's 30 most recent issues
+    (`jira_search` with no `days`, newest first) and runs their sprints through `orderSprints`.
+  - **TLS trust:** the gateway's certificate is issued by the internal `israel.final` CA, which is only in
+    the system bundle (`/etc/ssl/certs/ca-certificates.crt`) — Node's `fetch` trusts it only when
+    `NODE_EXTRA_CA_CERTS` is inherited from the launching shell (the same reason `.npmrc` sets `cafile`).
+    So the adapter takes a narrow `JiraFetch`, and the app injects `createHttpsFetch()`
+    (`src/adapters/jira/https-fetch.ts`): `node:https` with `ca` = Node's roots + the system bundle (read
+    lazily, best-effort), a buffered body, the caller's `AbortSignal`, and errors that keep their `code`.
+- **`adfToMarkdown`** (`src/adapters/jira/adf-to-markdown.ts`): a pure, dependency-free ADF
+  (Atlassian Document Format) → Markdown converter for the Description and `dod` fields. Covers paragraphs,
+  headings, lists (nested; an item's later paragraphs stay in the item), task lists (`- [ ]`/`- [x]`),
+  decision lists, code blocks (fence longer than any backtick run inside), blockquotes and panels, expands
+  (bold title line), GFM tables, rules, media (`[attachment: <name>]`), block/inline cards, hard breaks,
+  mentions, emoji, status lozenges, dates, and the `code`/`strike`/`em`/`strong`/`link` marks (applied in that
+  fixed order; emphasis hugs the text, whitespace moved outside the delimiters). Unrecognized nodes render
+  their `content` inline or as blocks by what the children are, else a `text` field, else nothing; nesting
+  past 64 levels collapses to plain text — nothing here ever throws, even on `null`/malformed/non-ADF
+  input. Because a converter change re-classifies every unedited import as a Conflict, its output is
+  treated as stored data. The output is **normalized** (outside code fences: trailing whitespace stripped
+  per line and runs of blank lines collapsed to one; the whole string trimmed) because
+  classification above compares composed description text byte for byte — an un-normalized ADF→markdown
+  pass could make a re-fetch of the identical issue misclassify as a Conflict purely from incidental
+  whitespace drift.
+- **`SafeStorageCredentials`** (`src/adapters/credentials/safe-storage-credentials.ts`) implements
+  `CredentialsProvider` over Electron's `safeStorage` (libsecret-backed on Linux): each ref is encrypted at
+  rest as `<credentialsDir>/<ref>.bin`, written atomically (uniquely named temp file, fsync, rename) with mode 0600. `set`
+  rejects with a clear message when `isEncryptionAvailable()` is false, and logs (without the secret) once
+  per process if the Linux backend resolves to `basic_text` (no real OS keyring — secrets are not actually
+  encrypted at rest in that case). Every `safeStorage` call is deferred to method-invocation time, **never**
+  touched from the constructor: `bootstrap()` (`src/main/index.ts`) runs before `app.whenReady()`, when
+  `safeStorage` isn't usable yet. The adapter declares its own minimal `SafeStorageLike` interface rather
+  than importing `electron`, so it stays Electron-free and trivially testable; only the composition root
+  injects the real singleton.
+
+**Persistence — schema v10.** `issues` gains `source TEXT NOT NULL DEFAULT 'local' CHECK(source IN
+('local','jira'))` and `jira_key TEXT CHECK((source = 'jira') = (jira_key IS NOT NULL))` (the domain
+invariant — a Jira issue has a key, a key implies Jira — enforced in the DB too, so a row
+`Issue.fromSnapshot` would reject can never be written), plus a `CREATE UNIQUE INDEX idx_issues_jira_key ON
+issues(jira_key)` (SQLite's `ALTER TABLE ADD COLUMN` cannot add a `UNIQUE` column directly; `NULL`s are
+distinct under a unique index, so any number of `local` issues coexist). The `{ toVersion: 10 }` migration
+is guarded with a new `Migration.unlessColumnExists: {table, column}`, checked via `PRAGMA table_info` in
+`runMigrations` (`sqlite-store.ts`) — needed because, unlike every migration before it, these columns are
+not simply appended to an already-existing table shape. On a v7 DB (pre-Issues), `SqliteStore.create` runs
+the bootstrap `CREATE TABLE IF NOT EXISTS issues` (`SCHEMA_STATEMENTS`) **before** any migration — and that
+DDL already includes `source`/`jira_key` — so the table is created already shaped with both columns on
+exactly this open, and a bare `ALTER TABLE issues ADD COLUMN source …` right after would fail "duplicate
+column". On a v8/v9 DB, `issues` already existed in its old shape (missing both columns), so the guard is
+false and the `ALTER`s run. `SqliteStore.create` runs the bootstrap DDL, all migrations, the index and
+the `user_version` stamp as **one transaction**, so a crash between the two `ALTER`s rolls back to the v9
+shape and the next open retries cleanly. The guard is right for the `ALTER`s but wrong for the index: a v7 DB's column
+already "exists" (just created) while the unique index on it does not. So the index is **not** listed in
+either `SCHEMA_STATEMENTS` or the v10 migration's statements — it is created once, unconditionally, by
+`SqliteStore.create` itself, strictly *after* both the bootstrap statements and all migrations have run,
+the one point in the open sequence where `jira_key` is guaranteed to exist on every DB shape (fresh, v7,
+v8, v9, already-v10). `upsertIssue` binds `source`/`jira_key` on INSERT but deliberately omits them from
+`ON CONFLICT DO UPDATE SET` — `Issue` exposes no setter for either, so a routine re-save must never let
+them drift. Upgrading from v9 writes the usual pre-migration `octopus.db.bak-v9` backup (§6.3); an older
+build refuses a v10 DB with the usual `IncompatibleDbError` fatal dialog rather than risk corrupting it.
+
+**Application.**
+- **Fetching is a query**, like `listProjects`/`getSessionCwd`: `previewJiraIssues(deps, issues)`
+  (`src/application/queries/preview-jira-issues.ts`) composes and classifies each fetched `JiraIssue`
+  against `deps.workspace.issues()` **right now**, mutates nothing, and bypasses the single-writer command
+  loop entirely (§6.6). Main calls the port, then this query, before replying to the renderer.
+- **Import is one command.** Main fetches the selected issues' full details (`port.getIssues(keys)`)
+  *outside* the loop, then dispatches `importJiraIssues` with those `JiraIssue`s. The use case
+  (`src/application/use-cases/import-jira-issues.ts`) **never trusts** the earlier preview — it
+  re-classifies every input issue against the workspace's current issues, because the workspace may have
+  changed since preview (another import landed, a manual delete), and additionally skips a key repeated
+  *within* the input itself (second and later occurrences), so a duplicate checkbox selection can't create
+  two local issues for one Jira key in one batch. Only issues that re-classify as `new` are built, each via
+  `Issue.create({source: Jira, jiraKey, status: Todo, no projectPath})` — the Jira status is never
+  imported. Every `upsertIssue` runs inside one `deps.persistence.transaction`; only after it commits does
+  the use case touch `Workspace`/`EventBus` (mirrors `create-issue.ts`'s persist-before-mutate ordering,
+  just batched) — a throw inside the transaction therefore leaves memory and events untouched with no
+  explicit rollback needed. Returns the created count and the skipped keys (duplicates, conflicts, and
+  within-batch repeats).
+
+**IPC / shared.** New `jira` API group (`projects`/`sprints`/`search`/`import`) and `credentials`
+(`setJiraKey`/`hasJiraKey`) group. `jiraProjects`/`jiraSprints`/`jiraSearch` are stateless main-side
+queries that bypass the command loop, like `dialogPickDirectory`; `jiraImport` mutates (it creates issues)
+and dispatches through the loop internally, after main fetches the issue details. A typed `JiraResultDTO<T>`
+(`{ok:true, value} | {ok:false, error}`) carries results over IPC because a thrown `Error` subclass loses
+its prototype across the bridge — `JiraErrorDTO.kind` is `'noKey' | 'unauthorized' | 'unreachable' |
+'gateway' | 'invalid'` (`'invalid'` added for input the main-process edge rejects before any port call).
+`IssueDTO` gains `source`/`jiraKey` (mirroring the domain). `SettingsDTO`/`SettingsPatchDTO` gain
+`jira?: {lastFilters?: JiraFiltersDTO}` — **non-secret**; the API key itself is never part of settings and
+is never returned to the renderer by any channel, full stop. `src/shared/jira-key.ts` holds pure
+`normalizeJiraIssueKey`/`isJiraIssueKey` (trim, uppercase, `PROJ-123` shape), shared the same way as
+`external-url.ts`: the renderer uses it for input, main for edge validation.
+
+**Main.** The composition root wires `SafeStorageCredentials(safeStorage, paths.credentialsDir)` and
+`LiteLLMJiraSource` (with `fetch: createHttpsFetch()`, the gateway base URL/server id, and a `getApiKey` that
+resolves `JIRA_API_KEY_REF` through the credentials provider) into the IPC handlers — the only place either
+adapter is imported. The handlers validate at the edge before any port call: `parseJiraFilters` and
+`parseImportKeys` (non-empty, capped, deduped, every key passing `isJiraIssueKey`) reject malformed input
+with `JiraErrorDTO{kind:'invalid'}` rather than ever reaching the gateway or the loop. `jira:import` reports
+keys the gateway didn't return (deleted, mistyped, no access) as skipped, same as a duplicate/conflict.
+`credentials:setJiraKey` accepts a trimmed 1–4096 character printable-ASCII string or `null`; `credentials:hasJiraKey`
+returns only a boolean — the key is never logged.
+
+**Renderer.** `JiraImportModal` (`src/renderer/src/components/JiraImportModal.tsx`) follows the shared
+overlay contract (`.claude/rules/modals-and-overlays.md`): portaled to `document.body` (it opens from
+inside the Issues drawer, whose own `transform` would otherwise confine a `position: fixed` backdrop to
+the drawer's bounds), `role="dialog"` + `aria-modal="true"` + `tabIndex={-1}`, its card's `onKeyDown` stops
+every key before handling its own Escape, no `backdrop-filter`/`filter`/blur. It is registered in
+`IssuesDrawer`'s `topmostModal()` doc-comment list. Filters prefill from `settings.jira.lastFilters` and
+persist on Fetch via `app.updateSettings` + the store's `setJiraLastFilters` (same pattern as
+`groupTasksByRepo`'s setter — a targeted patch, not a full re-hydrate). An Issue key filter overrides the
+rest. The Settings modal's open/closed state moved out of `ProgressPanel`'s local state into the store
+(`settingsOpen`/`openSettings`/`closeSettings`, surviving `hydrate()` like the drawer fields) specifically
+so the Jira modal's error states ("No key"/"key rejected") can close themselves first, then call
+`openSettings()` — the portaled Jira modal sits after `#root` in the DOM and would otherwise paint over
+Settings. The `IssuesDrawer` header (§13.5) gets a "Fetch from Jira" button after **+ New Issue**, on
+both tabs, and `IssueList` a small "Jira" badge (plain paint, no filter) on `source==='jira'` rows; `IssueDetail` gets a read-only "Source: Jira (KEY)" / "Source: Local"
+line, never editable and absent from the edit form.

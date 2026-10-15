@@ -65,7 +65,14 @@ import type {
   BindIssueInput,
   UnbindIssueInput,
   OpenExternalInput,
-  IssueStatusDTO
+  IssueStatusDTO,
+  JiraProjectDTO,
+  JiraSprintDTO,
+  JiraSearchPageDTO,
+  JiraResultDTO,
+  ImportJiraIssuesInput,
+  ImportJiraIssuesResultDTO,
+  SetJiraKeyInput
 } from '../shared/dto'
 import type { CommandLoop } from '../application/command-loop'
 import type { Clipboard } from '../ports/clipboard'
@@ -76,6 +83,7 @@ import { getState } from '../application/queries/get-state'
 import { getSessionCwd } from '../application/queries/get-session-cwd'
 import { listProjects } from '../application/queries/list-projects'
 import { listProjectWorktrees } from '../application/queries/list-project-worktrees'
+import { previewJiraIssues } from '../application/queries/preview-jira-issues'
 import {
   asTaskId,
   asSessionId,
@@ -89,7 +97,19 @@ import {
   type SessionId
 } from '../domain/ids'
 import { parseIssueStatus, type IssueStatus } from '../domain/issue'
-import { toWindowedWorkspaceStateDTO, toSessionConfig } from './dto-mappers'
+import type { JiraSprintFilter } from '../domain/jira-import'
+import type { JiraIssueSource, JiraSearchFilters } from '../ports/jira-issue-source'
+import { JIRA_API_KEY_REF, type CredentialsProvider } from '../ports/credentials-provider'
+import { normalizeJiraIssueKey } from '../shared/jira-key'
+import { isPrintableAsciiKey } from '../shared/jira-api-key'
+import {
+  toWindowedWorkspaceStateDTO,
+  toSessionConfig,
+  toJiraProjectDTO,
+  toJiraSprintDTO,
+  toJiraIssueRowDTO,
+  toJiraErrorDTO
+} from './dto-mappers'
 import { openExternalSafely } from './window'
 
 /**
@@ -150,6 +170,219 @@ function isSplitPath(v: unknown): v is SplitPath {
   return Array.isArray(v) && v.every((step) => step === 'a' || step === 'b')
 }
 
+// ── Jira import validators (DESIGN "Jira import") ───────────────────────────────
+// Pure, exported so tests can target them directly. Unlike the settings store's
+// tolerant per-field drop (`json-settings-store.ts`'s `pickJiraLastFiltersCandidate`),
+// these REJECT the whole input (return `undefined`) on any malformed field — a
+// live search/import request, not a durable settings merge.
+
+/** `days` must be a positive integer no larger than this, so a malformed/huge
+ * value can't turn into an oversized gateway query. */
+const MAX_FILTER_DAYS = 3650
+
+/** `jira:import` accepts at most this many keys per call. */
+const MAX_IMPORT_KEYS = 500
+
+/** Length cap on the free-text filter fields (`assignee`, a free-text `sprint`
+ * name), so a pasted blob can't turn into an oversized gateway query. */
+const MAX_FILTER_TEXT_LENGTH = 200
+
+/** Length cap on `project` — real keys (`test/fixtures/jira/projects.json`) are
+ * well under 10 chars; this is generous headroom, not a tight real-world bound. */
+const MAX_PROJECT_KEY_LENGTH = 64
+
+/** Shape of a Jira project key (matches every key in the fixtures: an uppercase
+ * letter, then uppercase letters/digits/underscores). Lenient enough for any real
+ * Jira project key, which this is — `project` always comes from the dropdown
+ * populated by `jira.projects()`, never free-typed. */
+const JIRA_PROJECT_KEY_PATTERN = /^[A-Z][A-Z0-9_]*$/
+
+function trimmedOrUndefined(v: string | undefined): string | undefined {
+  if (v === undefined) {
+    return undefined
+  }
+  const trimmed = v.trim()
+  return trimmed === '' ? undefined : trimmed
+}
+
+function parseJiraSprintFilterInput(v: unknown): JiraSprintFilter | undefined {
+  if (typeof v !== 'object' || v === null) {
+    return undefined
+  }
+  const candidate = v as Record<string, unknown>
+  if (candidate.kind === 'id') {
+    if (typeof candidate.id !== 'number' || !Number.isFinite(candidate.id)) {
+      return undefined
+    }
+    if (typeof candidate.name !== 'string' || candidate.name.length > MAX_FILTER_TEXT_LENGTH) {
+      return undefined
+    }
+    return { kind: 'id', id: candidate.id, name: candidate.name }
+  }
+  if (candidate.kind === 'name') {
+    if (typeof candidate.text !== 'string' || candidate.text.length > MAX_FILTER_TEXT_LENGTH) {
+      return undefined
+    }
+    return { kind: 'name', text: candidate.text }
+  }
+  return undefined
+}
+
+/**
+ * Validate and normalize a wire `JiraFiltersDTO` for `jira:search` (DESIGN
+ * "Jira import"). `project`/`assignee` are trimmed (empty after trimming counts as
+ * absent); `project` must additionally match {@link JIRA_PROJECT_KEY_PATTERN} and
+ * {@link MAX_PROJECT_KEY_LENGTH}, `assignee` is capped at
+ * {@link MAX_FILTER_TEXT_LENGTH}; `issueKey` is normalized via
+ * `normalizeJiraIssueKey` and must pass `isJiraIssueKey`; `days` must be a
+ * positive integer capped at {@link MAX_FILTER_DAYS}; `sprint` must match one of
+ * the two exact tagged-union shapes (its free-text `text`/`name` also capped at
+ * {@link MAX_FILTER_TEXT_LENGTH}). Either `project` or a valid `issueKey` is
+ * required — mirroring
+ * `LiteLLMJiraSource.search`'s single-ticket lookup path, which needs one of the
+ * two to do anything. Returns `undefined` for anything else (reject outright,
+ * never silently drop a malformed field here).
+ */
+export function parseJiraFilters(raw: unknown): JiraSearchFilters | undefined {
+  if (typeof raw !== 'object' || raw === null) {
+    return undefined
+  }
+  const candidate = raw as Record<string, unknown>
+
+  if (candidate.project !== undefined && typeof candidate.project !== 'string') {
+    return undefined
+  }
+  if (candidate.assignee !== undefined && typeof candidate.assignee !== 'string') {
+    return undefined
+  }
+  const project = trimmedOrUndefined(candidate.project as string | undefined)
+  const assignee = trimmedOrUndefined(candidate.assignee as string | undefined)
+  if (
+    project !== undefined &&
+    (project.length > MAX_PROJECT_KEY_LENGTH || !JIRA_PROJECT_KEY_PATTERN.test(project))
+  ) {
+    return undefined
+  }
+  if (assignee !== undefined && assignee.length > MAX_FILTER_TEXT_LENGTH) {
+    return undefined
+  }
+
+  let issueKey: string | undefined
+  if (candidate.issueKey !== undefined) {
+    if (typeof candidate.issueKey !== 'string') {
+      return undefined
+    }
+    if (candidate.issueKey.trim() !== '') {
+      const normalized = normalizeJiraIssueKey(candidate.issueKey)
+      if (normalized === undefined) {
+        return undefined
+      }
+      issueKey = normalized
+    }
+  }
+
+  if (project === undefined && issueKey === undefined) {
+    return undefined
+  }
+
+  let days: number | undefined
+  if (candidate.days !== undefined) {
+    if (
+      typeof candidate.days !== 'number' ||
+      !Number.isInteger(candidate.days) ||
+      candidate.days <= 0 ||
+      candidate.days > MAX_FILTER_DAYS
+    ) {
+      return undefined
+    }
+    days = candidate.days
+  }
+
+  let sprint: JiraSprintFilter | undefined
+  if (candidate.sprint !== undefined) {
+    sprint = parseJiraSprintFilterInput(candidate.sprint)
+    if (sprint === undefined) {
+      return undefined
+    }
+  }
+
+  return {
+    ...(project !== undefined && { project }),
+    ...(assignee !== undefined && { assignee }),
+    ...(issueKey !== undefined && { issueKey }),
+    ...(days !== undefined && { days }),
+    ...(sprint !== undefined && { sprint })
+  }
+}
+
+/**
+ * Validate and normalize `jira:import`'s `keys` (DESIGN "Jira import"): must be a
+ * non-empty array capped at {@link MAX_IMPORT_KEYS}, every entry a string that
+ * normalizes to a valid Jira issue key (`normalizeJiraIssueKey`/`isJiraIssueKey`).
+ * Deduped (first occurrence wins) — a client-side double-checked key can't fetch
+ * or import twice. Returns `undefined` for anything else.
+ */
+export function parseImportKeys(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_IMPORT_KEYS) {
+    return undefined
+  }
+  const seen = new Set<string>()
+  const keys: string[] = []
+  for (const item of raw) {
+    if (typeof item !== 'string') {
+      return undefined
+    }
+    const normalized = normalizeJiraIssueKey(item)
+    if (normalized === undefined) {
+      return undefined
+    }
+    if (!seen.has(normalized)) {
+      seen.add(normalized)
+      keys.push(normalized)
+    }
+  }
+  return keys
+}
+
+/**
+ * `credentials:setJiraKey`'s `key`: a trimmed 1–4096 char string of printable
+ * ASCII only (I1 — the gateway sends it verbatim in an `Authorization` header,
+ * which can't carry whitespace/control/non-ASCII bytes), or `null` to clear.
+ * `undefined`/wrong type/out-of-range/bad-character is rejected (returns
+ * `undefined`, distinct from the valid `null`) — the caller's rejection message
+ * never echoes `raw` itself, so a bad-character key can't leak into a toast.
+ */
+function parseJiraKeyInput(raw: unknown): string | null | undefined {
+  if (raw === null) {
+    return null
+  }
+  if (typeof raw !== 'string') {
+    return undefined
+  }
+  // A pasted `Bearer <key>` (copied from a curl line or header) is accepted — the
+  // adapter adds the scheme itself, and the space would fail the character rule.
+  const trimmed = raw.trim().replace(/^Bearer\s+/i, '')
+  if (trimmed.length < 1 || trimmed.length > 4096) {
+    return undefined
+  }
+  return isPrintableAsciiKey(trimmed) ? trimmed : undefined
+}
+
+/** A valid `jira:sprints` project argument: a non-empty string once trimmed. */
+function parseJiraSprintsProject(raw: unknown): string | undefined {
+  return typeof raw === 'string' ? trimmedOrUndefined(raw) : undefined
+}
+
+/** A valid `jira:search` cursor: `undefined`, or the decimal-offset string the
+ * adapter itself produces (`LiteLLMJiraSource`'s `nextCursor`, up to 9 digits —
+ * comfortably past any real result-count offset). Anything else is a tampered or
+ * stale client value; rejecting it here, rather than passing it to
+ * `parseCursor`, keeps "garbage cursor" and "garbage filters" symmetric: both
+ * fail the request instead of one silently restarting at offset 0. */
+function isValidCursor(raw: unknown): raw is string | undefined {
+  return raw === undefined || (typeof raw === 'string' && /^\d{1,9}$/.test(raw))
+}
+
 export interface IpcHandlerHooks {
   /**
    * webContents.id → WindowId (V1.5, §6.7). Shared with the composition root and
@@ -166,6 +399,18 @@ export interface IpcHandlerHooks {
   readonly onHydrate?: (windowId: WindowId) => void
   /** OS clipboard adapter backing the terminal copy/paste queries (§5.4). */
   readonly clipboard: Clipboard
+  /**
+   * The Jira gateway edge (DESIGN "Jira import"). Backs `jira:projects`/
+   * `jira:sprints`/`jira:search` (bypass the loop, like `clipboard`) and
+   * `jira:import` (fetches outside the loop, then dispatches `importJiraIssues`).
+   */
+  readonly jira: JiraIssueSource
+  /**
+   * Secret storage for the Jira API key (DESIGN "Jira import", I16). Backs
+   * `credentials:setJiraKey`/`credentials:hasJiraKey`; the key itself never rides
+   * back over IPC.
+   */
+  readonly credentials: CredentialsProvider
   /**
    * Relay a watch-in-place "seen" (§9.5): broadcast a `sessionSeen` event to every
    * window so the ready-for-review view-model clears cross-window. Supplied by the
@@ -679,6 +924,167 @@ export function registerIpcHandlers(
       return openExternalSafely(input.url)
     }
   )
+
+  // ── Jira import (DESIGN "Jira import") ──────────────────────────────────────
+  // `projects`/`sprints`/`search` are stateless queries that bypass the command
+  // loop, like `clipboard`/`projectList` — they only read through the gateway and
+  // classify against the CURRENT workspace, never mutate it. Invalid input is
+  // rejected (`{ ok: false, error: { kind: 'invalid' } }`) before any port call; a
+  // port throw is mapped by `toJiraErrorDTO`.
+  ipcMain.handle(
+    CHANNELS.jiraProjects,
+    async (): Promise<JiraResultDTO<readonly JiraProjectDTO[]>> => {
+      try {
+        const projects = await hooks.jira.listProjects()
+        return { ok: true, value: projects.map(toJiraProjectDTO) }
+      } catch (err) {
+        return { ok: false, error: toJiraErrorDTO(err) }
+      }
+    }
+  )
+
+  ipcMain.handle(
+    CHANNELS.jiraSprints,
+    async (_e, projectRaw: unknown): Promise<JiraResultDTO<readonly JiraSprintDTO[]>> => {
+      const project = parseJiraSprintsProject(projectRaw)
+      if (project === undefined) {
+        return { ok: false, error: { kind: 'invalid', message: 'invalid Jira project' } }
+      }
+      try {
+        const sprints = await hooks.jira.listSprints(project)
+        return { ok: true, value: sprints.map(toJiraSprintDTO) }
+      } catch (err) {
+        return { ok: false, error: toJiraErrorDTO(err) }
+      }
+    }
+  )
+
+  ipcMain.handle(
+    CHANNELS.jiraSearch,
+    async (
+      _e,
+      filtersRaw: unknown,
+      cursorRaw: unknown
+    ): Promise<JiraResultDTO<JiraSearchPageDTO>> => {
+      const filters = parseJiraFilters(filtersRaw)
+      if (filters === undefined || !isValidCursor(cursorRaw)) {
+        return { ok: false, error: { kind: 'invalid', message: 'invalid Jira search filters' } }
+      }
+      try {
+        const page = await hooks.jira.search(filters, cursorRaw)
+        // Classify against the workspace's CURRENT issues (§preview). `total` is
+        // passed through as-is: the port's `JiraSearchPage.total` is the
+        // UNFILTERED gateway total even when a sprint filter narrowed `rows`.
+        const previews = previewJiraIssues(deps, page.issues)
+        return {
+          ok: true,
+          value: {
+            rows: previews.map(toJiraIssueRowDTO),
+            nextCursor: page.nextCursor,
+            total: page.total
+          }
+        }
+      } catch (err) {
+        return { ok: false, error: toJiraErrorDTO(err) }
+      }
+    }
+  )
+
+  // `import` DOES mutate (it creates issues), so unlike the queries above it
+  // dispatches through the loop — but only AFTER fetching the issues from the
+  // gateway outside it (§6.6 "single-writer domain" stays I/O-light, mirroring
+  // `createTask`'s already-resolved `repoDir`).
+  ipcMain.handle(
+    CHANNELS.jiraImport,
+    async (_e, input: ImportJiraIssuesInput): Promise<ImportJiraIssuesResultDTO> => {
+      const rawKeys = input?.keys
+      // Distinct from the generic "invalid" rejection below (M8): an over-length
+      // list is a real, well-formed selection the renderer should cap client-side
+      // and retry, not a malformed payload — "invalid Jira issue keys" was
+      // confusing someone who had simply selected too many rows.
+      if (Array.isArray(rawKeys) && rawKeys.length > MAX_IMPORT_KEYS) {
+        return {
+          ok: false,
+          importedCount: 0,
+          skippedKeys: [],
+          error: { kind: 'invalid', message: `at most ${MAX_IMPORT_KEYS} issues per import` }
+        }
+      }
+      const keys = parseImportKeys(rawKeys)
+      if (keys === undefined) {
+        return {
+          ok: false,
+          importedCount: 0,
+          skippedKeys: [],
+          error: { kind: 'invalid', message: 'invalid Jira issue keys' }
+        }
+      }
+
+      let fetched
+      try {
+        fetched = await hooks.jira.getIssues(keys)
+      } catch (err) {
+        return { ok: false, importedCount: 0, skippedKeys: [], error: toJiraErrorDTO(err) }
+      }
+
+      // Keys the gateway didn't return (deleted/mistyped/no access) are reported
+      // as skipped, same as a duplicate/conflict the command re-classifies.
+      const fetchedKeys = new Set(fetched.map((issue) => issue.key))
+      const missingKeys = keys.filter((key) => !fetchedKeys.has(key))
+
+      const result = await loop.dispatch({
+        kind: 'importJiraIssues',
+        input: { issues: fetched }
+      })
+
+      if (!result.ok) {
+        // A persistence/domain failure, not a Jira-gateway one — there is no
+        // dedicated `JiraErrorDTO` kind for it; `'gateway'` is the closest existing
+        // bucket (the modal shows `error.message` regardless of `kind`). Worth a
+        // dedicated kind (e.g. `'internal'`) if this needs distinct UI treatment.
+        return {
+          ok: false,
+          importedCount: 0,
+          skippedKeys: [],
+          error: { kind: 'gateway', message: result.error ?? 'import failed' }
+        }
+      }
+
+      return {
+        ok: true,
+        importedCount: result.importedCount ?? 0,
+        skippedKeys: [...(result.skippedKeys ?? []), ...missingKeys]
+      }
+    }
+  )
+
+  // ── Jira API key (DESIGN "Jira import", I16) ────────────────────────────────
+  // Backed by `CredentialsProvider`, encrypted at rest. The key is set-only from
+  // the renderer's point of view: it is never read back, never logged, and never
+  // included in an error message (`SafeStorageCredentials`'s own messages never
+  // carry the secret).
+  ipcMain.handle(
+    CHANNELS.credentialsSetJiraKey,
+    async (_e, input: SetJiraKeyInput): Promise<CommandAck> => {
+      const key = parseJiraKeyInput(input?.key)
+      if (key === undefined) {
+        return invalidAck('credentials:setJiraKey: invalid key')
+      }
+      try {
+        await hooks.credentials.set(JIRA_API_KEY_REF, key)
+        return { ok: true }
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : 'failed to store credential'
+        }
+      }
+    }
+  )
+
+  ipcMain.handle(CHANNELS.credentialsHasJiraKey, async (): Promise<boolean> => {
+    return hooks.credentials.has(JIRA_API_KEY_REF)
+  })
 
   // ── App-level ─────────────────────────────────────────────────────────────
   ipcMain.handle(CHANNELS.appGetState, (e): WindowedWorkspaceStateDTO => {

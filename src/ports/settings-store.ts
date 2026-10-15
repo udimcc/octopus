@@ -62,6 +62,39 @@ export interface ProjectSettings {
   readonly defaultBranch?: string
 }
 
+/**
+ * Which sprint a last-used Jira filter set pinned (DESIGN §Jira import): either a
+ * resolved sprint `id` (with the `name` it had at save time, for display before a
+ * fresh sprint list is fetched) or a free-text `text` the user typed that didn't
+ * resolve to one. Exactly one of the two shapes — never both id and text fields on
+ * one object.
+ */
+export type JiraSprintFilterSetting =
+  | { readonly kind: 'id'; readonly id: number; readonly name: string }
+  | { readonly kind: 'name'; readonly text: string }
+
+/**
+ * The last-used Jira import filter set (DESIGN §Jira import), persisted so
+ * reopening the import dialog prefills instead of starting blank. Non-secret —
+ * the API key never lives here (I16); see `CredentialsProvider` for that.
+ */
+export interface JiraLastFilters {
+  readonly project?: string
+  readonly assignee?: string
+  readonly issueKey?: string
+  readonly days?: number
+  readonly sprint?: JiraSprintFilterSetting
+}
+
+/**
+ * Jira-related settings (DESIGN §Jira import). Non-secret by construction — the
+ * API key is resolved through `CredentialsProvider` (encrypted at rest), never
+ * written into settings.json (I16).
+ */
+export interface JiraSettings {
+  readonly lastFilters?: JiraLastFilters
+}
+
 export interface Settings {
   readonly worktree: WorktreeSettings
   readonly terminal: TerminalSettings
@@ -119,6 +152,8 @@ export interface Settings {
   readonly focusPaneRightKey?: string
   readonly focusPaneUpKey?: string
   readonly focusPaneDownKey?: string
+  /** Non-secret Jira import settings (DESIGN §Jira import). See `JiraSettings`. */
+  readonly jira?: JiraSettings
 }
 
 /** A deep-partial patch for `save` (nested objects merged, not replaced). */
@@ -147,6 +182,11 @@ export interface SettingsPatch {
   readonly focusPaneRightKey?: string
   readonly focusPaneUpKey?: string
   readonly focusPaneDownKey?: string
+  /**
+   * See `Settings.jira`. `lastFilters` replaces wholesale when present (it's the
+   * last-used filter set, not a field-by-field merge target), same as `projects`.
+   */
+  readonly jira?: Partial<JiraSettings>
 }
 
 export interface SettingsStore {

@@ -13,6 +13,7 @@ function issue(id: string, over: Partial<IssueDTO> = {}): IssueDTO {
     status: 'todo',
     createdAt: 1000,
     updatedAt: 1000,
+    source: 'local',
     ...over
   }
 }

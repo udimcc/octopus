@@ -16,12 +16,21 @@ vi.mock('electron', () => ({
 }))
 
 import { ipcMain, shell } from 'electron'
-import { registerIpcHandlers, type IpcHandlerHooks } from './ipc-handlers'
+import {
+  registerIpcHandlers,
+  parseJiraFilters,
+  parseImportKeys,
+  type IpcHandlerHooks
+} from './ipc-handlers'
 import { CHANNELS } from '../shared/ipc'
 import type { CommandLoop } from '../application/command-loop'
 import type { AppDependencies } from '../application/dependencies'
 import type { Command, CommandResult } from '../application/commands'
 import { asIssueId } from '../domain/ids'
+import { makeDeps, FakeJiraIssueSource } from '../application/use-cases/test-fakes'
+import { JiraSourceError } from '../ports/jira-issue-source'
+import { JIRA_API_KEY_REF } from '../ports/credentials-provider'
+import type { JiraIssue } from '../domain/jira-import'
 
 /** Pull the handler registered for `channel` out of the mocked `ipcMain.handle` calls. */
 function handlerFor(channel: string): (event: unknown, input: unknown) => unknown {
@@ -86,7 +95,20 @@ function scriptedLoop(results: readonly CommandResult[]): {
 
 const hooks: IpcHandlerHooks = {
   windowIds: new Map(),
-  clipboard: { readText: () => '', writeText: () => {} }
+  clipboard: { readText: () => '', writeText: () => {} },
+  jira: {
+    listProjects: vi.fn(async () => []),
+    listSprints: vi.fn(async () => []),
+    search: vi.fn(async () => ({ issues: [], total: 0 })),
+    getIssues: vi.fn(async () => [])
+  },
+  credentials: {
+    resolve: vi.fn(async () => {
+      throw new Error('no credential')
+    }),
+    set: vi.fn(async () => {}),
+    has: vi.fn(async () => false)
+  }
 }
 
 describe('issue status validation at the IPC edge ("Issues", §13.4)', () => {
@@ -437,4 +459,577 @@ describe('ipc-handlers field forwarding and command mapping (I4)', () => {
       expect(shell.openExternal).not.toHaveBeenCalled()
     }
   )
+})
+
+describe('parseJiraFilters ("Jira import" validator, exported for direct testing)', () => {
+  it('rejects a non-object', () => {
+    expect(parseJiraFilters(null)).toBeUndefined()
+    expect(parseJiraFilters('PROJ')).toBeUndefined()
+    expect(parseJiraFilters(42)).toBeUndefined()
+  })
+
+  it('rejects an empty object: neither project nor issueKey present', () => {
+    expect(parseJiraFilters({})).toBeUndefined()
+  })
+
+  it('accepts a bare project key', () => {
+    expect(parseJiraFilters({ project: 'PROJ' })).toEqual({ project: 'PROJ' })
+  })
+
+  it('trims project/assignee, treating empty-after-trim as absent', () => {
+    expect(parseJiraFilters({ project: '  PROJ  ', assignee: '   ' })).toEqual({ project: 'PROJ' })
+  })
+
+  it('rejects a project not matching the uppercase-key pattern', () => {
+    expect(parseJiraFilters({ project: 'proj' })).toBeUndefined()
+    expect(parseJiraFilters({ project: '1PROJ' })).toBeUndefined()
+    expect(parseJiraFilters({ project: 'PROJ-1' })).toBeUndefined()
+  })
+
+  it('rejects a project longer than the max key length (64)', () => {
+    expect(parseJiraFilters({ project: 'A'.repeat(65) })).toBeUndefined()
+    expect(parseJiraFilters({ project: 'A'.repeat(64) })).toEqual({ project: 'A'.repeat(64) })
+  })
+
+  it('rejects an assignee longer than the max text length (200)', () => {
+    expect(parseJiraFilters({ project: 'PROJ', assignee: 'a'.repeat(201) })).toBeUndefined()
+    expect(parseJiraFilters({ project: 'PROJ', assignee: 'a'.repeat(200) })).toEqual({
+      project: 'PROJ',
+      assignee: 'a'.repeat(200)
+    })
+  })
+
+  it('normalizes a valid issueKey and allows it to stand in for project', () => {
+    expect(parseJiraFilters({ issueKey: 'proj-7' })).toEqual({ issueKey: 'PROJ-7' })
+  })
+
+  it('rejects a malformed issueKey', () => {
+    expect(parseJiraFilters({ issueKey: 'not a key' })).toBeUndefined()
+  })
+
+  it('treats an issueKey that is empty after trimming as absent, not malformed', () => {
+    expect(parseJiraFilters({ project: 'PROJ', issueKey: '   ' })).toEqual({ project: 'PROJ' })
+  })
+
+  it.each([
+    ['zero', 0],
+    ['negative', -1],
+    ['non-integer', 1.5],
+    ['over the 3650 cap', 3651]
+  ])('rejects days that is %s', (_label, days) => {
+    expect(parseJiraFilters({ project: 'PROJ', days })).toBeUndefined()
+  })
+
+  it('accepts days at the 3650 cap', () => {
+    expect(parseJiraFilters({ project: 'PROJ', days: 3650 })).toEqual({
+      project: 'PROJ',
+      days: 3650
+    })
+  })
+
+  it('accepts a sprint by id, carrying id/name through', () => {
+    expect(
+      parseJiraFilters({ project: 'PROJ', sprint: { kind: 'id', id: 5, name: 'Sprint 5' } })
+    ).toEqual({ project: 'PROJ', sprint: { kind: 'id', id: 5, name: 'Sprint 5' } })
+  })
+
+  it('accepts a free-text sprint name', () => {
+    expect(
+      parseJiraFilters({ project: 'PROJ', sprint: { kind: 'name', text: 'Sprint 5' } })
+    ).toEqual({ project: 'PROJ', sprint: { kind: 'name', text: 'Sprint 5' } })
+  })
+
+  it('rejects a sprint of an unknown kind', () => {
+    expect(parseJiraFilters({ project: 'PROJ', sprint: { kind: 'bogus' } })).toBeUndefined()
+  })
+})
+
+describe('parseImportKeys ("Jira import" validator, exported for direct testing)', () => {
+  it('rejects a non-array, an empty array, and over the 500-key cap', () => {
+    expect(parseImportKeys('PROJ-1')).toBeUndefined()
+    expect(parseImportKeys([])).toBeUndefined()
+    expect(parseImportKeys(Array.from({ length: 501 }, (_, i) => `PROJ-${i + 1}`))).toBeUndefined()
+  })
+
+  it('accepts exactly 500 keys', () => {
+    const keys = Array.from({ length: 500 }, (_, i) => `PROJ-${i + 1}`)
+    expect(parseImportKeys(keys)).toEqual(keys)
+  })
+
+  it('normalizes each key (trim/uppercase)', () => {
+    expect(parseImportKeys(['  proj-1  '])).toEqual(['PROJ-1'])
+  })
+
+  it('rejects when any entry is not a string', () => {
+    expect(parseImportKeys(['PROJ-1', 42])).toBeUndefined()
+  })
+
+  it('rejects when any entry fails Jira issue key validation', () => {
+    expect(parseImportKeys(['PROJ-1', 'not a key'])).toBeUndefined()
+  })
+
+  it('dedupes, first occurrence winning, preserving order', () => {
+    expect(parseImportKeys(['PROJ-1', 'PROJ-2', 'proj-1'])).toEqual(['PROJ-1', 'PROJ-2'])
+  })
+})
+
+describe('jira:projects / jira:sprints / jira:search bypass the command loop ("Jira import")', () => {
+  function setupJira(jira: IpcHandlerHooks['jira']) {
+    ;(ipcMain.handle as Mock).mockClear()
+    ;(ipcMain.on as Mock).mockClear()
+    const { loop, dispatched } = fakeLoop()
+    const fd = makeDeps()
+    registerIpcHandlers(loop, fd.deps, { ...hooks, jira })
+    return { dispatched, fd }
+  }
+
+  it('jira:projects calls the port and never dispatches to the command loop', async () => {
+    const jira: IpcHandlerHooks['jira'] = {
+      listProjects: vi.fn(async () => [{ key: 'PROJ', ticketCount: 3 }]),
+      listSprints: vi.fn(async () => []),
+      search: vi.fn(async () => ({ issues: [], total: 0 })),
+      getIssues: vi.fn(async () => [])
+    }
+    const { dispatched } = setupJira(jira)
+    const handler = handlerFor(CHANNELS.jiraProjects)
+
+    const result = await handler({}, undefined)
+
+    expect(result).toEqual({ ok: true, value: [{ key: 'PROJ', ticketCount: 3 }] })
+    expect(jira.listProjects).toHaveBeenCalledTimes(1)
+    expect(dispatched).toEqual([])
+  })
+
+  it('jira:sprints rejects a malformed project before ever calling the port', async () => {
+    const jira: IpcHandlerHooks['jira'] = {
+      listProjects: vi.fn(async () => []),
+      listSprints: vi.fn(async () => []),
+      search: vi.fn(async () => ({ issues: [], total: 0 })),
+      getIssues: vi.fn(async () => [])
+    }
+    const { dispatched } = setupJira(jira)
+    const handler = handlerFor(CHANNELS.jiraSprints)
+
+    const result = await handler({}, '   ')
+
+    expect(result).toEqual({
+      ok: false,
+      error: { kind: 'invalid', message: 'invalid Jira project' }
+    })
+    expect(jira.listSprints).not.toHaveBeenCalled()
+    expect(dispatched).toEqual([])
+  })
+
+  it('jira:sprints forwards the trimmed project and never dispatches to the loop', async () => {
+    const jira: IpcHandlerHooks['jira'] = {
+      listProjects: vi.fn(async () => []),
+      listSprints: vi.fn(async () => [{ id: 1, name: 'Sprint 1', state: 'active' as const }]),
+      search: vi.fn(async () => ({ issues: [], total: 0 })),
+      getIssues: vi.fn(async () => [])
+    }
+    const { dispatched } = setupJira(jira)
+    const handler = handlerFor(CHANNELS.jiraSprints)
+
+    const result = await handler({}, '  PROJ  ')
+
+    expect(jira.listSprints).toHaveBeenCalledWith('PROJ')
+    expect(result).toEqual({
+      ok: true,
+      value: [{ id: 1, name: 'Sprint 1', state: 'active' }]
+    })
+    expect(dispatched).toEqual([])
+  })
+
+  it('jira:search rejects an invalid cursor before ever calling the port', async () => {
+    const jira: IpcHandlerHooks['jira'] = {
+      listProjects: vi.fn(async () => []),
+      listSprints: vi.fn(async () => []),
+      search: vi.fn(async () => ({ issues: [], total: 0 })),
+      getIssues: vi.fn(async () => [])
+    }
+    const { dispatched } = setupJira(jira)
+    const handler = handlerFor(CHANNELS.jiraSearch) as (
+      event: unknown,
+      filters: unknown,
+      cursor: unknown
+    ) => unknown
+
+    const result = await handler({}, { project: 'PROJ' }, 'not-a-cursor')
+
+    expect(result).toMatchObject({ ok: false, error: { kind: 'invalid' } })
+    expect(jira.search).not.toHaveBeenCalled()
+    expect(dispatched).toEqual([])
+  })
+
+  it('jira:search accepts an undefined cursor and a valid numeric-string cursor', async () => {
+    const jira: IpcHandlerHooks['jira'] = {
+      listProjects: vi.fn(async () => []),
+      listSprints: vi.fn(async () => []),
+      search: vi.fn(async () => ({ issues: [], total: 0 })),
+      getIssues: vi.fn(async () => [])
+    }
+    const { dispatched } = setupJira(jira)
+    const handler = handlerFor(CHANNELS.jiraSearch) as (
+      event: unknown,
+      filters: unknown,
+      cursor: unknown
+    ) => unknown
+
+    await handler({}, { project: 'PROJ' }, undefined)
+    await handler({}, { project: 'PROJ' }, '42')
+
+    expect(jira.search).toHaveBeenCalledTimes(2)
+    expect(dispatched).toEqual([])
+  })
+
+  const jiraIssue: JiraIssue = {
+    key: 'PROJ-1',
+    summary: 'Fix the thing',
+    descriptionMarkdown: 'desc',
+    dodMarkdown: '',
+    status: 'In Progress',
+    priority: 'High',
+    type: 'Bug',
+    created: '2026-01-01T00:00:00.000Z',
+    projectKey: 'PROJ',
+    sprints: []
+  }
+
+  it('jira:search runs the port result through previewJiraIssues, classifying a fresh issue as "new"', async () => {
+    const jiraSource = new FakeJiraIssueSource([jiraIssue])
+    const { loop, dispatched } = fakeLoop()
+    const fd = makeDeps()
+    ;(ipcMain.handle as Mock).mockClear()
+    ;(ipcMain.on as Mock).mockClear()
+    registerIpcHandlers(loop, fd.deps, { ...hooks, jira: jiraSource })
+    const handler = handlerFor(CHANNELS.jiraSearch) as (
+      event: unknown,
+      filters: unknown,
+      cursor: unknown
+    ) => unknown
+
+    const result = (await handler({}, { project: 'PROJ' }, undefined)) as {
+      ok: boolean
+      value?: { rows: Array<{ key: string; classification: { kind: string } }> }
+    }
+
+    expect(result.ok).toBe(true)
+    expect(result.value?.rows).toEqual([
+      expect.objectContaining({ key: 'PROJ-1', classification: { kind: 'new' } })
+    ])
+    expect(jiraSource.searchCalls).toHaveLength(1)
+    expect(dispatched).toEqual([])
+  })
+
+  it('jira:search maps a thrown JiraSourceError to its JiraErrorDTO kind', async () => {
+    const jiraSource = new FakeJiraIssueSource()
+    jiraSource.failWith = new JiraSourceError('unauthorized', 'bad credentials')
+    const { loop, dispatched } = fakeLoop()
+    const fd = makeDeps()
+    ;(ipcMain.handle as Mock).mockClear()
+    ;(ipcMain.on as Mock).mockClear()
+    registerIpcHandlers(loop, fd.deps, { ...hooks, jira: jiraSource })
+    const handler = handlerFor(CHANNELS.jiraSearch) as (
+      event: unknown,
+      filters: unknown,
+      cursor: unknown
+    ) => unknown
+
+    const result = await handler({}, { project: 'PROJ' }, undefined)
+
+    expect(result).toEqual({
+      ok: false,
+      error: { kind: 'unauthorized', message: 'bad credentials' }
+    })
+    expect(dispatched).toEqual([])
+  })
+})
+
+describe('jira:import ordering and skip reporting ("Jira import")', () => {
+  const jiraIssueA: JiraIssue = {
+    key: 'PROJ-1',
+    summary: 'A',
+    descriptionMarkdown: '',
+    dodMarkdown: '',
+    status: 'To Do',
+    priority: 'Low',
+    type: 'Task',
+    created: '2026-01-01T00:00:00.000Z',
+    projectKey: 'PROJ',
+    sprints: []
+  }
+
+  beforeEach(() => {
+    ;(ipcMain.handle as Mock).mockClear()
+    ;(ipcMain.on as Mock).mockClear()
+  })
+
+  it('rejects malformed keys without ever calling the Jira port or the command loop', async () => {
+    const jiraSource = new FakeJiraIssueSource([jiraIssueA])
+    const { loop, dispatched } = fakeLoop()
+    registerIpcHandlers(loop, noDeps(), { ...hooks, jira: jiraSource })
+    const handler = handlerFor(CHANNELS.jiraImport)
+
+    const result = await handler({}, { keys: ['not a key'] })
+
+    expect(result).toMatchObject({ ok: false, importedCount: 0, skippedKeys: [] })
+    expect(jiraSource.getIssuesCalls).toEqual([])
+    expect(dispatched).toEqual([])
+  })
+
+  it('rejects more than 500 keys with a distinct message, before calling the port', async () => {
+    const jiraSource = new FakeJiraIssueSource()
+    const { loop, dispatched } = fakeLoop()
+    registerIpcHandlers(loop, noDeps(), { ...hooks, jira: jiraSource })
+    const handler = handlerFor(CHANNELS.jiraImport)
+
+    const tooMany = Array.from({ length: 501 }, (_, i) => `PROJ-${i + 1}`)
+    const result = await handler({}, { keys: tooMany })
+
+    expect(result).toMatchObject({
+      ok: false,
+      importedCount: 0,
+      skippedKeys: [],
+      error: { kind: 'invalid', message: 'at most 500 issues per import' }
+    })
+    expect(jiraSource.getIssuesCalls).toEqual([])
+    expect(dispatched).toEqual([])
+  })
+
+  it('calls jira.getIssues BEFORE dispatching importJiraIssues to the loop, in that order', async () => {
+    const callOrder: string[] = []
+    const jiraSource = new FakeJiraIssueSource([jiraIssueA])
+    const originalGetIssues = jiraSource.getIssues.bind(jiraSource)
+    jiraSource.getIssues = async (keys: readonly string[]) => {
+      callOrder.push('getIssues')
+      return originalGetIssues(keys)
+    }
+    const dispatched: Command[] = []
+    const loop = {
+      dispatch: async (command: Command): Promise<CommandResult> => {
+        callOrder.push('dispatch')
+        dispatched.push(command)
+        return { ok: true, importedCount: 1, skippedKeys: [] }
+      }
+    } as unknown as CommandLoop
+    registerIpcHandlers(loop, noDeps(), { ...hooks, jira: jiraSource })
+    const handler = handlerFor(CHANNELS.jiraImport)
+
+    await handler({}, { keys: ['PROJ-1'] })
+
+    expect(callOrder).toEqual(['getIssues', 'dispatch'])
+    expect(dispatched).toEqual([{ kind: 'importJiraIssues', input: { issues: [jiraIssueA] } }])
+  })
+
+  it('never dispatches when the Jira port throws, surfacing its error instead', async () => {
+    const jiraSource = new FakeJiraIssueSource([jiraIssueA])
+    jiraSource.failWith = new JiraSourceError('unreachable', 'network down')
+    const { loop, dispatched } = fakeLoop()
+    registerIpcHandlers(loop, noDeps(), { ...hooks, jira: jiraSource })
+    const handler = handlerFor(CHANNELS.jiraImport)
+
+    const result = await handler({}, { keys: ['PROJ-1'] })
+
+    expect(result).toEqual({
+      ok: false,
+      importedCount: 0,
+      skippedKeys: [],
+      error: { kind: 'unreachable', message: 'network down' }
+    })
+    expect(dispatched).toEqual([])
+  })
+
+  it('reports a key the gateway did not return as skipped, alongside the loop-reported skips', async () => {
+    const jiraSource = new FakeJiraIssueSource([jiraIssueA])
+    const dispatched: Command[] = []
+    const scripted = {
+      dispatch: async (command: Command): Promise<CommandResult> => {
+        dispatched.push(command)
+        return { ok: true, importedCount: 1, skippedKeys: ['PROJ-9'] }
+      }
+    } as unknown as CommandLoop
+    registerIpcHandlers(scripted, noDeps(), { ...hooks, jira: jiraSource })
+    const handler = handlerFor(CHANNELS.jiraImport)
+
+    // PROJ-1 is in the fake source's seed; PROJ-9 (the loop's own skip) and
+    // PROJ-404 (never fetched by the gateway) both end up reported as skipped.
+    const result = (await handler({}, { keys: ['PROJ-1', 'PROJ-404'] })) as {
+      ok: boolean
+      importedCount: number
+      skippedKeys: string[]
+    }
+
+    expect(result.ok).toBe(true)
+    expect(result.importedCount).toBe(1)
+    expect(result.skippedKeys.sort()).toEqual(['PROJ-404', 'PROJ-9'])
+    // Only the keys the gateway actually returned are forwarded to the loop.
+    expect(dispatched).toEqual([{ kind: 'importJiraIssues', input: { issues: [jiraIssueA] } }])
+  })
+
+  it('maps a command-loop failure to a gateway-kind JiraErrorDTO carrying the loop error message', async () => {
+    const jiraSource = new FakeJiraIssueSource([jiraIssueA])
+    const failingLoop = {
+      dispatch: async (): Promise<CommandResult> => ({ ok: false, error: 'disk full' })
+    } as unknown as CommandLoop
+    registerIpcHandlers(failingLoop, noDeps(), { ...hooks, jira: jiraSource })
+    const handler = handlerFor(CHANNELS.jiraImport)
+
+    const result = await handler({}, { keys: ['PROJ-1'] })
+
+    expect(result).toEqual({
+      ok: false,
+      importedCount: 0,
+      skippedKeys: [],
+      error: { kind: 'gateway', message: 'disk full' }
+    })
+  })
+})
+
+describe('credentials:setJiraKey / credentials:hasJiraKey never leak the key ("Jira import", I16)', () => {
+  beforeEach(() => {
+    ;(ipcMain.handle as Mock).mockClear()
+    ;(ipcMain.on as Mock).mockClear()
+  })
+
+  function setupCredentials(credentials: IpcHandlerHooks['credentials']) {
+    const { loop } = fakeLoop()
+    registerIpcHandlers(loop, noDeps(), { ...hooks, credentials })
+    return { setHandler: handlerFor(CHANNELS.credentialsSetJiraKey) }
+  }
+
+  it('stores a valid key via the credentials provider and acks ok without echoing it', async () => {
+    const set = vi.fn(async () => {})
+    const { setHandler } = setupCredentials({
+      resolve: vi.fn(async () => {
+        throw new Error('no credential')
+      }),
+      set,
+      has: vi.fn(async () => false)
+    })
+
+    const result = await setHandler({}, { key: 'sk-super-secret-123' })
+
+    expect(result).toEqual({ ok: true })
+    expect(JSON.stringify(result)).not.toContain('sk-super-secret-123')
+    expect(set).toHaveBeenCalledWith(JIRA_API_KEY_REF, 'sk-super-secret-123')
+  })
+
+  it('strips a pasted "Bearer " prefix before storing', async () => {
+    const set = vi.fn(async () => {})
+    const { setHandler } = setupCredentials({
+      resolve: vi.fn(async () => {
+        throw new Error('no credential')
+      }),
+      set,
+      has: vi.fn(async () => false)
+    })
+
+    await setHandler({}, { key: 'Bearer abc123' })
+
+    expect(set).toHaveBeenCalledWith(JIRA_API_KEY_REF, 'abc123')
+  })
+
+  it('clears the key when given null, never calling set with a string', async () => {
+    const set = vi.fn(async () => {})
+    const { setHandler } = setupCredentials({
+      resolve: vi.fn(async () => {
+        throw new Error('no credential')
+      }),
+      set,
+      has: vi.fn(async () => false)
+    })
+
+    const result = await setHandler({}, { key: null })
+
+    expect(result).toEqual({ ok: true })
+    expect(set).toHaveBeenCalledWith(JIRA_API_KEY_REF, null)
+  })
+
+  it.each([
+    ['the empty string', ''],
+    ['whitespace only', '   '],
+    ['a non-ASCII character', 'sëcret'],
+    ['an embedded space', 'has a space'],
+    ['a control byte', 'bad\tkey'],
+    ['too long (4097 chars)', 'a'.repeat(4097)],
+    ['a number', 42],
+    ['an object', { not: 'a key' }]
+  ])('rejects %s as invalid and never calls credentials.set', async (_label, key) => {
+    const set = vi.fn(async () => {})
+    const { setHandler } = setupCredentials({
+      resolve: vi.fn(async () => {
+        throw new Error('no credential')
+      }),
+      set,
+      has: vi.fn(async () => false)
+    })
+
+    const result = (await setHandler({}, { key })) as { ok: boolean; error?: string }
+
+    expect(result.ok).toBe(false)
+    expect(set).not.toHaveBeenCalled()
+    // The rejection message never echoes the bad key back to the renderer.
+    if (typeof key === 'string' && key !== '') {
+      expect(result.error ?? '').not.toContain(key)
+    }
+  })
+
+  it('accepts a key at the 4096-char boundary', async () => {
+    const set = vi.fn(async () => {})
+    const { setHandler } = setupCredentials({
+      resolve: vi.fn(async () => {
+        throw new Error('no credential')
+      }),
+      set,
+      has: vi.fn(async () => false)
+    })
+    const key = 'a'.repeat(4096)
+
+    const result = await setHandler({}, { key })
+
+    expect(result).toEqual({ ok: true })
+    expect(set).toHaveBeenCalledWith(JIRA_API_KEY_REF, key)
+  })
+
+  it('surfaces a storage failure without leaking the key in the error message', async () => {
+    const set = vi.fn(async () => {
+      throw new Error('disk write failed')
+    })
+    const { setHandler } = setupCredentials({
+      resolve: vi.fn(async () => {
+        throw new Error('no credential')
+      }),
+      set,
+      has: vi.fn(async () => false)
+    })
+
+    const result = (await setHandler({}, { key: 'sk-super-secret-123' })) as {
+      ok: boolean
+      error?: string
+    }
+
+    expect(result).toEqual({ ok: false, error: 'disk write failed' })
+    expect(result.error).not.toContain('sk-super-secret-123')
+  })
+
+  it('credentials:hasJiraKey resolves only a boolean, never the key itself', async () => {
+    const has = vi.fn(async () => true)
+    const { loop } = fakeLoop()
+    registerIpcHandlers(loop, noDeps(), {
+      ...hooks,
+      credentials: {
+        resolve: vi.fn(async () => {
+          throw new Error('no credential')
+        }),
+        set: vi.fn(async () => {}),
+        has
+      }
+    })
+    const handler = handlerFor(CHANNELS.credentialsHasJiraKey)
+
+    const result = await handler({}, undefined)
+
+    expect(result).toBe(true)
+    expect(has).toHaveBeenCalledTimes(1)
+  })
 })

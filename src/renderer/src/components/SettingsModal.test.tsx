@@ -439,4 +439,90 @@ describe('<SettingsModal>', () => {
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('disk full'))
     expect(onClose).not.toHaveBeenCalled()
   })
+
+  describe('Jira API key (DESIGN §13.7, I16)', () => {
+    it('never shows the stored key: the field is masked and always starts empty', async () => {
+      const bridge = installStubBridge({ state: seededState })
+      bridge.api.credentials.hasJiraKey = vi.fn().mockResolvedValue(true)
+      render(<SettingsModal onClose={vi.fn()} />)
+      await waitFor(() => expect(bridge.api.credentials.hasJiraKey).toHaveBeenCalled())
+
+      const keyField = screen.getByLabelText('jira api key')
+      expect(keyField).toHaveAttribute('type', 'password')
+      expect(keyField).toHaveValue('')
+      expect(keyField).toHaveAttribute('placeholder', 'Key saved')
+    })
+
+    it('clicking "Save" on the key sends only the typed key, never through updateSettings', async () => {
+      const bridge = installStubBridge({ state: seededState })
+      render(<SettingsModal onClose={vi.fn()} />)
+      await waitFor(() => expect(bridge.api.credentials.hasJiraKey).toHaveBeenCalled())
+
+      fireEvent.change(screen.getByLabelText('jira api key'), { target: { value: 'sk-secret' } })
+      fireEvent.click(screen.getByRole('button', { name: 'save jira api key' }))
+
+      await waitFor(() =>
+        expect(bridge.api.credentials.setJiraKey).toHaveBeenCalledWith({ key: 'sk-secret' })
+      )
+      expect(bridge.api.app.updateSettings).not.toHaveBeenCalled()
+      // The field clears back to empty once the key is saved.
+      await waitFor(() => expect(screen.getByLabelText('jira api key')).toHaveValue(''))
+    })
+
+    it('clicking "Clear key" sends a null key and removes the Clear button once cleared', async () => {
+      const bridge = installStubBridge({ state: seededState })
+      bridge.api.credentials.hasJiraKey = vi.fn().mockResolvedValue(true)
+      render(<SettingsModal onClose={vi.fn()} />)
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'clear jira api key' })).toBeInTheDocument()
+      )
+
+      fireEvent.click(screen.getByRole('button', { name: 'clear jira api key' }))
+
+      await waitFor(() =>
+        expect(bridge.api.credentials.setJiraKey).toHaveBeenCalledWith({ key: null })
+      )
+      await waitFor(() =>
+        expect(screen.queryByRole('button', { name: 'clear jira api key' })).toBeNull()
+      )
+    })
+
+    it('a typed-but-unsaved key is also saved via the footer Save, and never joins the settings patch', async () => {
+      const bridge = installStubBridge({ state: seededState })
+      render(<SettingsModal onClose={vi.fn()} />)
+      await waitFor(() => expect(bridge.api.credentials.hasJiraKey).toHaveBeenCalled())
+
+      fireEvent.change(screen.getByLabelText('jira api key'), { target: { value: 'sk-footer' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+      await waitFor(() =>
+        expect(bridge.api.credentials.setJiraKey).toHaveBeenCalledWith({ key: 'sk-footer' })
+      )
+      const [patch] = (bridge.api.app.updateSettings as ReturnType<typeof vi.fn>).mock.calls[0] as [
+        Record<string, unknown>
+      ]
+      expect(JSON.stringify(patch)).not.toContain('sk-footer')
+      expect(patch).not.toHaveProperty('jiraKey')
+      expect(patch).not.toHaveProperty('jiraApiKey')
+    })
+
+    it('shows the inline error without leaking the key when storing fails, and does not close', async () => {
+      const bridge = installStubBridge({ state: seededState })
+      bridge.api.credentials.setJiraKey = vi
+        .fn()
+        .mockResolvedValue({ ok: false, error: 'secure storage unavailable' })
+      const onClose = vi.fn()
+      render(<SettingsModal onClose={onClose} />)
+      await waitFor(() => expect(bridge.api.credentials.hasJiraKey).toHaveBeenCalled())
+
+      fireEvent.change(screen.getByLabelText('jira api key'), { target: { value: 'sk-bad' } })
+      fireEvent.click(screen.getByRole('button', { name: 'save jira api key' }))
+
+      await waitFor(() =>
+        expect(screen.getByRole('alert')).toHaveTextContent('secure storage unavailable')
+      )
+      expect(screen.getByRole('alert').textContent).not.toContain('sk-bad')
+      expect(onClose).not.toHaveBeenCalled()
+    })
+  })
 })

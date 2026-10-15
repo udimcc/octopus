@@ -598,6 +598,12 @@ export function IssueDetail({
                 </span>
               </div>
 
+              {/* Read-only provenance (DESIGN §13.7): never editable, so it is only
+                  rendered here in view mode and omitted from the edit form above. */}
+              <span style={{ color: color.muted, fontSize: fontSize.sm }}>
+                Source: {issue!.source === 'jira' ? `Jira (${issue!.jiraKey})` : 'Local'}
+              </span>
+
               <IssueMarkdown source={issue!.description} />
             </>
           )}

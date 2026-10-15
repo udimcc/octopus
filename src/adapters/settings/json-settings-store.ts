@@ -36,6 +36,9 @@
 import { readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 import type {
+  JiraLastFilters,
+  JiraSettings,
+  JiraSprintFilterSetting,
   ProjectSettings,
   Settings,
   SettingsPatch,
@@ -166,7 +169,8 @@ export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
     focusPaneLeftKey: pickString(patch.focusPaneLeftKey, base.focusPaneLeftKey),
     focusPaneRightKey: pickString(patch.focusPaneRightKey, base.focusPaneRightKey),
     focusPaneUpKey: pickString(patch.focusPaneUpKey, base.focusPaneUpKey),
-    focusPaneDownKey: pickString(patch.focusPaneDownKey, base.focusPaneDownKey)
+    focusPaneDownKey: pickString(patch.focusPaneDownKey, base.focusPaneDownKey),
+    jira: pickJira(patch.jira, base.jira)
   }
 }
 
@@ -234,6 +238,96 @@ function pickProjects(
     )
   }
   return projects
+}
+
+/** Trim a string value; `undefined` (or non-string, or empty after trim) falls through. */
+function pickTrimmedString(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined
+  }
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
+/**
+ * Validate a `sprint` filter candidate against the two shapes `JiraSprintFilterSetting`
+ * allows exactly — `{kind:'id', id, name}` (a finite `id`, `name` any string) or
+ * `{kind:'name', text}` (a non-empty, trimmed `text`) — dropping anything that matches
+ * neither (wrong `kind`, missing/mistyped fields, or a non-object).
+ */
+function pickJiraSprintFilter(value: unknown): JiraSprintFilterSetting | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined
+  }
+  const candidate = value as { kind?: unknown; id?: unknown; name?: unknown; text?: unknown }
+  if (
+    candidate.kind === 'id' &&
+    typeof candidate.id === 'number' &&
+    Number.isFinite(candidate.id) &&
+    typeof candidate.name === 'string'
+  ) {
+    return { kind: 'id', id: candidate.id, name: candidate.name }
+  }
+  if (candidate.kind === 'name') {
+    const text = pickTrimmedString(candidate.text)
+    if (text !== undefined) {
+      return { kind: 'name', text }
+    }
+  }
+  return undefined
+}
+
+/**
+ * Validate a `lastFilters` candidate field-by-field (DESIGN §Jira import): each
+ * known key is kept only if it survives its own check — strings trimmed with empty
+ * strings dropped, `days` a positive integer, `sprint` one of its two exact shapes
+ * (`pickJiraSprintFilter`) — and anything else (unknown keys, wrong types) is
+ * dropped silently rather than invalidating the whole object. A non-object
+ * candidate (including an array) is entirely invalid.
+ */
+function pickJiraLastFiltersCandidate(value: unknown): JiraLastFilters | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined
+  }
+  const candidate = value as Record<string, unknown>
+  const project = pickTrimmedString(candidate.project)
+  const assignee = pickTrimmedString(candidate.assignee)
+  const issueKey = pickTrimmedString(candidate.issueKey)
+  const days =
+    typeof candidate.days === 'number' && Number.isInteger(candidate.days) && candidate.days > 0
+      ? candidate.days
+      : undefined
+  const sprint = pickJiraSprintFilter(candidate.sprint)
+  return {
+    ...(project !== undefined && { project }),
+    ...(assignee !== undefined && { assignee }),
+    ...(issueKey !== undefined && { issueKey }),
+    ...(days !== undefined && { days }),
+    ...(sprint !== undefined && { sprint })
+  }
+}
+
+/**
+ * Tolerant parse of the `jira` block (DESIGN §Jira import). The API key never
+ * lives here (I16) — only the non-secret `lastFilters` knob. A patch that omits
+ * `jira` entirely, or whose `jira` isn't a plain object, keeps the existing block
+ * unchanged (same "unrelated patch" idiom as the rest of `mergeSettings`). A
+ * present-but-malformed `lastFilters` (not a plain object) likewise falls back to
+ * the existing block rather than wiping it. A validly-shaped `lastFilters`
+ * replaces the existing one WHOLESALE (per-field pruning only, via
+ * `pickJiraLastFiltersCandidate` — it is the last-used filter set, not a target
+ * to merge field-by-field, same as `projects`).
+ */
+function pickJira(value: unknown, fallback: JiraSettings | undefined): JiraSettings | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return fallback
+  }
+  const { lastFilters } = value as { lastFilters?: unknown }
+  if (lastFilters === undefined) {
+    return fallback
+  }
+  const picked = pickJiraLastFiltersCandidate(lastFilters)
+  return picked === undefined ? fallback : { lastFilters: picked }
 }
 
 export class JsonSettingsStore implements SettingsStore {

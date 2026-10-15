@@ -50,7 +50,15 @@ import type {
   DeleteIssueInput,
   BindIssueInput,
   UnbindIssueInput,
-  OpenExternalInput
+  OpenExternalInput,
+  JiraProjectDTO,
+  JiraSprintDTO,
+  JiraFiltersDTO,
+  JiraSearchPageDTO,
+  JiraResultDTO,
+  ImportJiraIssuesInput,
+  ImportJiraIssuesResultDTO,
+  SetJiraKeyInput
 } from '../shared/dto'
 import type { EventDTO } from '../shared/events'
 
@@ -174,6 +182,23 @@ const octopusAPI: OctopusAPI = {
   shell: {
     openExternal: (input: OpenExternalInput): Promise<boolean> =>
       ipcRenderer.invoke(CHANNELS.shellOpenExternal, input)
+  },
+
+  jira: {
+    projects: (): Promise<JiraResultDTO<readonly JiraProjectDTO[]>> =>
+      ipcRenderer.invoke(CHANNELS.jiraProjects),
+    sprints: (project: string): Promise<JiraResultDTO<readonly JiraSprintDTO[]>> =>
+      ipcRenderer.invoke(CHANNELS.jiraSprints, project),
+    search: (filters: JiraFiltersDTO, cursor?: string): Promise<JiraResultDTO<JiraSearchPageDTO>> =>
+      ipcRenderer.invoke(CHANNELS.jiraSearch, filters, cursor),
+    import: (input: ImportJiraIssuesInput): Promise<ImportJiraIssuesResultDTO> =>
+      ipcRenderer.invoke(CHANNELS.jiraImport, input)
+  },
+
+  credentials: {
+    setJiraKey: (input: SetJiraKeyInput): Promise<CommandAck> =>
+      ipcRenderer.invoke(CHANNELS.credentialsSetJiraKey, input),
+    hasJiraKey: (): Promise<boolean> => ipcRenderer.invoke(CHANNELS.credentialsHasJiraKey)
   },
 
   onEvent: (handler: (event: EventDTO) => void): (() => void) => {

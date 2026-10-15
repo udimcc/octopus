@@ -42,12 +42,56 @@ export function parseIssueStatus(value: unknown): IssueStatus | undefined {
   }
 }
 
+/**
+ * Where an issue came from (Jira import feature). `Local` is the default for
+ * every issue created or hydrated before this field existed. A `Jira` issue
+ * always carries the `jiraKey` it was imported under; see `Issue`'s
+ * constructor invariant.
+ */
+export enum IssueSource {
+  Local = 'local',
+  Jira = 'jira'
+}
+
+/**
+ * Validate and cast an arbitrary value to {@link IssueSource}, modeled on
+ * {@link parseIssueStatus}. Returns `undefined` for anything else — the
+ * caller decides whether that means reject or fall back to `Local`.
+ */
+export function parseIssueSource(value: unknown): IssueSource | undefined {
+  switch (value) {
+    case IssueSource.Local:
+      return IssueSource.Local
+    case IssueSource.Jira:
+      return IssueSource.Jira
+    default:
+      return undefined
+  }
+}
+
+/** Trim and reject an empty result; shared by `Issue.create`/`rename` and by
+ * `composeJiraIssue` (`jira-import.ts`), so the name invariant — and the exact
+ * normalization a freshly-imported Jira issue's name goes through — is
+ * enforced in exactly one place. (Not I19 — that invariant covers the
+ * binding, not the name rule; this one has no assigned number.) */
+export function normalizeIssueName(name: string): string {
+  const trimmed = name.trim()
+  if (trimmed === '') {
+    throw new InvariantViolationError('issue name must not be empty')
+  }
+  return trimmed
+}
+
 export interface IssueCreateProps {
   id: IssueId
   name: string
   description: string
   projectPath?: string
   createdAt: number
+  /** Defaults to {@link IssueSource.Local} when omitted. */
+  source?: IssueSource
+  /** Required when `source` is {@link IssueSource.Jira}; forbidden otherwise. */
+  jiraKey?: string
 }
 
 export class Issue {
@@ -60,8 +104,12 @@ export class Issue {
   private _status: IssueStatus
   private _taskId?: TaskId
   private _updatedAt: number
+  private readonly _source: IssueSource
+  private readonly _jiraKey?: string
 
   private constructor(props: IssueCreateProps) {
+    const source = props.source ?? IssueSource.Local
+    Issue.validateSourceAndKey(source, props.jiraKey)
     this.id = props.id
     this.createdAt = props.createdAt
     this._name = props.name
@@ -69,23 +117,25 @@ export class Issue {
     this._projectPath = props.projectPath
     this._status = IssueStatus.Todo
     this._updatedAt = props.createdAt
+    this._source = source
+    this._jiraKey = props.jiraKey
   }
 
-  /** Trim and reject an empty result; shared by `create` and `rename` so the
-   * name invariant is enforced in exactly one place. (Not I19 — that invariant
-   * covers the binding, not the name rule; this one has no assigned number.) */
-  private static normalizeName(name: string): string {
-    const trimmed = name.trim()
-    if (trimmed === '') {
-      throw new InvariantViolationError('issue name must not be empty')
+  /** Enforce the source/key invariant: a `jiraKey` implies `source === Jira`,
+   * and `source === Jira` requires a `jiraKey`. */
+  private static validateSourceAndKey(source: IssueSource, jiraKey: string | undefined): void {
+    if (jiraKey !== undefined && source !== IssueSource.Jira) {
+      throw new InvariantViolationError('issue jiraKey requires source=jira')
     }
-    return trimmed
+    if (source === IssueSource.Jira && jiraKey === undefined) {
+      throw new InvariantViolationError('issue source=jira requires a jiraKey')
+    }
   }
 
   /** Create a new, unbound issue in `Todo`. Validates `name` the same way `rename` does
    * (trim, reject empty) — the caller never needs its own workaround. */
   static create(props: IssueCreateProps): Issue {
-    return new Issue({ ...props, name: Issue.normalizeName(props.name) })
+    return new Issue({ ...props, name: normalizeIssueName(props.name) })
   }
 
   /** Reconstruct an issue from persistence (I15-style hydration). */
@@ -95,7 +145,9 @@ export class Issue {
       name: snap.name,
       description: snap.description,
       projectPath: snap.projectPath,
-      createdAt: snap.createdAt
+      createdAt: snap.createdAt,
+      source: snap.source,
+      jiraKey: snap.jiraKey
     })
     issue._status = snap.status
     issue._taskId = snap.taskId
@@ -122,11 +174,19 @@ export class Issue {
   get updatedAt(): number {
     return this._updatedAt
   }
+  /** Where this issue came from. Read-only — never settable after creation. */
+  get source(): IssueSource {
+    return this._source
+  }
+  /** The Jira key this issue was imported under, if any. Read-only. */
+  get jiraKey(): string | undefined {
+    return this._jiraKey
+  }
 
-  /** Rename; trims whitespace and rejects an empty result (see `normalizeName`
+  /** Rename; trims whitespace and rejects an empty result (see `normalizeIssueName`
    * — not I19, which covers the binding, not the name rule). */
   rename(name: string): void {
-    this._name = Issue.normalizeName(name)
+    this._name = normalizeIssueName(name)
   }
 
   setDescription(description: string): void {
@@ -176,7 +236,9 @@ export class Issue {
       status: this._status,
       taskId: this._taskId,
       createdAt: this.createdAt,
-      updatedAt: this._updatedAt
+      updatedAt: this._updatedAt,
+      source: this._source,
+      ...(this._jiraKey !== undefined ? { jiraKey: this._jiraKey } : {})
     }
   }
 }

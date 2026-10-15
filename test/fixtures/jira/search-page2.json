@@ -1,0 +1,13 @@
+{
+  "_meta": null,
+  "content": [
+    {
+      "type": "text",
+      "text": "Found 820 total issues in project TM (showing 6-10 of 820)\n⚠️ 810 more tickets available. Use offset=10 to get the next batch.\n\n• [TM] TM-2611 - Olympus - Investigate slow write to trading.olympus_external_automation_requests_by_physical_id\n  Status: To Do, Priority: Medium, Type: Task\n  Assignee: Bob Example, Reporter: Carol Example\n  Dest. Team: RD_TRD Team\n  Created: 2026-10-01T17:11:55.074+0300\n\n• [TM] TM-2610 - Olympus - Move from buzzinst* kafka topic to olympus topic\n  Status: To Do, Priority: Low, Type: Task\n  Assignee: Bob Example, Reporter: Carol Example\n  Dest. Team: RD_TRD Team\n  Created: 2026-10-01T17:02:38.776+0300\n\n• [TM] TM-2609 - Jenkins - Move to Final Pipelines - Design solution\n  Status: To Do, Priority: Medium, Type: Task\n  Assignee: Erin Example, Reporter: Carol Example\n  Dest. Team: RD_TRD Team\n  Created: 2026-10-01T16:59:37.215+0300\n\n• [TM] TM-2608 - Broken CI - creds doesnt getting through\n  Status: In Progress, Priority: Low, Type: Task\n  Assignee: Alice Example, Reporter: Alice Example\n  Dest. Team: RD_TRD Team\n  Created: 2026-10-01T15:48:34.281+0300\n\n• [TM] TM-2607 - Shark - Fix multiple c2c bug\n  Status: Waiting For Approval, Priority: Low, Type: Task\n  Assignee: Alice Example, Reporter: Alice Example\n  Dest. Team: RD_TRD Team\n  Created: 2026-10-01T15:46:09.068+0300\n\n",
+      "annotations": null,
+      "_meta": null
+    }
+  ],
+  "structuredContent": null,
+  "isError": false
+}

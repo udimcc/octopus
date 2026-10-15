@@ -8,7 +8,11 @@ import {
   toWorkspaceStateDTO,
   toWindowedWorkspaceStateDTO,
   toEventDTO,
-  toSessionConfig
+  toSessionConfig,
+  toJiraProjectDTO,
+  toJiraSprintDTO,
+  toJiraIssueRowDTO,
+  toJiraErrorDTO
 } from './dto-mappers'
 import type {
   TaskSnapshot,
@@ -22,8 +26,11 @@ import type { Settings } from '../ports/settings-store'
 import type { SessionConfigDTO } from '../shared/dto'
 import { SessionLifecycle, TaskLifecycle } from '../domain/lifecycle'
 import { SessionState, TaskState } from '../domain/state'
-import { IssueStatus } from '../domain/issue'
+import { IssueStatus, IssueSource } from '../domain/issue'
 import { asTaskId, asSessionId, asTypeId, asWindowId, asIssueId, asGroupId } from '../domain/ids'
+import type { JiraIssue } from '../domain/jira-import'
+import type { JiraIssuePreview } from '../application/queries/preview-jira-issues'
+import { JiraSourceError } from '../ports/jira-issue-source'
 
 const worktree: WorktreeRefSnapshot = {
   path: '/wt/t1',
@@ -71,7 +78,8 @@ const issue: IssueSnapshot = {
   status: IssueStatus.InProgress,
   taskId: asTaskId('t1'),
   createdAt: 300,
-  updatedAt: 400
+  updatedAt: 400,
+  source: IssueSource.Local
 }
 
 describe('snapshot → DTO mappers (§5.2)', () => {
@@ -114,7 +122,8 @@ describe('snapshot → DTO mappers (§5.2)', () => {
       status: 'in_progress',
       taskId: 't1',
       createdAt: 300,
-      updatedAt: 400
+      updatedAt: 400,
+      source: 'local'
     })
   })
 
@@ -198,7 +207,8 @@ describe('snapshot → DTO mappers (§5.2)', () => {
       status: 'in_progress',
       taskId: 't1',
       createdAt: 300,
-      updatedAt: 400
+      updatedAt: 400,
+      source: 'local'
     })
   })
 
@@ -299,6 +309,186 @@ describe('snapshot → DTO mappers (§5.2)', () => {
     expect(groups).toBeUndefined()
     const dto = toTaskDTO(withoutGroups as TaskSnapshot)
     expect(dto.groups).toEqual([])
+  })
+})
+
+describe('toIssueDTO — Jira provenance ("Jira import")', () => {
+  it('carries source/jiraKey for a Jira-sourced issue', () => {
+    const jiraIssue: IssueSnapshot = {
+      ...issue,
+      source: IssueSource.Jira,
+      jiraKey: 'PROJ-123'
+    }
+    const dto = toIssueDTO(jiraIssue)
+    expect(dto.source).toBe('jira')
+    expect(dto.jiraKey).toBe('PROJ-123')
+  })
+
+  it('leaves jiraKey undefined for a local issue', () => {
+    const dto = toIssueDTO(issue)
+    expect(dto.source).toBe('local')
+    expect(dto.jiraKey).toBeUndefined()
+  })
+})
+
+describe('toSettingsDTO — jira.lastFilters passthrough ("Jira import")', () => {
+  const baseSettings: Settings = {
+    worktree: { location: '/home/u/octopus_repos' },
+    terminal: { shell: '/bin/zsh', stateDetection: false, statusChangeNotifications: false },
+    defaultSessionTypeId: 'terminal',
+    worktreeCreateTimeoutMs: 45000,
+    groupTasksByRepo: false,
+    sessionNextKey: 'ArrowUp',
+    sessionPrevKey: 'ArrowDown',
+    copyKey: 'Ctrl+Shift+KeyC',
+    pasteKey: 'Ctrl+Shift+KeyV',
+    issuesKey: 'Alt+Shift+KeyI',
+    splitRightKey: 'Ctrl+Shift+KeyE',
+    splitDownKey: 'Ctrl+Shift+KeyO',
+    focusPaneLeftKey: 'Ctrl+Shift+KeyH',
+    focusPaneRightKey: 'Ctrl+Shift+KeyL',
+    focusPaneUpKey: 'Ctrl+Shift+KeyK',
+    focusPaneDownKey: 'Ctrl+Shift+KeyJ'
+  }
+
+  it('passes jira.lastFilters through unchanged when present', () => {
+    const settings: Settings = {
+      ...baseSettings,
+      jira: {
+        lastFilters: { project: 'PROJ', days: 7, sprint: { kind: 'name', text: 'Sprint 1' } }
+      }
+    }
+    expect(toSettingsDTO(settings).jira).toEqual({
+      lastFilters: { project: 'PROJ', days: 7, sprint: { kind: 'name', text: 'Sprint 1' } }
+    })
+  })
+
+  it('leaves jira undefined when settings omit it, never defaulting to {}', () => {
+    expect(toSettingsDTO(baseSettings).jira).toBeUndefined()
+  })
+})
+
+describe('Jira domain → wire DTO mappers ("Jira import")', () => {
+  it('toJiraProjectDTO is a plain passthrough', () => {
+    expect(toJiraProjectDTO({ key: 'PROJ', ticketCount: 12 })).toEqual({
+      key: 'PROJ',
+      ticketCount: 12
+    })
+  })
+
+  it('toJiraSprintDTO is a plain passthrough', () => {
+    expect(toJiraSprintDTO({ id: 5, name: 'Sprint 5', state: 'active' })).toEqual({
+      id: 5,
+      name: 'Sprint 5',
+      state: 'active'
+    })
+  })
+
+  const jiraIssue: JiraIssue = {
+    key: 'PROJ-1',
+    summary: 'Fix the thing',
+    descriptionMarkdown: 'desc',
+    dodMarkdown: 'dod',
+    status: 'In Progress',
+    priority: 'High',
+    type: 'Bug',
+    assignee: 'alice',
+    reporter: 'bob',
+    created: '2026-01-01T00:00:00.000Z',
+    projectKey: 'PROJ',
+    sprints: [{ id: 1, name: 'Sprint 1', state: 'active' }]
+  }
+
+  function previewWith(classification: JiraIssuePreview['classification']): JiraIssuePreview {
+    return {
+      issue: jiraIssue,
+      composed: { name: 'PROJ-1: Fix the thing', description: 'desc' },
+      classification
+    }
+  }
+
+  it('toJiraIssueRowDTO maps the raw fetched fields and a "new" classification', () => {
+    const dto = toJiraIssueRowDTO(previewWith({ kind: 'new' }))
+    expect(dto).toEqual({
+      key: 'PROJ-1',
+      summary: 'Fix the thing',
+      status: 'In Progress',
+      priority: 'High',
+      type: 'Bug',
+      assignee: 'alice',
+      reporter: 'bob',
+      created: '2026-01-01T00:00:00.000Z',
+      sprintNames: ['Sprint 1'],
+      descriptionMarkdown: 'desc',
+      dodMarkdown: 'dod',
+      classification: { kind: 'new' }
+    })
+  })
+
+  it('toJiraIssueRowDTO maps a "duplicate" classification, carrying issueId/issueName', () => {
+    const dto = toJiraIssueRowDTO(
+      previewWith({ kind: 'duplicate', issueId: asIssueId('i1'), issueName: 'Fix the thing' })
+    )
+    expect(dto.classification).toEqual({
+      kind: 'duplicate',
+      issueId: 'i1',
+      issueName: 'Fix the thing'
+    })
+  })
+
+  it('toJiraIssueRowDTO maps a "conflict" classification, carrying issueId/issueName', () => {
+    const dto = toJiraIssueRowDTO(
+      previewWith({ kind: 'conflict', issueId: asIssueId('i1'), issueName: 'Different name' })
+    )
+    expect(dto.classification).toEqual({
+      kind: 'conflict',
+      issueId: 'i1',
+      issueName: 'Different name'
+    })
+  })
+})
+
+describe('toJiraErrorDTO ("Jira import")', () => {
+  it('maps a JiraSourceError, carrying its kind and message', () => {
+    const err = new JiraSourceError('unauthorized', 'bad credentials')
+    expect(toJiraErrorDTO(err)).toEqual({ kind: 'unauthorized', message: 'bad credentials' })
+  })
+
+  it.each(['noKey', 'unauthorized', 'unreachable', 'gateway'] as const)(
+    'preserves the %s kind from a JiraSourceError',
+    (kind) => {
+      const err = new JiraSourceError(kind, 'x')
+      expect(toJiraErrorDTO(err).kind).toBe(kind)
+    }
+  )
+
+  it('caps an overlong JiraSourceError message, appending an ellipsis', () => {
+    const long = 'x'.repeat(400)
+    const err = new JiraSourceError('gateway', long)
+    const dto = toJiraErrorDTO(err)
+    expect(dto.message.length).toBe(301) // 300 chars + '…'
+    expect(dto.message.endsWith('…')).toBe(true)
+  })
+
+  it('trims a JiraSourceError message before capping', () => {
+    const err = new JiraSourceError('gateway', '  padded  ')
+    expect(toJiraErrorDTO(err).message).toBe('padded')
+  })
+
+  it('maps a plain Error (not a JiraSourceError) to a fixed, generic gateway message', () => {
+    const dto = toJiraErrorDTO(new Error('some internal stack trace detail'))
+    expect(dto).toEqual({
+      kind: 'gateway',
+      message: 'an unexpected error occurred contacting the Jira gateway'
+    })
+  })
+
+  it('maps a non-Error throw (e.g. a thrown string) the same way, never echoing it', () => {
+    const dto = toJiraErrorDTO('a raw thrown string, not an Error')
+    expect(dto).toEqual({
+      kind: 'gateway',
+      message: 'an unexpected error occurred contacting the Jira gateway'
+    })
   })
 })
 
@@ -534,7 +724,8 @@ describe('toEventDTO (§6.5) — total over the DomainEvent union', () => {
               status: 'in_progress',
               taskId: 't1',
               createdAt: 300,
-              updatedAt: 400
+              updatedAt: 400,
+              source: 'local'
             })
           }
         }

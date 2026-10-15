@@ -66,7 +66,15 @@ import { TerminalSessionTypeProvider } from '../adapters/session-types/terminal-
 import { existsDir } from '../adapters/fs/dir-exists'
 import { existsFile } from '../adapters/fs/file-exists'
 import { ElectronClipboard } from '../adapters/clipboard/electron-clipboard'
-import { BrowserWindow } from 'electron'
+import {
+  LiteLLMJiraSource,
+  DEFAULT_LITELLM_BASE_URL,
+  DEFAULT_JIRA_SERVER_ID
+} from '../adapters/jira/litellm-jira-source'
+import { createHttpsFetch } from '../adapters/jira/https-fetch'
+import { SafeStorageCredentials } from '../adapters/credentials/safe-storage-credentials'
+import { JIRA_API_KEY_REF } from '../ports/credentials-provider'
+import { BrowserWindow, safeStorage } from 'electron'
 import { createAjvConfigValidator } from '../application/config-validator'
 import {
   MapRuntimeRegistry,
@@ -524,12 +532,33 @@ export function bootstrap(): AppContext {
     emitStateNotification(n)
   }
 
+  // Jira import (DESIGN "Jira import", I16). `SafeStorageCredentials`'s ctor never
+  // touches `safeStorage` itself (only `resolve`/`set`/`has` do, lazily) — `bootstrap`
+  // runs before `app.whenReady()`, so constructing it here is safe even though
+  // `safeStorage` isn't usable yet. `getApiKey` checks `has` first so a missing key
+  // resolves to `undefined` (→ the port's `noKey` error) instead of `resolve`
+  // throwing.
+  const credentials = new SafeStorageCredentials(safeStorage, paths.credentialsDir)
+  const jiraSource = new LiteLLMJiraSource({
+    // Not `globalThis.fetch`: that ignores the system CA store, which holds the
+    // gateway's internal CA (https-fetch.ts).
+    fetch: createHttpsFetch(),
+    getApiKey: async () => {
+      const hasKey = await credentials.has(JIRA_API_KEY_REF)
+      return hasKey ? credentials.resolve(JIRA_API_KEY_REF) : undefined
+    },
+    baseUrl: DEFAULT_LITELLM_BASE_URL,
+    serverId: DEFAULT_JIRA_SERVER_ID
+  })
+
   // `onHydrate(windowId)` marks THAT window ready so its buffered startup events
   // flush exactly when its renderer can receive them (§6.7, generalizes §6.5).
   registerIpcHandlers(commandLoop, deps, {
     windowIds,
     onHydrate: (windowId) => windowRegistry.markReady(windowId),
     clipboard: new ElectronClipboard(),
+    jira: jiraSource,
+    credentials,
     // Watch-in-place "seen" relay (§9.5): the hosting window watched a turn finish in
     // place (no focus transition to broadcast), so fan the clear out to every window's
     // ready-for-review view-model. Synthesized here (not on the bus) like the §9.5 toast.

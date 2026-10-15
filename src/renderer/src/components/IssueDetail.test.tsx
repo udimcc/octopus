@@ -15,6 +15,7 @@ function issue(id: string, over: Partial<IssueDTO> = {}): IssueDTO {
     status: 'todo',
     createdAt: 1000,
     updatedAt: 1000,
+    source: 'local',
     ...over
   }
 }
@@ -151,6 +152,41 @@ describe('<IssueDetail>', () => {
     expect(screen.getByRole('button', { name: 'Create task' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Link task' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Unlink task' })).not.toBeInTheDocument()
+  })
+
+  it('view mode: shows "Source: Local" for a local issue', () => {
+    seed([issue('i1', { name: 'Local issue', source: 'local' })])
+    act(() => useStore.getState().selectIssue('i1'))
+    renderDetail()
+
+    expect(screen.getByText('Source: Local')).toBeInTheDocument()
+  })
+
+  it('view mode: shows "Source: Jira (KEY)" for an imported issue (DESIGN §13.7)', () => {
+    seed([issue('i1', { name: 'Imported issue', source: 'jira', jiraKey: 'PROJ-42' })])
+    act(() => useStore.getState().selectIssue('i1'))
+    renderDetail()
+
+    expect(screen.getByText('Source: Jira (PROJ-42)')).toBeInTheDocument()
+  })
+
+  it('the source line is read-only: absent from the edit form for both sources', () => {
+    seed([
+      issue('i1', { name: 'Local issue', source: 'local' }),
+      issue('i2', { name: 'Imported issue', source: 'jira', jiraKey: 'PROJ-42' })
+    ])
+
+    act(() => useStore.getState().selectIssue('i1'))
+    renderDetail()
+    expect(screen.getByText('Source: Local')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    expect(screen.queryByText(/^Source:/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    act(() => useStore.getState().selectIssue('i2'))
+    expect(screen.getByText('Source: Jira (PROJ-42)')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    expect(screen.queryByText(/^Source:/)).not.toBeInTheDocument()
   })
 
   it('the status select is usable in view mode and persists immediately', () => {

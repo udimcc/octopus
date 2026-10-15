@@ -19,6 +19,7 @@ Three source-of-truth docs govern all work — read the relevant one before chan
 **Project rules** live in `.claude/rules/` and are binding when they apply:
 @.claude/rules/claude-state-prd.md
 @.claude/rules/modals-and-overlays.md
+@.claude/rules/jira-import.md
 
 ## Current status: V0 (foundation only)
 

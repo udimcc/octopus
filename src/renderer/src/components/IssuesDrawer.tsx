@@ -6,7 +6,8 @@
  * rendering, no GPU) that is a visible multi-second stall, the same reason the
  * New-Task modal's backdrop blur was dropped.
  *
- * Header row (DESIGN §13.5): **+ New Issue**, then `[List] [Board]` tabs —
+ * Header row (DESIGN §13.5): **+ New Issue** and **Fetch from Jira** (§13.7, opens the portaled
+ * `JiraImportModal`), then `[List] [Board]` tabs —
  * `role="tablist"`/`role="tab"`/`aria-selected`, the same lightweight pattern as
  * `NewTaskModal`'s source tabs (unselected = plain button, selected = `btn-primary`) —
  * reading/writing the store's `issuesDrawerTab` / `setIssuesDrawerTab` (renderer-only
@@ -74,11 +75,12 @@
  * drawer out of the tab order and the accessibility tree.
  */
 
-import { memo, useEffect, useRef } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { useStore, activeSessionInWindow } from '../store/store'
 import { IssueList } from './IssueList'
 import { IssueDetail } from './IssueDetail'
 import { KanbanBoard } from './KanbanBoard'
+import { JiraImportModal } from './JiraImportModal'
 import { DiscardChangesPrompt } from './DiscardChangesPrompt'
 import { color } from '../style/tokens'
 import { focusTerminal } from '../terminal/terminal-focus'
@@ -88,7 +90,7 @@ import { matchesChord } from '../keybindings/chords'
  * The topmost currently-open `[aria-modal="true"]` dialog, if any — App-level
  * (`NewTaskModal`, `SettingsModal`, `DeleteTaskConfirm`) or one of the drawer's own
  * (`DiscardChangesPrompt`, `BoundDeleteDialog`, `LinkTaskPicker`, `IssueDetail`'s
- * simple delete confirm). "Last in document order" is topmost because every overlay
+ * simple delete confirm, `JiraImportModal`). "Last in document order" is topmost because every overlay
  * shares `overlayStyle` (`position: fixed`, the same `zIndex`) and nothing around the
  * inline ones (`#root`, the sidebar, `<main>`) creates a stacking context, so paint
  * order is DOM order (body-level portals always follow `#root`). Giving one overlay its own `zIndex`, or
@@ -114,6 +116,8 @@ export const IssuesDrawer = memo(function IssuesDrawer({
   const tab = useStore((s) => s.issuesDrawerTab)
   const setIssuesDrawerTab = useStore((s) => s.setIssuesDrawerTab)
   const startNewIssue = useStore((s) => s.startNewIssue)
+  // Local, unpersisted: whether the Jira Import modal is open (DESIGN §13.7).
+  const [jiraImportOpen, setJiraImportOpen] = useState(false)
   const discardPrompt = useStore((s) => s.discardPrompt)
   const toggleIssuesDrawer = useStore((s) => s.toggleIssuesDrawer)
   const confirmDiscard = useStore((s) => s.confirmDiscard)
@@ -299,6 +303,9 @@ export const IssuesDrawer = memo(function IssuesDrawer({
         <button type="button" onClick={startNewIssue}>
           + New Issue
         </button>
+        <button type="button" style={{ marginLeft: 8 }} onClick={() => setJiraImportOpen(true)}>
+          Fetch from Jira
+        </button>
         <div
           role="tablist"
           aria-label="Issues view"
@@ -343,6 +350,8 @@ export const IssuesDrawer = memo(function IssuesDrawer({
           onDeleteBoundTask={onDeleteBoundTask}
         />
       </div>
+
+      {jiraImportOpen ? <JiraImportModal onClose={() => setJiraImportOpen(false)} /> : null}
       {discardPrompt ? (
         <DiscardChangesPrompt onDiscard={confirmDiscard} onKeepEditing={cancelDiscard} />
       ) : null}

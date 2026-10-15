@@ -64,6 +64,20 @@ All notable changes to Octopus are documented here. The format is based on
   from a strong accent tint to the normal active-tab background over 1 second, to show
   which session is now focused. Switching tabs within a window doesn't flash, and neither
   does a window's first appearance or a system with reduced motion enabled.
+- **Jira import.** A "Fetch from Jira" button in the Issues drawer header opens a modal that searches
+  Jira (via the internal LiteLLM gateway, a cache that refreshes every few hours) by project, assignee,
+  issue key, days and sprint, with the last-used filters remembered. Each result is matched against
+  existing issues by Jira key and shown as New, Duplicate ("Duplicated by <name>") or Conflict
+  ("Conflicts with <name>") — only New rows are importable, and a deleted import frees its key for next
+  time. Clicking a row shows its full description and Definition of Done rendered as markdown. An
+  imported issue is named "KEY: Summary", starts as Todo with no project, and carries a new read-only
+  **Source** (Jira or Local) shown as a badge in the issue list and a line in the issue detail; the Jira
+  status itself is never imported, and a later local edit shows as a Conflict on the next fetch. The
+  Jira API key is entered once in Settings as a password field and is never shown again, never leaves
+  the main process, and is encrypted at rest (Electron `safeStorage`, mode 0600) in a new `credentials/`
+  directory alongside the database — never in the database or `settings.json`. Stored locally via a new
+  `source`/`jira_key` pair of columns on `issues` (schema v10) — upgrading writes an `octopus.db.bak-v9`
+  backup first, and an older build refuses to open the upgraded database rather than risk corrupting it.
 
 ### Changed
 

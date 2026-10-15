@@ -95,22 +95,38 @@ export class SqliteStore implements WorkspacePersistence {
       beforeMigrate?.(fromVersion)
     }
 
-    for (const stmt of SCHEMA_STATEMENTS) {
-      db.exec(stmt)
-    }
+    // Schema, migrations, index and version stamp run as ONE transaction (SQLite DDL
+    // is transactional): a crash mid-upgrade — e.g. between the two v10 `ALTER`s —
+    // rolls back to the old shape and old `user_version`, so the next open simply
+    // retries instead of failing forever on a half-applied migration.
+    db.transaction(() => {
+      for (const stmt of SCHEMA_STATEMENTS) {
+        db.exec(stmt)
+      }
 
-    // Only a pre-existing, older DB runs migrations; a fresh DB was just created
-    // at SCHEMA_VERSION by the statements above (its `tasks` already has base_ref,
-    // so the v2 ALTER must be skipped or it would fail with "duplicate column").
-    if (preExisting) {
-      runMigrations(db, fromVersion)
-    }
+      // Only a pre-existing, older DB runs migrations; a fresh DB was just created
+      // at SCHEMA_VERSION by the statements above (its `tasks` already has base_ref,
+      // so the v2 ALTER must be skipped or it would fail with "duplicate column").
+      if (preExisting) {
+        runMigrations(db, fromVersion)
+      }
 
-    // Safe to stamp: the guard above rejected `fromVersion > SCHEMA_VERSION`, so this
-    // only ever raises (fresh/older DB) or holds (already-current) the version —
-    // never lowers it. Keep the guard and this line in lockstep; removing the guard
-    // would reintroduce the silent downgrade described above.
-    db.pragma(`user_version = ${SCHEMA_VERSION}`)
+      // Schema v10 (Jira import): the UNIQUE index on `issues.jira_key`. Deliberately
+      // run here — once, unconditionally, after BOTH the bootstrap statements above
+      // and any migrations — rather than living in SCHEMA_STATEMENTS or the v10
+      // migration's own statement list; see the long comments at
+      // `idx_issues_jira_key` (schema.ts) and on the v10 `Migration` entry for why
+      // either of those would break on some upgrade path. By this point every DB
+      // shape (fresh, v7, v8, v9, already-v10) has the `jira_key` column, so this
+      // single `IF NOT EXISTS` call is unconditionally safe.
+      db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_jira_key ON issues(jira_key)')
+
+      // Safe to stamp: the guard above rejected `fromVersion > SCHEMA_VERSION`, so this
+      // only ever raises (fresh/older DB) or holds (already-current) the version —
+      // never lowers it. Keep the guard and this line in lockstep; removing the guard
+      // would reintroduce the silent downgrade described above.
+      db.pragma(`user_version = ${SCHEMA_VERSION}`)
+    })()
     return new SqliteStore(db)
   }
 
@@ -217,12 +233,18 @@ export class SqliteStore implements WorkspacePersistence {
   // row's own `id` is never the FK target, but mutating in place rather than
   // delete+reinsert keeps the pattern consistent and avoids any accidental
   // `task_id` churn on an unrelated column update.
+  //
+  // `source` and `jira_key` (v10, Jira import) are bound on INSERT but deliberately
+  // left OUT of the `DO UPDATE SET` list: both are immutable once an issue is
+  // created (`Issue` exposes no setter for either — see domain/issue.ts), so a
+  // routine re-save must never let them drift even if a future caller's snapshot
+  // somehow carried a different value.
   upsertIssue(issue: IssueSnapshot): void {
     const row = issueToRow(issue)
     this.db
       .prepare(
-        `INSERT INTO issues (id, name, description, project_path, status, task_id, created_at, updated_at)
-         VALUES (@id, @name, @description, @project_path, @status, @task_id, @created_at, @updated_at)
+        `INSERT INTO issues (id, name, description, project_path, status, task_id, created_at, updated_at, source, jira_key)
+         VALUES (@id, @name, @description, @project_path, @status, @task_id, @created_at, @updated_at, @source, @jira_key)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name,
            description = excluded.description,
@@ -393,14 +415,40 @@ function tableExists(db: SqliteDb, name: string): boolean {
 }
 
 /**
+ * True iff `table` currently has a column named `column`, via `PRAGMA
+ * table_info` (v10, Jira import — backs `Migration.unlessColumnExists`). Returns
+ * false for a non-array pragma result (e.g. a table that doesn't exist at all),
+ * same tolerance as `readUserVersion` below for better-sqlite3's pragma shape.
+ */
+function columnExists(db: SqliteDb, table: string, column: string): boolean {
+  const rows = db.pragma(`table_info(${table})`)
+  if (!Array.isArray(rows)) {
+    return false
+  }
+  return rows.some((row) => (row as { name?: unknown }).name === column)
+}
+
+/**
  * Apply every migration whose `toVersion` exceeds the DB's current version, in
  * order. Called only for a pre-existing DB (a fresh one is already at
  * SCHEMA_VERSION), so the `fromVersion` guard skips migrations an upgraded DB has
  * already run — the v2 `ALTER` therefore fires exactly once per old DB (§10).
+ *
+ * `unlessColumnExists` (first used for v10) skips a migration's statements
+ * entirely when the guard column is already present — see the field's doc on
+ * {@link Migration} for why that can be true even though `fromVersion` says the
+ * migration hasn't "run" yet (the column arrived via bootstrap's `CREATE TABLE
+ * IF NOT EXISTS`, not a prior migration).
  */
 function runMigrations(db: SqliteDb, fromVersion: number): void {
   for (const migration of MIGRATIONS) {
     if (migration.toVersion > fromVersion) {
+      if (
+        migration.unlessColumnExists &&
+        columnExists(db, migration.unlessColumnExists.table, migration.unlessColumnExists.column)
+      ) {
+        continue
+      }
       for (const stmt of migration.statements) {
         db.exec(stmt)
       }

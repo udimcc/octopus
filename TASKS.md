@@ -915,3 +915,218 @@ migration or npm dependency; a drop uses the existing `issues.update` status pat
   Board (placeholder); "Delete both" from the Progress window with the board open; many Done issues (only
   that column scrolls); a long name (two-line clamp); a narrow window (horizontal scroll).
 - [ ] Manual: drag smoothness on the VDI host, no visual stalls.
+
+## Jira import — orthogonal feature (DESIGN §13.7)
+
+Goal (PRD §Issues → *Importing from Jira*): a manual, read-only fetch of Jira issues through the LiteLLM
+MCP gateway, previewed in a modal as New/Duplicate/Conflict by `jiraKey`, with the selected New rows
+imported as `source: 'jira'` Issues (§13, DESIGN §13.7). Orthogonal to Issues the same way Issues is
+orthogonal to Tasks/Sessions — no change to `Task`, `Session`, the state lattice or the aggregator.
+Implementation (Waves 1–4 of `docs/plans/jira-import_2026-10-14-plan.md`) is complete; tests (the `[ ]`
+items below, one per subject) and the Wave 5 integration test / full gate are in progress.
+
+### Domain (pure) — DESIGN §13.7
+
+- [x] `src/domain/issue.ts`: `IssueSource` enum (`Local='local'`, `Jira='jira'`) + `parseIssueSource`;
+  optional `source`/`jiraKey` on `IssueCreateProps` with read-only getters and no setters;
+  `InvariantViolationError` when either field implies the other without it; carried through
+  `fromSnapshot`/`toSnapshot`.
+- [x] `src/domain/snapshots.ts`: required `source: IssueSource` + optional `jiraKey?: string` on
+  `IssueSnapshot`.
+- [x] New `src/domain/jira-import.ts`: plain value types `JiraIssue`/`JiraSprint`/`JiraProject`/
+  `JiraClassification`/`JiraSprintFilter`; `composeJiraIssue(issue)` (name = `"KEY: Summary"`, trimmed the
+  same way `Issue.create` normalizes names; description appends a DOD section only when non-empty);
+  `classifyJiraIssue(composed, jiraKey, existingIssues)` (new/duplicate/conflict, matched on `jiraKey`
+  then exact name/description equality); `orderSprints` (dedupe by id, active→future→closed);
+  `matchesSprintFilter` (by id, or case-insensitive name substring).
+- [ ] Tests: extend `src/domain/issue.test.ts` (source defaults to local, the source/key invariant, the
+  snapshot round trip); new `src/domain/jira-import.test.ts` (compose, classify incl. edit→conflict and
+  delete→new-again, sprint ordering/matching); extend `src/domain/workspace.test.ts` (hydrated/created
+  issues default `source: 'local'`).
+
+### Shared contract — DESIGN §13.7
+
+- [x] `src/shared/dto.ts`: `IssueSourceDTO`; `source`/`jiraKey?` on `IssueDTO`; `JiraProjectDTO`/
+  `JiraSprintDTO`/`JiraSprintFilterDTO`/`JiraFiltersDTO`; `JiraIssueRowDTO`/`JiraSearchPageDTO`;
+  `JiraErrorDTO{kind: 'noKey'|'unauthorized'|'unreachable'|'gateway'|'invalid'}` + `JiraResultDTO<T>` (a
+  typed envelope, since thrown `Error` subclasses don't survive IPC); `ImportJiraIssuesInput`/
+  `ImportJiraIssuesResultDTO`/`SetJiraKeyInput`; `jira?: {lastFilters?: JiraFiltersDTO}` on
+  `SettingsDTO`/`SettingsPatchDTO` (non-secret — the key itself is never here).
+- [x] `src/shared/ipc.ts`: `CHANNELS.jiraProjects/jiraSprints/jiraSearch/jiraImport/
+  credentialsSetJiraKey/credentialsHasJiraKey`; `OctopusAPI.jira`/`.credentials` groups.
+- [x] New `src/shared/jira-key.ts`: pure `normalizeJiraIssueKey`/`isJiraIssueKey` (trim, uppercase,
+  `PROJ-123` shape), shared the same way as `external-url.ts`.
+- [ ] Test: new `src/shared/jira-key.test.ts`.
+
+### Ports — DESIGN §13.7
+
+- [x] New `src/ports/jira-issue-source.ts`: `JiraIssueSource` (`listProjects`/`listSprints`/`search`/
+  `getIssues`), `JiraSearchFilters`, `JiraSearchPage`; `JiraSourceError` with
+  `kind: 'noKey'|'unauthorized'|'unreachable'|'gateway'`.
+- [x] `src/ports/credentials-provider.ts`: its **first implementation** — keep `resolve(ref)`, add
+  `set(ref, secret: string|null)`/`has(ref)` and a `JIRA_API_KEY_REF` constant (I16).
+
+### Adapters — DESIGN §13.7
+
+- [x] New `src/adapters/jira/adf-to-markdown.ts`: pure, dependency-free ADF→Markdown (`adfToMarkdown`);
+  paragraphs/headings/lists(nested)/code blocks/hard breaks/rules; strong/em/code/link marks; unknown
+  nodes recurse into `content` else fall back to `text` else contribute nothing; output normalized
+  (trimmed, 3+ blank lines collapsed) so classification's byte-for-byte comparison is stable.
+- [x] New `test/fixtures/jira/` (captured once from the live gateway via the reference client, scrubbed
+  of emails/avatar URLs/account IDs): `search-page1/2.json`, `search-no-issues.json`,
+  `get-issue-batch.json`, `get-issue-sprints.json`, `projects.json`, `is-error.json`, `README.md`.
+- [x] New `src/adapters/jira/litellm-jira-source.ts`: `LiteLLMJiraSource implements JiraIssueSource` over
+  `POST {baseUrl}/mcp-rest/tools/call` (wire tool name carries the gateway's `jira_` alias prefix, e.g.
+  `jira_jira_search`); `parseSearchText`/`parseProjectsText`/`parseIssueDetailsText` (string-aware brace
+  scan) parse the three text-only response formats; batches `getIssues` 10 keys at a time; applies the
+  sprint filter in the app (scanning whole 50-hit pages, capped, never splitting a page across cursors);
+  maps errors to `noKey`/`unauthorized`/`unreachable`/`gateway`, never logging the key or headers.
+- [ ] Test: new `src/adapters/jira/litellm-jira-source.test.ts` against the fixtures (request shape,
+  parsing, batching, every error kind, sprint ordering/filtering/paging, the issue-key path).
+- [x] `src/adapters/env/paths.ts`: `credentialsDir` (`<dataDir>/credentials`) on `AppPaths`;
+  `ensureAppDirs` creates it mode 0700.
+- [x] New `src/adapters/credentials/safe-storage-credentials.ts`: `SafeStorageCredentials implements
+  CredentialsProvider` over an injected `safeStorage`-like object; `<dir>/<ref>.bin`, atomic write
+  (temp+rename) mode 0600, `null` secret deletes the file; every `safeStorage` call deferred to
+  method-invocation time (never touched at construction — `bootstrap()` runs before `app.whenReady()`);
+  rejects clearly when encryption is unavailable, warns once (without the key) on the Linux
+  `basic_text` backend.
+- [ ] Tests: extend `src/adapters/env/paths.test.ts` (`credentialsDir`); new
+  `src/adapters/credentials/safe-storage-credentials.test.ts` (set/has/resolve/clear, mode 0600,
+  ciphertext not plaintext, encryption-unavailable rejection, missing-key throw).
+
+### Settings (backend side) — DESIGN §13.7
+
+- [x] `src/ports/settings-store.ts`: `JiraLastFilters`/`JiraSettings{lastFilters?}`, `jira?: JiraSettings`
+  on `Settings`/`SettingsPatch` (documented non-secret).
+- [x] `src/adapters/settings/json-settings-store.ts`: `pickJira` in `mergeSettings` (known keys only,
+  `days` a positive integer, `sprint` one of the two shapes, everything else dropped;
+  `DEFAULT_SETTINGS` has no `jira` block).
+- [ ] Test: extend `json-settings-store.test.ts` (absent by default, patch round trip, malformed block
+  dropped, unrelated patch keeps `lastFilters`).
+
+### Persistence — schema v10 — DESIGN §13.7
+
+- [x] `src/adapters/persistence/schema.ts`: `SCHEMA_VERSION = 10`; bootstrap `issues` DDL gains
+  `source TEXT NOT NULL DEFAULT 'local' CHECK(source IN ('local','jira'))` and `jira_key TEXT`; a
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_jira_key ON issues(jira_key)` created unconditionally by
+  `SqliteStore.create`, strictly after bootstrap *and* migrations — not inside `SCHEMA_STATEMENTS` or the
+  v10 `Migration` — because SQLite's `ALTER TABLE ADD COLUMN` can't add a `UNIQUE` column and the point
+  where `jira_key` is guaranteed to exist differs by DB vintage (fresh/v7/v8/v9).
+- [x] Append-only `{ toVersion: 10 }` migration (`ALTER TABLE issues ADD COLUMN source ...`, `ALTER TABLE
+  issues ADD COLUMN jira_key TEXT`), guarded by a new `Migration.unlessColumnExists {table, column}`
+  (checked via `PRAGMA table_info` in `runMigrations`) — needed because a v7 DB's bootstrap already
+  creates `issues` with both columns before any migration runs, so a bare `ALTER` there would fail
+  "duplicate column". Never edit v1–v9 DDL.
+- [x] `src/adapters/persistence/mappers.ts`: `source`/`jira_key` on `IssueRow`; `rowToIssueSnapshot`
+  parses `source` via `parseIssueSource` (falls back to `local` on a corrupt value), NULL `jira_key` →
+  `undefined`.
+- [x] `src/adapters/persistence/sqlite-store.ts`: `upsertIssue` INSERT carries `source`/`jira_key`;
+  `ON CONFLICT DO UPDATE SET` deliberately omits both (`Issue` exposes no setter for either — a routine
+  re-save must never let them drift).
+- [ ] Tests: extend `mappers.test.ts` (local/jira round trips, NULL key, corrupt source falls back) and
+  `sqlite-store.test.ts` (FakeDb: v10 stamped, runs from 9, the v7-path ALTER-skip, no-op on a fresh DB,
+  upsert SQL params).
+- [x] `scripts/probe-sqlite-store.cjs`: v9→v10 and v7→v10 against the real `better-sqlite3` binary — old
+  rows become `local`/NULL `jira_key`, a duplicate `jira_key` raises `UNIQUE`, a bad `source` raises
+  `CHECK`, two NULL keys are allowed, `.bak-v9` is written.
+
+### Application — DESIGN §13.7
+
+- [x] New `src/application/queries/preview-jira-issues.ts`: `previewJiraIssues(deps, issues)` composes +
+  classifies each fetched `JiraIssue` against `deps.workspace.issues()`; a pure read that bypasses the
+  single-writer command loop entirely.
+- [x] `src/application/commands.ts`: `ImportJiraIssuesInput{issues}` + `{kind:'importJiraIssues'}` command
+  member; `importedCount?`/`skippedKeys?` on `CommandResult`; `jira?` on the application `SettingsPatch`.
+- [x] New `src/application/use-cases/import-jira-issues.ts`: re-classifies every input issue against the
+  **current** workspace (never trusts the modal's earlier preview) and additionally skips a key repeated
+  within the same batch; builds each new issue via `Issue.create({source: Jira, jiraKey, status: Todo,
+  no projectPath})`; persists all of them inside one `deps.persistence.transaction`, and only after it
+  commits touches `Workspace`/`EventBus` (mirrors `create-issue.ts`'s persist-before-mutate order, so a
+  mid-batch throw leaves memory/events untouched with no explicit rollback); returns the created count
+  and the skipped keys.
+- [x] `src/application/command-loop.ts`: routes `importJiraIssues`.
+- [ ] `src/application/use-cases/test-fakes.ts`: `FakePersistence.failUpsertIssueAt?`, a
+  `FakeJiraIssueSource`.
+- [ ] Tests: new `preview-jira-issues.test.ts` and `import-jira-issues.test.ts` (creates the right
+  issues; skips duplicates/conflicts even when requested; a repeated key in-batch is skipped; a mid-batch
+  failure leaves the workspace/events untouched; one event per created issue); extend
+  `create-issue.test.ts` (source is local) and the `IssueSnapshot` literals in `delete-task.test.ts`.
+
+### Preload bridge
+
+- [x] `src/preload/index.ts`: `jira.projects/sprints/search/import` and
+  `credentials.setJiraKey/hasJiraKey`, each via `ipcRenderer.invoke`.
+
+### Renderer — DESIGN §13.7
+
+- [x] `src/renderer/src/store/store.ts`: hydrates/reduces `IssueDTO.source`/`jiraKey` unchanged;
+  `setJiraLastFilters(filters)` patches only `settings.jira.lastFilters` (same pattern as
+  `groupTasksByRepo`'s setter); the Settings modal's open state moves into the store as renderer-local,
+  unpersisted view state (`settingsOpen`/`openSettings`/`closeSettings`), surviving `hydrate()` like the
+  drawer fields — needed so the Jira modal's error states can close themselves, then open Settings,
+  without the portaled Jira modal (which paints after `#root`) covering it.
+- [x] `src/renderer/src/test-support/stub-bridge.ts`: `jira`/`credentials` groups (`hasJiraKey` resolves
+  `false`, empty project list by default).
+- [x] New `src/renderer/src/components/JiraImportModal.tsx`: follows the shared overlay contract
+  (`.claude/rules/modals-and-overlays.md`) — portaled to `document.body` (opens from inside the Issues
+  drawer, whose `transform` would otherwise confine a `position: fixed` backdrop), `role="dialog"` +
+  `aria-modal="true"` + `tabIndex={-1}`, `onKeyDown` stops every key before handling its own Escape, no
+  blur/filter. Filters prefill from `settings.jira.lastFilters` and persist on Fetch; an Issue key
+  overrides every other filter; the Sprint dropdown loads per project (None/active/future/closed, or
+  free-text fallback with no discoverable sprints). Rows show checkbox/key/summary/Jira
+  status-type-assignee; Duplicate/Conflict rows are grayed, unselectable, labelled "Duplicated by
+  \<name\>"/"Conflicts with \<name\>". A row click opens a read-only detail pane rendered with
+  `IssueMarkdown`. Footer: Select all (New rows only), "N selected", Import. Distinct error states for no
+  key / key rejected (both with Open Settings, closing this modal first) / gateway unreachable (Retry).
+  Registered in `IssuesDrawer`'s `topmostModal()` doc-comment list.
+- [x] `src/renderer/src/components/IssuesDrawer.tsx`: a "Fetch from Jira" header button after
+  **+ New Issue** (opens `JiraImportModal`, works on both tabs); `IssueList.tsx`: a small "Jira" badge
+  (plain paint, no filter) on `source==='jira'` rows.
+- [x] `src/renderer/src/components/SettingsModal.tsx`: a "Jira API key" password field on the General
+  tab (always starts empty; placeholder "Key saved" when `hasJiraKey()` is true); Save calls
+  `credentials.setJiraKey` only when non-empty; a Clear key button calls `setJiraKey(null)`.
+- [x] `src/renderer/src/components/ProgressPanel.tsx`: the local `showSettings` state replaced by the
+  store's `settingsOpen`/`openSettings`/`closeSettings`.
+- [x] `src/renderer/src/components/IssueDetail.tsx`: a read-only "Source: Jira (KEY)"/"Source: Local"
+  line, never editable, absent from the edit form.
+- [ ] Update the `IssueDTO` literals (`source: 'local'`) across existing renderer test fixtures
+  (`App.test.tsx`, `DeleteTaskConfirm.test.tsx`, `IssuesDrawer.test.tsx`, `LinkTaskPicker.test.tsx`,
+  `NewTaskModal.test.tsx`, `TaskListItem.test.tsx`, `store/group-issues.test.ts`, `store/store.test.ts`).
+- [ ] Tests: new `JiraImportModal.test.tsx` (filters, rows, interaction, every error state, the
+  window-`keydown`-never-fires spy per `NewTaskModal.test.tsx`); extend `store.test.ts`,
+  `SettingsModal.test.tsx`, `ProgressPanel.test.tsx`, `IssueDetail.test.tsx`,
+  `IssueList.test.tsx` (badge), `IssuesDrawer.test.tsx` (the header button on both tabs; Escape inside
+  the Jira modal closes only the modal).
+
+### Main — DESIGN §13.7
+
+- [x] `src/main/dto-mappers.ts`: `toIssueDTO` carries `source`/`jiraKey`, `toSettingsDTO` carries `jira`;
+  `toJiraIssueRowDTO`/`toJiraSprintDTO`/`toJiraProjectDTO`; `toJiraErrorDTO(err)` (a `JiraSourceError`
+  maps to its kind, anything else to `gateway`, message scrubbed).
+- [x] `src/main/ipc-handlers.ts`: `jira`/`credentials` added to `IpcHandlerHooks` (the `clipboard`
+  precedent); exported pure validators `parseJiraFilters`/`parseImportKeys` (non-empty, capped, deduped,
+  every key passing `isJiraIssueKey`) reject malformed input with `JiraErrorDTO{kind:'invalid'}` before
+  any port call; `jira:projects`/`jira:sprints`/`jira:search` are queries that bypass the loop (`search`
+  calls the port, then `previewJiraIssues`, then maps to row DTOs); `jira:import` validates, calls
+  `port.getIssues(keys)` outside the loop, dispatches `importJiraIssues`, and reports keys Jira didn't
+  return as skipped; `credentials:setJiraKey`/`credentials:hasJiraKey` (the key is never logged or
+  returned — `hasJiraKey` returns only a boolean).
+- [x] `src/main/composition-root.ts`: wires `SafeStorageCredentials(safeStorage, paths.credentialsDir)`
+  and `LiteLLMJiraSource` (`fetch: globalThis.fetch`, the gateway base URL/server id, a `getApiKey`
+  resolving `JIRA_API_KEY_REF`) into the IPC handlers — the only place either adapter is imported.
+- [ ] Tests: extend `dto-mappers.test.ts` (source/jiraKey, settings.jira, each row DTO classification,
+  error mapping) and `ipc-handlers.test.ts` (bad filters/keys rejected before any port call, the
+  issue-key path, import fetches then dispatches, `hasJiraKey` never leaks the value, port errors map to
+  the right `JiraResultDTO` kinds).
+
+### Jira import Testing — DESIGN §13.7
+
+- [ ] New `test/integration/jira-import.integration.test.ts`: a real `CommandLoop` over `makeDeps()` plus
+  a fixture-serving `LiteLLMJiraSource` — search → preview (all New) → import; `Workspace.hydrate(load())`
+  stands in for a reload, re-search shows Duplicate; `updateIssue` renames it → Conflict; `deleteIssue` →
+  New again.
+- [ ] Full gate: `npm run typecheck && npm run lint && npm run test && npm run format:check`, including
+  the boundaries rule (no `adapters` import outside `composition-root.ts`, no `ports` import in the
+  renderer, `domain` imports nothing) — plus a manual smoke test against the live gateway: no key → Open
+  Settings → save key → fetch a project → sprint dropdown → import → badge → re-fetch shows Duplicate.

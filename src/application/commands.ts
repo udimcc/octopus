@@ -13,8 +13,9 @@ import type { TaskId, SessionId, TypeId, WindowId, IssueId, GroupId } from '../d
 import type { SessionConfig } from '../domain/session-config'
 import type { SessionState } from '../domain/state'
 import type { IssueStatus } from '../domain/issue'
+import type { JiraIssue } from '../domain/jira-import'
 import type { StateChangeMeta } from '../ports/session-runtime'
-import type { ProjectSettings } from '../ports/settings-store'
+import type { ProjectSettings, JiraSettings } from '../ports/settings-store'
 import type { SplitDirection, GroupPath } from '../domain/group-tree'
 
 /** Provision a brand-new worktree (New-Task modal "From New Worktree", §5.4). */
@@ -217,6 +218,13 @@ export interface SettingsPatch {
   readonly worktreeCreateTimeoutMs?: number
   readonly groupTasksByRepo?: boolean
   readonly issuesKey?: string
+  /**
+   * See the port's `Settings.jira`/`SettingsPatch.jira` (DESIGN "Jira import").
+   * Structurally the port's `Partial<JiraSettings>` — the type is imported
+   * rather than re-declared since both are transport-agnostic application-layer
+   * shapes (same reasoning as `ProjectSettings` above).
+   */
+  readonly jira?: Partial<JiraSettings>
 }
 
 /** A session's runtime died spontaneously (§6.1). Routed back through the loop. */
@@ -364,6 +372,18 @@ export interface UnbindIssueInput {
 }
 
 /**
+ * Import selected Jira issues as local issues (Jira Import modal "Import",
+ * DESIGN "Jira import"). `issues` are the already-FETCHED `JiraIssue`s the
+ * user checked — `main` fetches them beforehand via `JiraIssueSource`; the
+ * command loop never calls out to the gateway itself (§6.6 "single-writer
+ * domain" stays I/O-light, mirroring how `createTask` is handed an already-
+ * resolved `repoDir`/branches rather than resolving them itself).
+ */
+export interface ImportJiraIssuesInput {
+  readonly issues: readonly JiraIssue[]
+}
+
+/**
  * The command union. Discriminated on `kind`; the loop's `switch` is exhaustive.
  * `ingestSessionState` is present but never dispatched in V1 (§10).
  */
@@ -404,6 +424,7 @@ export type Command =
   | { readonly kind: 'deleteIssue'; readonly input: DeleteIssueInput }
   | { readonly kind: 'bindIssue'; readonly input: BindIssueInput }
   | { readonly kind: 'unbindIssue'; readonly input: UnbindIssueInput }
+  | { readonly kind: 'importJiraIssues'; readonly input: ImportJiraIssuesInput }
 
 /**
  * Result of a command. `ok=false` + `needsDirtyConfirm` is the delete-task dirty
@@ -423,4 +444,12 @@ export interface CommandResult {
   readonly project?: ProjectSettings
   /** The id of an issue just created by `createIssue` ("Issues", §13.3). */
   readonly issueId?: IssueId
+  /** How many issues `importJiraIssues` actually created (DESIGN "Jira import"). */
+  readonly importedCount?: number
+  /**
+   * Keys from `importJiraIssues`'s input that were NOT imported — a duplicate
+   * key within the same batch, or one that classified as `duplicate`/`conflict`
+   * against the workspace. The modal uses this to report skips to the user.
+   */
+  readonly skippedKeys?: readonly string[]
 }

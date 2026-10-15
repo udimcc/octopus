@@ -16,6 +16,7 @@ function issue(id: string, over: Partial<IssueDTO> = {}): IssueDTO {
     status: 'todo',
     createdAt: 1000,
     updatedAt: 1000,
+    source: 'local',
     ...over
   }
 }
@@ -204,6 +205,34 @@ describe('<IssuesDrawer>', () => {
     } finally {
       otherModal.remove()
     }
+  })
+
+  it('Escape closes a real nested dialog (Jira import) instead of the drawer, since the dialog owns focus and its own handler stops the event first', async () => {
+    seed()
+    render(<IssuesDrawer onCreateTaskFromIssue={vi.fn()} onDeleteBoundTask={vi.fn()} />)
+    act(() => useStore.getState().toggleIssuesDrawer())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fetch from Jira' }))
+    const modal = screen.getByRole('dialog', { name: 'Import from Jira' })
+    // Settle the modal's own hasJiraKey() check before Escape, so its state update
+    // can't land after it unmounts below.
+    await waitFor(() => expect(screen.getByText('No Jira API key set.')).toBeInTheDocument())
+    expect(document.activeElement).toBe(modal) // autofocused on open, per the overlay contract
+
+    fireEvent.keyDown(modal, { key: 'Escape' })
+    expect(screen.queryByRole('dialog', { name: 'Import from Jira' })).not.toBeInTheDocument()
+    expect(useStore.getState().issuesDrawerOpen).toBe(true)
+  })
+
+  it('"Fetch from Jira" sits in the drawer header and opens the import modal on the Board tab too', async () => {
+    seed()
+    render(<IssuesDrawer onCreateTaskFromIssue={vi.fn()} onDeleteBoundTask={vi.fn()} />)
+    act(() => useStore.getState().toggleIssuesDrawer())
+    fireEvent.click(screen.getByRole('tab', { name: 'Board' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fetch from Jira' }))
+    expect(screen.getByRole('dialog', { name: 'Import from Jira' })).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText('No Jira API key set.')).toBeInTheDocument())
   })
 
   it('translates on/off screen via the transform style when toggled', () => {

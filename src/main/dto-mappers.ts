@@ -29,7 +29,12 @@ import type {
   SessionConfigDTO,
   IssueDTO,
   GroupDTO,
-  SplitNode
+  SplitNode,
+  JiraProjectDTO,
+  JiraSprintDTO,
+  JiraIssueRowDTO,
+  JiraClassificationDTO,
+  JiraErrorDTO
 } from '../shared/dto'
 import type { EventDTO } from '../shared/events'
 import type {
@@ -45,6 +50,9 @@ import type { Settings } from '../ports/settings-store'
 import type { WindowRecord } from '../ports/workspace-persistence'
 import type { AppStateView, SessionTypeView } from '../application/queries/get-state'
 import type { SessionConfig } from '../domain/session-config'
+import type { JiraProject, JiraSprint, JiraClassification } from '../domain/jira-import'
+import type { JiraIssuePreview } from '../application/queries/preview-jira-issues'
+import { JiraSourceError } from '../ports/jira-issue-source'
 
 // ── Outbound: domain snapshot → wire DTO ────────────────────────────────────────
 
@@ -130,7 +138,12 @@ export function toTaskDTO(t: TaskSnapshot): TaskDTO {
   }
 }
 
-/** Map an `IssueSnapshot` to its wire DTO ("Issues", §13.4). Enum values are the DTO strings. */
+/**
+ * Map an `IssueSnapshot` to its wire DTO ("Issues", §13.4). Enum values are the DTO
+ * strings. `source`/`jiraKey` carry the issue's Jira-import provenance (DESIGN
+ * "Jira import") straight across — `IssueSource` enum values are exactly the
+ * `IssueSourceDTO` strings, and `jiraKey` is `undefined` for a `local` issue.
+ */
 export function toIssueDTO(i: IssueSnapshot): IssueDTO {
   return {
     id: i.id,
@@ -140,7 +153,9 @@ export function toIssueDTO(i: IssueSnapshot): IssueDTO {
     status: i.status,
     taskId: i.taskId,
     createdAt: i.createdAt,
-    updatedAt: i.updatedAt
+    updatedAt: i.updatedAt,
+    source: i.source,
+    jiraKey: i.jiraKey
   }
 }
 
@@ -181,8 +196,93 @@ export function toSettingsDTO(s: Settings): SettingsDTO {
     focusPaneLeftKey: s.focusPaneLeftKey,
     focusPaneRightKey: s.focusPaneRightKey,
     focusPaneUpKey: s.focusPaneUpKey,
-    focusPaneDownKey: s.focusPaneDownKey
+    focusPaneDownKey: s.focusPaneDownKey,
+    // `JiraSettings`/`JiraLastFilters` (ports/settings-store.ts) are structurally
+    // identical to the DTO's `jira`/`JiraFiltersDTO` shape, so this is a straight
+    // passthrough, not a translation (DESIGN "Jira import"). Never carries the API
+    // key (I16) — that lives only in `CredentialsProvider`.
+    jira: s.jira
   }
+}
+
+// ── Jira import (DESIGN "Jira import") ──────────────────────────────────────────
+
+/** A Jira project, as listed by the gateway's project tool. Plain passthrough — the
+ * domain and wire shapes are identical ({key, ticketCount}). */
+export function toJiraProjectDTO(p: JiraProject): JiraProjectDTO {
+  return { key: p.key, ticketCount: p.ticketCount }
+}
+
+/** A Jira sprint. Plain passthrough — the domain and wire shapes are identical
+ * ({id, name, state}). */
+export function toJiraSprintDTO(s: JiraSprint): JiraSprintDTO {
+  return { id: s.id, name: s.name, state: s.state }
+}
+
+/** Re-brand a domain `JiraClassification` to its wire DTO — same discriminant and
+ * fields, only `IssueId` widens to `string`. */
+function toJiraClassificationDTO(c: JiraClassification): JiraClassificationDTO {
+  if (c.kind === 'new') {
+    return { kind: 'new' }
+  }
+  return { kind: c.kind, issueId: c.issueId, issueName: c.issueName }
+}
+
+/**
+ * One row of a Jira search result page (`jira:search`), already classified against
+ * the workspace by `previewJiraIssues`. The row carries the RAW fetched issue's
+ * fields (not `preview.composed`) — `descriptionMarkdown`/`dodMarkdown` are shown
+ * separately in the modal, same as `JiraIssue`; only `classification` comes from
+ * the preview.
+ */
+export function toJiraIssueRowDTO(preview: JiraIssuePreview): JiraIssueRowDTO {
+  const { issue, classification } = preview
+  return {
+    key: issue.key,
+    summary: issue.summary,
+    status: issue.status,
+    priority: issue.priority,
+    type: issue.type,
+    assignee: issue.assignee,
+    reporter: issue.reporter,
+    created: issue.created,
+    sprintNames: issue.sprints.map((sprint) => sprint.name),
+    descriptionMarkdown: issue.descriptionMarkdown,
+    dodMarkdown: issue.dodMarkdown,
+    classification: toJiraClassificationDTO(classification)
+  }
+}
+
+/** Mirrors `LiteLLMJiraSource`'s own cap (I1) — kept independent rather than
+ * imported so this defensive re-cap doesn't depend on the adapter's constant
+ * ever staying in sync; `main` is the only layer both can be reached from. */
+const MAX_JIRA_ERROR_MESSAGE_LENGTH = 300
+
+function cap(text: string): string {
+  const trimmed = text.trim()
+  return trimmed.length > MAX_JIRA_ERROR_MESSAGE_LENGTH
+    ? `${trimmed.slice(0, MAX_JIRA_ERROR_MESSAGE_LENGTH)}…`
+    : trimmed
+}
+
+/**
+ * Map a thrown error from a `JiraIssueSource` call to the wire `JiraErrorDTO`
+ * (DESIGN "Jira import"). A `JiraSourceError`'s `kind`/`message` carry across —
+ * the adapter (`LiteLLMJiraSource`) already caps its messages and never includes
+ * the API key, `Authorization` header, or an underlying error's raw message
+ * (I1). This mapper re-caps `message` anyway as defense in depth: this is the
+ * last place before the renderer sees the string, and a future adapter bug that
+ * forgets to cap should still not be able to leak an arbitrarily long message
+ * over IPC. Anything that ISN'T a `JiraSourceError` (a bug, an unexpected throw)
+ * is NOT echoed to the renderer at all: its message could carry arbitrary text
+ * (header dumps, stack fragments), so it maps to a fixed, generic `'gateway'`
+ * message instead of `String(err)`.
+ */
+export function toJiraErrorDTO(err: unknown): JiraErrorDTO {
+  if (err instanceof JiraSourceError) {
+    return { kind: err.kind, message: cap(err.message) }
+  }
+  return { kind: 'gateway', message: 'an unexpected error occurred contacting the Jira gateway' }
 }
 
 export function toWorkspaceStateDTO(view: AppStateView): WorkspaceStateDTO {

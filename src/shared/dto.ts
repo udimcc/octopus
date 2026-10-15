@@ -160,6 +160,14 @@ export interface SettingsDTO {
   readonly focusPaneRightKey?: string
   readonly focusPaneUpKey?: string
   readonly focusPaneDownKey?: string
+  /**
+   * The Jira Import modal's last-used filters, prefilled on reopen (DESIGN §13.7).
+   * Non-secret — the API key itself is NEVER stored here (it lives only in
+   * `CredentialsProvider`, encrypted at rest).
+   */
+  readonly jira?: {
+    readonly lastFilters?: JiraFiltersDTO
+  }
 }
 
 /** A deep-partial settings patch (nested objects merged, not replaced). */
@@ -193,6 +201,10 @@ export interface SettingsPatchDTO {
   readonly focusPaneRightKey?: string
   readonly focusPaneUpKey?: string
   readonly focusPaneDownKey?: string
+  /** Same shape as {@link SettingsDTO.jira}; merged, not replaced. Never the API key. */
+  readonly jira?: {
+    readonly lastFilters?: JiraFiltersDTO
+  }
 }
 
 /** Full workspace snapshot for renderer hydration on startup (§5.2). */
@@ -308,12 +320,17 @@ export interface ProjectWorktreeDTO {
 /** An issue's workflow status on the wire (mirror of the domain `IssueStatus` enum). */
 export type IssueStatusDTO = 'todo' | 'in_progress' | 'in_review' | 'done'
 
+/** An issue's provenance on the wire (mirror of the domain `IssueSource` enum). */
+export type IssueSourceDTO = 'local' | 'jira'
+
 /**
  * A locally-tracked issue, optionally bound 1:1 to a task (`taskId`). The binding is
  * stored only on the issue (invariant I19); a task looks its issue up in reverse via
  * the renderer store's `issueForTask` selector. `description` is markdown, rendered by
  * `IssueMarkdown`. `projectPath` is `undefined` when the issue has no project, or when
  * its project was removed (`removeProject` clears it, leaving the issue itself intact).
+ * `source` is read-only and never editable by the user; `jiraKey` is present only when
+ * `source==='jira'` (Jira import, DESIGN §13.7).
  */
 export interface IssueDTO {
   readonly id: string
@@ -324,6 +341,122 @@ export interface IssueDTO {
   readonly taskId?: string
   readonly createdAt: number
   readonly updatedAt: number
+  readonly source: IssueSourceDTO
+  readonly jiraKey?: string
+}
+
+// ── Jira import (DESIGN §13.7) ─────────────────────────────────────────────────
+
+/** A Jira project, as listed by the gateway's project tool. */
+export interface JiraProjectDTO {
+  readonly key: string
+  readonly ticketCount: number
+}
+
+/** A Jira sprint (there is no sprint tool; sprints are discovered from issue search hits). */
+export interface JiraSprintDTO {
+  readonly id: number
+  readonly name: string
+  readonly state: 'active' | 'future' | 'closed'
+}
+
+/**
+ * The sprint filter in the Jira Import modal: either a known sprint picked from the
+ * dropdown (`id`, with `name` carried along for display), or free text matched as a
+ * case-insensitive substring when a project has no discoverable sprints.
+ */
+export type JiraSprintFilterDTO =
+  | { readonly kind: 'id'; readonly id: number; readonly name: string }
+  | { readonly kind: 'name'; readonly text: string }
+
+/** Search filters for the Jira Import modal; also persisted as `settings.jira.lastFilters`. */
+export interface JiraFiltersDTO {
+  readonly project?: string
+  readonly assignee?: string
+  readonly issueKey?: string
+  readonly days?: number
+  readonly sprint?: JiraSprintFilterDTO
+}
+
+/**
+ * How a fetched Jira issue compares to existing Octopus issues, by `jiraKey` then by
+ * exact name/description match (mirror of the domain `JiraClassification`). `'new'`
+ * carries nothing further; `'duplicate'`/`'conflict'` name the matched Octopus issue.
+ */
+export type JiraClassificationDTO =
+  | { readonly kind: 'new' }
+  | {
+      readonly kind: 'duplicate' | 'conflict'
+      readonly issueId: string
+      readonly issueName: string
+    }
+
+/** One row of a Jira search result page, already classified against the workspace. */
+export interface JiraIssueRowDTO {
+  readonly key: string
+  readonly summary: string
+  readonly status: string
+  readonly priority: string
+  readonly type: string
+  readonly assignee?: string
+  readonly reporter?: string
+  readonly created: string
+  readonly sprintNames: readonly string[]
+  readonly descriptionMarkdown: string
+  readonly dodMarkdown: string
+  readonly classification: JiraClassificationDTO
+}
+
+/** One page of a Jira search; `nextCursor` is absent on the last page. */
+export interface JiraSearchPageDTO {
+  readonly rows: readonly JiraIssueRowDTO[]
+  readonly nextCursor?: string
+  /**
+   * The gateway's reported total match count for the filters, UNFILTERED by
+   * `sprint` — passed through from the port's `JiraSearchPage.total` as-is even
+   * when a sprint filter narrowed `rows` to fewer matches than this (the gateway
+   * has no sprint filter of its own; the adapter filters client-side after
+   * fetching).
+   */
+  readonly total: number
+}
+
+/**
+ * A Jira-side error, carried as a value rather than thrown so its `kind` survives IPC
+ * serialization (a thrown `Error` subclass loses its prototype across the bridge).
+ * Mirror of the port's `JiraSourceError` kinds, plus `'invalid'` for input rejected
+ * before any port call (`main/ipc-handlers.ts`'s validators).
+ */
+export interface JiraErrorDTO {
+  readonly kind: 'noKey' | 'unauthorized' | 'unreachable' | 'gateway' | 'invalid'
+  readonly message: string
+}
+
+/** Result envelope for the Jira queries, carrying `JiraErrorDTO` on failure. */
+export type JiraResultDTO<T> =
+  { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: JiraErrorDTO }
+
+/** Import the given Jira keys as new Octopus issues (Jira Import modal, "Import"). */
+export interface ImportJiraIssuesInput {
+  readonly keys: readonly string[]
+}
+
+/**
+ * Result of `jira.import`. `importedCount` is how many issues were actually created;
+ * `skippedKeys` lists keys not imported (already a Duplicate/Conflict by the time the
+ * command loop re-classified, or a key Jira didn't return). `error` is set only when
+ * the whole import failed before any issue was created.
+ */
+export interface ImportJiraIssuesResultDTO {
+  readonly ok: boolean
+  readonly importedCount: number
+  readonly skippedKeys: readonly string[]
+  readonly error?: JiraErrorDTO
+}
+
+/** Set (or, with `null`, clear) the Jira API key (Settings, "Jira API key"). */
+export interface SetJiraKeyInput {
+  readonly key: string | null
 }
 
 // ── Issue command inputs (UI → backend) ───────────────────────────────────────

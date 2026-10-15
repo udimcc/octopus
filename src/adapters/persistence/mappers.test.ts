@@ -15,7 +15,7 @@ import {
 import { asTaskId, asSessionId, asTypeId, asWindowId, asIssueId, asGroupId } from '../../domain/ids'
 import { TaskState, SessionState } from '../../domain/state'
 import { TaskLifecycle, SessionLifecycle } from '../../domain/lifecycle'
-import { IssueStatus } from '../../domain/issue'
+import { IssueStatus, IssueSource } from '../../domain/issue'
 import type {
   TaskSnapshot,
   SessionSnapshot,
@@ -454,12 +454,13 @@ function issueSnapshot(over: Partial<IssueSnapshot> = {}): IssueSnapshot {
     taskId: asTaskId('t1'),
     createdAt: 10,
     updatedAt: 20,
+    source: IssueSource.Local,
     ...over
   }
 }
 
-describe('issueToRow / rowToIssueSnapshot (I19, v8)', () => {
-  it('round-trips a fully-populated issue', () => {
+describe('issueToRow / rowToIssueSnapshot (I19, v8; source/jira_key, v10)', () => {
+  it('round-trips a fully-populated local issue', () => {
     const row = issueToRow(issueSnapshot())
     expect(row).toEqual({
       id: 'i1',
@@ -469,10 +470,21 @@ describe('issueToRow / rowToIssueSnapshot (I19, v8)', () => {
       status: 'in_progress',
       task_id: 't1',
       created_at: 10,
-      updated_at: 20
+      updated_at: 20,
+      source: 'local',
+      jira_key: null
     })
     const restored = rowToIssueSnapshot(row)
     expect(restored).toEqual(issueSnapshot())
+  })
+
+  it('round-trips a jira issue, keeping the jira_key', () => {
+    const original = issueSnapshot({ source: IssueSource.Jira, jiraKey: 'PROJ-123' })
+    const row = issueToRow(original)
+    expect(row.source).toBe('jira')
+    expect(row.jira_key).toBe('PROJ-123')
+    const restored = rowToIssueSnapshot(row)
+    expect(restored).toEqual(original)
   })
 
   it('round-trips a null project and null task as undefined', () => {
@@ -486,6 +498,12 @@ describe('issueToRow / rowToIssueSnapshot (I19, v8)', () => {
     expect(restored).toEqual(original)
   })
 
+  it('maps a NULL jira_key to undefined', () => {
+    const row = issueToRow(issueSnapshot())
+    expect(row.jira_key).toBeNull()
+    expect(rowToIssueSnapshot(row).jiraKey).toBeUndefined()
+  })
+
   it('falls back to Todo for a corrupt/unrecognized status string', () => {
     const row: IssueRow = {
       id: 'i1',
@@ -495,9 +513,27 @@ describe('issueToRow / rowToIssueSnapshot (I19, v8)', () => {
       status: 'bogus-not-a-real-status',
       task_id: null,
       created_at: 1,
-      updated_at: 1
+      updated_at: 1,
+      source: 'local',
+      jira_key: null
     }
     expect(rowToIssueSnapshot(row).status).toBe(IssueStatus.Todo)
+  })
+
+  it('falls back to local for a corrupt/unrecognized source string', () => {
+    const row: IssueRow = {
+      id: 'i1',
+      name: 'issue',
+      description: '',
+      project_path: null,
+      status: 'todo',
+      task_id: null,
+      created_at: 1,
+      updated_at: 1,
+      source: 'bogus-not-a-real-source',
+      jira_key: null
+    }
+    expect(rowToIssueSnapshot(row).source).toBe(IssueSource.Local)
   })
 })
 

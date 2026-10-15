@@ -49,6 +49,21 @@ function fakeLoop(result: CommandResult = { ok: true }): {
 
 const fakeClipboard: Clipboard = { readText: () => '', writeText: () => {} }
 
+const fakeJira: IpcHandlerHooks['jira'] = {
+  listProjects: async () => [],
+  listSprints: async () => [],
+  search: async () => ({ issues: [], total: 0 }),
+  getIssues: async () => []
+}
+
+const fakeCredentials: IpcHandlerHooks['credentials'] = {
+  resolve: async () => {
+    throw new Error('no credential')
+  },
+  set: async () => {},
+  has: async () => false
+}
+
 function setup(result?: CommandResult) {
   handlers.clear()
   listeners.clear()
@@ -56,7 +71,9 @@ function setup(result?: CommandResult) {
   const { loop, dispatched } = fakeLoop(result)
   const hooks: IpcHandlerHooks = {
     windowIds: new Map([[1, MAIN_WINDOW_ID]]),
-    clipboard: fakeClipboard
+    clipboard: fakeClipboard,
+    jira: fakeJira,
+    credentials: fakeCredentials
   }
   registerIpcHandlers(loop, fd.deps, hooks)
   return { fd, dispatched, hooks }
@@ -406,7 +423,9 @@ describe('registerIpcHandlers — app:getState initialMark one-shot (DESIGN §3.
     } as unknown as CommandLoop
     const hooks: IpcHandlerHooks = {
       windowIds: new Map([[1, MAIN_WINDOW_ID]]),
-      clipboard: fakeClipboard
+      clipboard: fakeClipboard,
+      jira: fakeJira,
+      credentials: fakeCredentials
     }
     registerIpcHandlers(loop, fd.deps, hooks)
 

@@ -143,6 +143,35 @@ describe('<ProgressPanel>', () => {
     expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument()
   })
 
+  it('the gear opens Settings through the store (settingsOpen), not local state', () => {
+    seed([task('t1', { name: 'Alpha' })])
+    render(<ProgressPanel onNewTask={vi.fn()} />)
+    expect(useStore.getState().settingsOpen).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: 'settings' }))
+
+    expect(useStore.getState().settingsOpen).toBe(true)
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument()
+  })
+
+  it('Settings opened directly via the store (not the gear) still renders, and closing clears the store flag', () => {
+    seed([task('t1', { name: 'Alpha' })])
+    render(<ProgressPanel onNewTask={vi.fn()} />)
+    expect(screen.queryByRole('dialog', { name: 'Settings' })).not.toBeInTheDocument()
+
+    // Something else (e.g. the Jira Import modal) can open Settings through the
+    // store without ever touching the gear button.
+    act(() => {
+      useStore.getState().openSettings()
+    })
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    expect(useStore.getState().settingsOpen).toBe(false)
+    expect(screen.queryByRole('dialog', { name: 'Settings' })).not.toBeInTheDocument()
+  })
+
   it('renders a repo header per group when grouping is on', () => {
     seed(
       [

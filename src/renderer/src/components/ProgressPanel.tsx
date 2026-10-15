@@ -5,7 +5,10 @@
  *  - The task list: a dnd-kit vertical `SortableContext` of `TaskListItem`s. A drop
  *    dispatches `tasks.reorder({ taskId, toIndex })`; the store reconciles from the
  *    `taskReordered` event (never optimistically, §5.2).
- *  - The modals it launches: `NewTaskModal`, `DeleteTaskConfirm`, `SettingsModal`.
+ *  - The modals it launches: `NewTaskModal`, `DeleteTaskConfirm`, `SettingsModal`. `SettingsModal`
+ *    mounts here but its open/closed state lives in the store (`settingsOpen`/`openSettings`/
+ *    `closeSettings`), not a local `useState`, so other UI (e.g. the Jira Import modal) can open
+ *    Settings too — this is the only mount of `SettingsModal` in the app.
  *
  * Each row leads with its aggregate status icon (§5.4, §9): a `taskDisplayState`
  * roll-up (§3.4/§9.5, folding session state + ready-for-review) is derived per task
@@ -43,6 +46,9 @@ export function ProgressPanel({ onNewTask }: ProgressPanelProps): React.JSX.Elem
   const setGroupTasksByRepo = useStore((s) => s.setGroupTasksByRepo)
   const issuesDrawerOpen = useStore((s) => s.issuesDrawerOpen)
   const toggleIssuesDrawer = useStore((s) => s.toggleIssuesDrawer)
+  const settingsOpen = useStore((s) => s.settingsOpen)
+  const openSettings = useStore((s) => s.openSettings)
+  const closeSettings = useStore((s) => s.closeSettings)
   // Subscribe to every input `taskDisplayState` folds in so the rollup re-renders when
   // any of them change (§9.5/§9): the finished-unseen map and session states (raise/
   // clear + plain state flips), PLUS the on-screen inputs (window focus + active tab),
@@ -60,7 +66,6 @@ export function ProgressPanel({ onNewTask }: ProgressPanelProps): React.JSX.Elem
   const groups = useMemo(() => groupTasksByRepo(taskOrder, tasks), [taskOrder, tasks])
 
   const [deleteTaskId, setDeleteTaskId] = useState<string | null>(null)
-  const [showSettings, setShowSettings] = useState(false)
   // The release/semver version (§10), shown in the title. Static + display-only, so
   // it lives here rather than in the event-projected store (whose `version` is the
   // unrelated feature-set integer). Fetched once; null until it resolves.
@@ -125,12 +130,7 @@ export function ProgressPanel({ onNewTask }: ProgressPanelProps): React.JSX.Elem
         >
           Octopus{version ? ` - ${version}` : ''}
         </h1>
-        <button
-          type="button"
-          className="icon-button"
-          aria-label="settings"
-          onClick={() => setShowSettings(true)}
-        >
+        <button type="button" className="icon-button" aria-label="settings" onClick={openSettings}>
           ⚙
         </button>
       </div>
@@ -265,7 +265,7 @@ export function ProgressPanel({ onNewTask }: ProgressPanelProps): React.JSX.Elem
       {deleteTaskId && tasks[deleteTaskId] ? (
         <DeleteTaskConfirm taskId={deleteTaskId} onClose={() => setDeleteTaskId(null)} />
       ) : null}
-      {showSettings ? <SettingsModal onClose={() => setShowSettings(false)} /> : null}
+      {settingsOpen ? <SettingsModal onClose={closeSettings} /> : null}
     </aside>
   )
 }

@@ -14,7 +14,7 @@ import type { SessionState, TaskState } from './state'
 import type { TaskLifecycle, SessionLifecycle } from './lifecycle'
 import type { SessionConfig } from './session-config'
 import type { ScriptInvocationMeta } from './worktree-ref'
-import type { IssueStatus } from './issue'
+import type { IssueStatus, IssueSource } from './issue'
 import type { GroupTree } from './group-tree'
 
 export interface WorktreeRefSnapshot {
@@ -101,6 +101,11 @@ export interface IssueSnapshot {
   readonly taskId?: TaskId
   readonly createdAt: number
   readonly updatedAt: number
+  /** Where this issue came from (Jira import feature). Required so every
+   * snapshot states it explicitly; pre-feature callers must pass `Local`. */
+  readonly source: IssueSource
+  /** The Jira key this issue was imported under. Present iff `source` is `jira`. */
+  readonly jiraKey?: string
 }
 
 export interface WorkspaceSnapshot {

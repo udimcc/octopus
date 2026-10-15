@@ -13,7 +13,7 @@ import type {
   IssueSnapshot,
   GroupSnapshot
 } from '../../domain/snapshots'
-import { IssueStatus } from '../../domain/issue'
+import { IssueStatus, IssueSource } from '../../domain/issue'
 
 /** Collapse all whitespace runs to a single space, for whitespace-tolerant DDL comparison. */
 function normalizeDdl(sql: string): string {
@@ -135,6 +135,7 @@ function issueSnapshot(over: Partial<IssueSnapshot> = {}): IssueSnapshot {
     taskId: asTaskId('t1'),
     createdAt: 10,
     updatedAt: 10,
+    source: IssueSource.Local,
     ...over
   }
 }
@@ -178,7 +179,7 @@ describe('SqliteStore.create (§6.3)', () => {
     const db = new FakeDb()
     SqliteStore.create(db)
     expect(db.execed.some((s) => s.includes('ADD COLUMN base_ref'))).toBe(false)
-    expect(db.pragmas).toContain('user_version = 9')
+    expect(db.pragmas).toContain('user_version = 10')
   })
 
   it('runs the pending migrations on a pre-existing older DB (base_ref + session_scrollback)', () => {
@@ -188,7 +189,7 @@ describe('SqliteStore.create (§6.3)', () => {
     db.stub('sqlite_master', [{ name: 'tasks' }])
     SqliteStore.create(db)
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN base_ref'))).toBe(true)
-    expect(db.pragmas).toContain('user_version = 9')
+    expect(db.pragmas).toContain('user_version = 10')
   })
 
   it('runs ONLY the v3 migration on a v2 DB (skips the already-applied v2 ALTER)', () => {
@@ -205,7 +206,7 @@ describe('SqliteStore.create (§6.3)', () => {
     expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS session_scrollback'))).toBe(
       true
     )
-    expect(db.pragmas).toContain('user_version = 9')
+    expect(db.pragmas).toContain('user_version = 10')
   })
 
   it('runs ONLY the v4 migration on a v3 DB (adds window_id + windows, seeds main)', () => {
@@ -222,7 +223,7 @@ describe('SqliteStore.create (§6.3)', () => {
     )
     expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS windows'))).toBe(true)
     expect(db.execed.some((s) => s.includes('INSERT OR IGNORE INTO windows'))).toBe(true)
-    expect(db.pragmas).toContain('user_version = 9')
+    expect(db.pragmas).toContain('user_version = 10')
   })
 
   it('runs the v5 + v6 + v7 + v8 + v9 migrations on a v4 DB (managed + back-fill, last_cwd, repo_less, issues, session_groups)', () => {
@@ -246,7 +247,7 @@ describe('SqliteStore.create (§6.3)', () => {
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN repo_less'))).toBe(true)
     // Bootstrap + v8 + v9's healing re-run, all IF NOT EXISTS.
     expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues')).length).toBe(3)
-    expect(db.pragmas).toContain('user_version = 9')
+    expect(db.pragmas).toContain('user_version = 10')
   })
 
   it('runs the v6 + v7 + v8 + v9 migrations on a v5 DB (last_cwd, repo_less, issues, session_groups)', () => {
@@ -263,7 +264,7 @@ describe('SqliteStore.create (§6.3)', () => {
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN repo_less'))).toBe(true)
     // Bootstrap + v8 + v9's healing re-run, all IF NOT EXISTS.
     expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues')).length).toBe(3)
-    expect(db.pragmas).toContain('user_version = 9')
+    expect(db.pragmas).toContain('user_version = 10')
   })
 
   it('runs the v7 + v8 + v9 migrations on a v6 DB (adds repo_less, issues, session_groups)', () => {
@@ -280,7 +281,7 @@ describe('SqliteStore.create (§6.3)', () => {
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN repo_less'))).toBe(true)
     // Bootstrap + v8 + v9's healing re-run, all IF NOT EXISTS.
     expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues')).length).toBe(3)
-    expect(db.pragmas).toContain('user_version = 9')
+    expect(db.pragmas).toContain('user_version = 10')
   })
 
   it('throws IncompatibleDbError on a DB newer than this binary, without touching it', () => {
@@ -290,7 +291,7 @@ describe('SqliteStore.create (§6.3)', () => {
     // silently downgraded and the next upgrade would re-run an applied migration.
     const db = new FakeDb()
     db.stub('sqlite_master', [{ name: 'tasks' }])
-    db.stubPragma('user_version', [{ user_version: 10 }])
+    db.stubPragma('user_version', [{ user_version: 11 }])
     expect(() => SqliteStore.create(db)).toThrow(IncompatibleDbError)
     // No schema statements ran and the version was NOT lowered.
     expect(db.execed.some((s) => s.includes('CREATE TABLE'))).toBe(false)
@@ -302,7 +303,7 @@ describe('SqliteStore.create (§6.3)', () => {
     // though fromVersion (0) < SCHEMA_VERSION; it bootstraps and stamps to current.
     const db = new FakeDb()
     expect(() => SqliteStore.create(db)).not.toThrow()
-    expect(db.pragmas).toContain('user_version = 9')
+    expect(db.pragmas).toContain('user_version = 10')
   })
 
   it('invokes beforeMigrate with fromVersion on an upgrade, but not on fresh/current DBs', () => {
@@ -324,7 +325,7 @@ describe('SqliteStore.create (§6.3)', () => {
     // Already-current DB: nothing to migrate, so no backup.
     const current = new FakeDb()
     current.stub('sqlite_master', [{ name: 'tasks' }])
-    current.stubPragma('user_version', [{ user_version: 9 }])
+    current.stubPragma('user_version', [{ user_version: 10 }])
     const onCurrent = vi.fn()
     SqliteStore.create(current, onCurrent)
     expect(onCurrent).not.toHaveBeenCalled()
@@ -360,7 +361,7 @@ describe('SqliteStore.create (§6.3)', () => {
     )
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN repo_less'))).toBe(false)
     expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues')).length).toBe(3)
-    expect(db.pragmas).toContain('user_version = 9')
+    expect(db.pragmas).toContain('user_version = 10')
   })
 })
 
@@ -429,7 +430,9 @@ describe('SqliteStore.load (§6.3)', () => {
       status: 'in_progress',
       task_id: 't1',
       created_at: 20,
-      updated_at: 30
+      updated_at: 30,
+      source: 'local',
+      jira_key: null
     }
     const unboundRow: IssueRow = {
       id: 'i2',
@@ -438,6 +441,8 @@ describe('SqliteStore.load (§6.3)', () => {
       project_path: null,
       status: 'todo',
       task_id: null,
+      source: 'jira',
+      jira_key: 'PROJ-9',
       created_at: 10,
       updated_at: 10
     }
@@ -459,7 +464,7 @@ describe('SqliteStore.load (§6.3)', () => {
       projectPath: undefined,
       taskId: undefined
     })
-    expect(db.pragmas).toContain('user_version = 9')
+    expect(db.pragmas).toContain('user_version = 10')
   })
 
   it('runs ONLY the v9 migration on a v8 DB (session_groups, §5.7)', () => {
@@ -484,20 +489,69 @@ describe('SqliteStore.load (§6.3)', () => {
     expect(
       v9Migration!.statements.some((s) => s.includes('CREATE TABLE IF NOT EXISTS session_groups'))
     ).toBe(true)
-    expect(db.pragmas).toContain('user_version = 9')
+    expect(db.pragmas).toContain('user_version = 10')
   })
 
-  it('a current v9 DB runs no migration, so no split_layouts DROP', () => {
+  it('a current v10 DB runs no migration, so no split_layouts DROP nor v10 ALTER', () => {
     const db = new FakeDb()
     db.stub('sqlite_master', [{ name: 'tasks' }])
-    db.stubPragma('user_version', [{ user_version: 9 }])
+    db.stubPragma('user_version', [{ user_version: 10 }])
     SqliteStore.create(db)
     expect(db.execed.some((s) => s.includes('split_layouts'))).toBe(false)
+    expect(db.execed.some((s) => s.includes('ALTER TABLE issues ADD COLUMN source'))).toBe(false)
+    expect(db.execed.some((s) => s.includes('ALTER TABLE issues ADD COLUMN jira_key'))).toBe(false)
     expect(
       MIGRATIONS.every((m) =>
         m.statements.every((s) => !s.includes('CREATE TABLE IF NOT EXISTS split_layouts'))
       )
     ).toBe(true)
+  })
+
+  it('runs the v10 migration on a v9 DB (adds source + jira_key, I19/v10 Jira import)', () => {
+    // A pre-existing DB at user_version 9 (pre-Jira-import): only the v10 ALTERs
+    // fire. `table_info` is unstubbed (no canned rows), so `columnExists` reports
+    // false and the guard does NOT skip them — this is the normal upgrade path.
+    const db = new FakeDb()
+    db.stub('sqlite_master', [{ name: 'tasks' }])
+    db.stubPragma('user_version', [{ user_version: 9 }])
+    SqliteStore.create(db)
+    expect(db.execed.some((s) => s.includes('split_layouts'))).toBe(false)
+    expect(db.execed.some((s) => s.includes('ALTER TABLE issues ADD COLUMN source'))).toBe(true)
+    expect(db.execed.some((s) => s.includes('ALTER TABLE issues ADD COLUMN jira_key'))).toBe(true)
+    expect(
+      db.execed.some((s) => s.includes('CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_jira_key'))
+    ).toBe(true)
+    expect(db.pragmas).toContain('user_version = 10')
+  })
+
+  it('skips the v10 ALTERs when `issues.source` already exists (the v7-bootstrap path)', () => {
+    // Simulates a v7 DB: `tasks` exists but `issues` doesn't, so the bootstrap's
+    // `CREATE TABLE IF NOT EXISTS issues` (now including source/jira_key) creates
+    // it with the columns already present BEFORE migrations run. Without the
+    // `unlessColumnExists` guard the v10 ALTER would then fail "duplicate column".
+    const db = new FakeDb()
+    db.stub('sqlite_master', [{ name: 'tasks' }])
+    db.stubPragma('user_version', [{ user_version: 7 }])
+    db.stubPragma('table_info(issues)', [{ name: 'id' }, { name: 'source' }, { name: 'jira_key' }])
+    expect(() => SqliteStore.create(db)).not.toThrow()
+    expect(db.execed.some((s) => s.includes('ALTER TABLE issues ADD COLUMN source'))).toBe(false)
+    expect(db.execed.some((s) => s.includes('ALTER TABLE issues ADD COLUMN jira_key'))).toBe(false)
+    // The UNIQUE index still gets created unconditionally regardless of the guard.
+    expect(
+      db.execed.some((s) => s.includes('CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_jira_key'))
+    ).toBe(true)
+    expect(db.pragmas).toContain('user_version = 10')
+  })
+
+  it('does NOT run the v10 ALTERs on a fresh DB', () => {
+    const db = new FakeDb()
+    SqliteStore.create(db)
+    expect(db.execed.some((s) => s.includes('ALTER TABLE issues ADD COLUMN source'))).toBe(false)
+    expect(db.execed.some((s) => s.includes('ALTER TABLE issues ADD COLUMN jira_key'))).toBe(false)
+    expect(
+      db.execed.some((s) => s.includes('CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_jira_key'))
+    ).toBe(true)
+    expect(db.pragmas).toContain('user_version = 10')
   })
 })
 
@@ -545,8 +599,22 @@ describe('SqliteStore writes', () => {
       status: 'todo',
       task_id: 't1',
       created_at: 10,
-      updated_at: 10
+      updated_at: 10,
+      source: 'local',
+      jira_key: null
     })
+    // source/jira_key are bound on INSERT but never in the DO UPDATE SET list —
+    // both are immutable once created (v10, Jira import).
+    expect(call!.sql).not.toMatch(/DO UPDATE SET[\s\S]*source\s*=/)
+    expect(call!.sql).not.toMatch(/DO UPDATE SET[\s\S]*jira_key\s*=/)
+  })
+
+  it('upsertIssue binds source/jira_key for a jira-sourced issue', () => {
+    const db = new FakeDb()
+    const store = SqliteStore.create(db)
+    store.upsertIssue(issueSnapshot({ source: IssueSource.Jira, jiraKey: 'PROJ-123' }))
+    const call = db.runs.find((r) => r.sql.includes('INSERT INTO issues'))
+    expect(call!.params).toMatchObject({ source: 'jira', jira_key: 'PROJ-123' })
   })
 
   it('upsertIssue nulls an absent project/task', () => {

@@ -55,6 +55,7 @@ import { updateIssue } from './use-cases/update-issue'
 import { deleteIssue } from './use-cases/delete-issue'
 import { bindIssue } from './use-cases/bind-issue'
 import { unbindIssue } from './use-cases/unbind-issue'
+import { importJiraIssues } from './use-cases/import-jira-issues'
 
 const OK: CommandResult = { ok: true }
 
@@ -206,6 +207,8 @@ export class CommandLoop {
         return bindIssue(this.deps, command.input)
       case 'unbindIssue':
         return unbindIssue(this.deps, command.input)
+      case 'importJiraIssues':
+        return importJiraIssues(this.deps, command.input)
       default: {
         // Exhaustiveness: a new command kind must be handled here.
         const _never: never = command

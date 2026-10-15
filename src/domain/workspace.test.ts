@@ -4,7 +4,8 @@ import { Task } from './task'
 import { asTaskId, asIssueId } from './ids'
 import { InvariantViolationError } from './errors'
 import { worstStatusWins } from './task-state-aggregator'
-import { Issue, IssueStatus } from './issue'
+import { Issue, IssueSource, IssueStatus } from './issue'
+import type { WorkspaceSnapshot } from './snapshots'
 
 const config = { defaultSessionTypeId: 'terminal' }
 
@@ -327,6 +328,27 @@ describe('Workspace — issues (I19)', () => {
     // persisted InReview status (unrelated to the binding) survives untouched.
     expect(restored.issue(asIssueId('i2'))!.status).toBe(IssueStatus.InReview)
     expect(restored.issue(asIssueId('i2'))!.taskId).toBeUndefined()
+  })
+
+  it('a newly created issue added to the workspace defaults to source=local', () => {
+    const ws = Workspace.create(config)
+    ws.addIssue(issue('i1'))
+    expect(ws.issue(asIssueId('i1'))!.source).toBe(IssueSource.Local)
+    expect(ws.issue(asIssueId('i1'))!.jiraKey).toBeUndefined()
+  })
+
+  it('hydrate defaults a pre-Jira-import issue snapshot (no source) to source=local', () => {
+    const ws = Workspace.create(config)
+    ws.addIssue(issue('i1'))
+    const snap = ws.toSnapshot(worstStatusWins)
+    const { source, ...withoutSource } = snap.issues![0]
+    void source
+    // Pre-Jira-import fixtures never wrote a `source` column; simulate that shape here —
+    // `IssueSnapshot.source` is required going forward, so this needs a cast.
+    const tampered = { ...snap, issues: [withoutSource] } as unknown as WorkspaceSnapshot
+    const restored = Workspace.hydrate(tampered, config)
+    expect(restored.issue(asIssueId('i1'))!.source).toBe(IssueSource.Local)
+    expect(restored.issue(asIssueId('i1'))!.jiraKey).toBeUndefined()
   })
 
   it('toSnapshot includes bound issues', () => {

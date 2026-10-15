@@ -21,7 +21,7 @@
 import { asTaskId, asSessionId, asTypeId, asWindowId, asIssueId, asGroupId } from '../../domain/ids'
 import { SessionState, TaskState } from '../../domain/state'
 import { TaskLifecycle, SessionLifecycle } from '../../domain/lifecycle'
-import { IssueStatus, parseIssueStatus } from '../../domain/issue'
+import { IssueStatus, parseIssueStatus, IssueSource, parseIssueSource } from '../../domain/issue'
 import type { SessionConfig } from '../../domain/session-config'
 import type { GroupTree } from '../../domain/group-tree'
 import type { TaskId } from '../../domain/ids'
@@ -74,7 +74,8 @@ export interface SessionRow {
   last_cwd?: string | null
 }
 
-/** An `issues` row (I19, v8 schema). Nullable columns surface as `null` from better-sqlite3. */
+/** An `issues` row (I19, v8 schema; `source`/`jira_key` added in v10, Jira import).
+ * Nullable columns surface as `null` from better-sqlite3. */
 export interface IssueRow {
   id: string
   name: string
@@ -85,6 +86,10 @@ export interface IssueRow {
   task_id: string | null
   created_at: number
   updated_at: number
+  /** `'local'` or `'jira'` (CHECK-constrained); see `IssueSource`. */
+  source: string
+  /** UNIQUE (via `idx_issues_jira_key`), nullable — `null` means `source = 'local'`. */
+  jira_key: string | null
 }
 
 /** A `windows` row (V1.5, §3.7, §6.3). */
@@ -179,7 +184,8 @@ export function sessionToRow(snap: SessionSnapshot): SessionRow {
   }
 }
 
-/** Serialize an issue for persistence (I19, v8 schema). `undefined` fields become `null`. */
+/** Serialize an issue for persistence (I19, v8 schema; `source`/`jira_key` added in
+ * v10, Jira import). `undefined` fields become `null`. */
 export function issueToRow(snap: IssueSnapshot): IssueRow {
   return {
     id: snap.id,
@@ -189,7 +195,9 @@ export function issueToRow(snap: IssueSnapshot): IssueRow {
     status: snap.status,
     task_id: snap.taskId ?? null,
     created_at: snap.createdAt,
-    updated_at: snap.updatedAt
+    updated_at: snap.updatedAt,
+    source: snap.source,
+    jira_key: snap.jiraKey ?? null
   }
 }
 
@@ -355,11 +363,15 @@ export function rowToSessionSnapshot(row: SessionRow): SessionSnapshot {
 }
 
 /**
- * Reconstruct an issue snapshot from its row (I19, v8 schema). `NULL` columns
- * become `undefined`. `status` goes through `parseIssueStatus` rather than a
- * bare cast: a corrupt/pre-migration row (anything outside the enum's string
- * values) falls back to `Todo` rather than smuggling an invalid status into
- * the domain layer, which never otherwise has to defend against one.
+ * Reconstruct an issue snapshot from its row (I19, v8 schema; `source`/`jira_key`
+ * added in v10, Jira import). `NULL` columns become `undefined`. `status` and
+ * `source` go through `parseIssueStatus`/`parseIssueSource` rather than a bare
+ * cast: a corrupt/pre-migration row (anything outside the enum's string values)
+ * falls back to `Todo`/`Local` rather than smuggling an invalid value into the
+ * domain layer, which never otherwise has to defend against one. Every pre-v10
+ * row reads back `source = 'local'` (the column's `DEFAULT`) and `jira_key =
+ * NULL` without this fallback ever triggering — it exists purely to defend
+ * against a hand-edited or otherwise corrupted row.
  */
 export function rowToIssueSnapshot(row: IssueRow): IssueSnapshot {
   return {
@@ -370,7 +382,9 @@ export function rowToIssueSnapshot(row: IssueRow): IssueSnapshot {
     status: parseIssueStatus(row.status) ?? IssueStatus.Todo,
     taskId: row.task_id ? asTaskId(row.task_id) : undefined,
     createdAt: row.created_at,
-    updatedAt: row.updated_at
+    updatedAt: row.updated_at,
+    source: parseIssueSource(row.source) ?? IssueSource.Local,
+    jiraKey: row.jira_key ?? undefined
   }
 }
 

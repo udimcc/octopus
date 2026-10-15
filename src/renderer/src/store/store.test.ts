@@ -60,6 +60,7 @@ function issue(id: string, over: Partial<IssueDTO> = {}): IssueDTO {
     status: 'todo',
     createdAt: 1000,
     updatedAt: 1000,
+    source: 'local',
     ...over
   }
 }
@@ -617,6 +618,22 @@ describe('Issues store (drawer view-state + issues projection)', () => {
       const s = useStore.getState()
       expect(Object.keys(s.issues).sort()).toEqual(['i1', 'i2'])
       expect(s.issues.i2.status).toBe('in_review')
+    })
+
+    it('hydrates an issue carrying source and jiraKey unchanged (DESIGN §13.7)', () => {
+      const withJira: WindowedWorkspaceStateDTO = {
+        ...issuesState,
+        issues: [
+          issue('i1'), // local, from the fixture default
+          issue('i2', { source: 'jira', jiraKey: 'PROJ-7' })
+        ]
+      }
+      useStore.getState().hydrate(withJira)
+      const s = useStore.getState()
+      expect(s.issues.i1.source).toBe('local')
+      expect(s.issues.i1.jiraKey).toBeUndefined()
+      expect(s.issues.i2.source).toBe('jira')
+      expect(s.issues.i2.jiraKey).toBe('PROJ-7')
     })
 
     it('keeps a still-valid selection and other drawer view-state across re-hydration', () => {
@@ -1989,6 +2006,59 @@ describe('sessionStateNotification → toast (§9.5)', () => {
     )
     expect(d.toasts).toHaveLength(0)
     expect(admitCalls).toBe(0)
+  })
+})
+
+describe('Jira import: setJiraLastFilters and settingsOpen (DESIGN §13.7)', () => {
+  beforeEach(() => {
+    useStore.setState(initialData())
+  })
+
+  it('setJiraLastFilters patches only settings.jira.lastFilters, leaving the rest of settings untouched', () => {
+    const before = useStore.getState().settings
+    useStore.getState().setJiraLastFilters({ project: 'PROJ', assignee: 'me', days: 14 })
+
+    const s = useStore.getState()
+    expect(s.settings.jira?.lastFilters).toEqual({ project: 'PROJ', assignee: 'me', days: 14 })
+    // Nothing else on settings moved.
+    expect(s.settings.worktree).toBe(before.worktree)
+    expect(s.settings.terminal).toBe(before.terminal)
+    expect(s.settings.defaultSessionTypeId).toBe(before.defaultSessionTypeId)
+  })
+
+  it('setJiraLastFilters replaces the previous filters wholesale, not merging field-by-field', () => {
+    useStore.getState().setJiraLastFilters({ project: 'PROJ', assignee: 'me' })
+    useStore.getState().setJiraLastFilters({ issueKey: 'PROJ-1' })
+
+    expect(useStore.getState().settings.jira?.lastFilters).toEqual({ issueKey: 'PROJ-1' })
+  })
+
+  it('settingsOpen toggles via openSettings/closeSettings', () => {
+    expect(useStore.getState().settingsOpen).toBe(false)
+    useStore.getState().openSettings()
+    expect(useStore.getState().settingsOpen).toBe(true)
+    useStore.getState().closeSettings()
+    expect(useStore.getState().settingsOpen).toBe(false)
+  })
+
+  it('settingsOpen survives a re-hydrate (renderer-local view-state, never on the wire)', () => {
+    const state: WindowedWorkspaceStateDTO = {
+      tasks: [],
+      activeTaskId: undefined,
+      sessionTypes: [],
+      issues: [],
+      settings: initialData().settings,
+      version: 1,
+      thisWindowId: 'main',
+      thisWindowRole: 'main',
+      windows: []
+    }
+    useStore.getState().hydrate(state)
+    useStore.getState().openSettings()
+    expect(useStore.getState().settingsOpen).toBe(true)
+
+    useStore.getState().hydrate(state) // e.g. the SettingsModal's own post-save re-hydrate
+    expect(useStore.getState().settingsOpen).toBe(true)
   })
 })
 

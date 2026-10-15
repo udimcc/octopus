@@ -201,14 +201,42 @@ export function IssueList(): React.JSX.Element {
                             >
                               <span
                                 style={{
-                                  overflow: 'hidden',
-                                  textOverflow: 'ellipsis',
-                                  whiteSpace: 'nowrap',
-                                  color: color.text,
-                                  fontWeight: selected ? 600 : 500
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 6,
+                                  minWidth: 0
                                 }}
                               >
-                                {issue.name}
+                                <span
+                                  style={{
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap',
+                                    minWidth: 0,
+                                    flex: '1 1 auto',
+                                    color: color.text,
+                                    fontWeight: selected ? 600 : 500
+                                  }}
+                                >
+                                  {issue.name}
+                                </span>
+                                {issue.source === 'jira' ? (
+                                  <span
+                                    className="issue-row-jira-badge"
+                                    title={issue.jiraKey}
+                                    style={{
+                                      flexShrink: 0,
+                                      padding: '0 5px',
+                                      border: `1px solid ${color.border}`,
+                                      borderRadius: radius.pill,
+                                      color: color.textSecondary,
+                                      fontSize: fontSize.sm,
+                                      lineHeight: '1.4em'
+                                    }}
+                                  >
+                                    Jira
+                                  </span>
+                                ) : null}
                               </span>
                               {preview ? (
                                 <span

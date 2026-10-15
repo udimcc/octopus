@@ -1,6 +1,6 @@
 import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, chmodSync } from 'node:fs'
 
 /**
  * Resolves Octopus's on-disk data locations (DESIGN §6.3).
@@ -39,6 +39,13 @@ export interface AppPaths {
    * folds them. See `octopus-claude-state.script.ts`.
    */
   claudeStateDir: string
+  /**
+   * Dir holding `safeStorage`-encrypted secrets, one `<ref>.bin` file per
+   * `CredentialsProvider` reference (DESIGN "Jira import", I16) — e.g. the Jira API
+   * key. Created with mode 0700 by {@link ensureAppDirs} since it holds encrypted
+   * secrets; never readable by the DB/settings.json (I16).
+   */
+  credentialsDir: string
 }
 
 export interface ResolveContext {
@@ -59,7 +66,8 @@ export function resolveAppPaths({ env, platform, home }: ResolveContext): AppPat
     logsDir: join(dataDir, 'logs'),
     stateLogPath: join(dataDir, 'logs', 'state.log'),
     shellIntegrationDir: join(dataDir, 'shell-integration'),
-    claudeStateDir: join(dataDir, 'claude-state')
+    claudeStateDir: join(dataDir, 'claude-state'),
+    credentialsDir: join(dataDir, 'credentials')
   }
 }
 
@@ -78,6 +86,18 @@ export function ensureAppDirs(paths: AppPaths = currentAppPaths()): AppPaths {
   mkdirSync(paths.dataDir, { recursive: true })
   mkdirSync(paths.logsDir, { recursive: true })
   mkdirSync(paths.claudeStateDir, { recursive: true })
+  // `mode` on mkdirSync is subject to umask and is never applied to a dir that
+  // already exists (e.g. carried over from an install predating this dir, or
+  // created with a looser umask) — chmod explicitly so secrets are always 0700.
+  // Best-effort: a chmod failure (EPERM on a dir owned by another user, or a
+  // filesystem without POSIX modes) must not stop the app from starting — the
+  // credentials adapter re-applies 0700 on every write anyway.
+  mkdirSync(paths.credentialsDir, { recursive: true, mode: 0o700 })
+  try {
+    chmodSync(paths.credentialsDir, 0o700)
+  } catch {
+    // ignored — see above
+  }
   return paths
 }
 

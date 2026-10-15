@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { Issue, IssueStatus, parseIssueStatus } from './issue'
+import { Issue, IssueSource, IssueStatus, parseIssueStatus } from './issue'
 import { asIssueId, asTaskId } from './ids'
 import { InvariantViolationError } from './errors'
 
@@ -143,6 +143,38 @@ describe('Issue.bindTo / clearBinding (mechanical — invariants live in Workspa
   })
 })
 
+describe('Issue source/jiraKey (Jira import)', () => {
+  it('defaults source to Local when omitted from IssueCreateProps', () => {
+    const issue = create()
+    expect(issue.source).toBe(IssueSource.Local)
+    expect(issue.jiraKey).toBeUndefined()
+  })
+
+  it('throws when jiraKey is set but source is not Jira', () => {
+    expect(() => create({ jiraKey: 'PROJ-123' })).toThrow(InvariantViolationError)
+  })
+
+  it('throws when source is Jira but jiraKey is missing', () => {
+    expect(() => create({ source: IssueSource.Jira })).toThrow(InvariantViolationError)
+  })
+
+  it('a valid Jira issue exposes source and jiraKey via getters', () => {
+    const issue = create({ source: IssueSource.Jira, jiraKey: 'PROJ-123' })
+    expect(issue.source).toBe(IssueSource.Jira)
+    expect(issue.jiraKey).toBe('PROJ-123')
+  })
+
+  it('source and jiraKey have no setters — assigning throws', () => {
+    const issue = create({ source: IssueSource.Jira, jiraKey: 'PROJ-123' })
+    expect(() => {
+      ;(issue as unknown as { source: IssueSource }).source = IssueSource.Local
+    }).toThrow()
+    expect(() => {
+      ;(issue as unknown as { jiraKey: string | undefined }).jiraKey = undefined
+    }).toThrow()
+  })
+})
+
 describe('Issue snapshot round trip', () => {
   it('fromSnapshot(toSnapshot()) preserves every field — unbound issue', () => {
     const issue = create({ name: 'Original', description: 'd', createdAt: 10 })
@@ -180,5 +212,25 @@ describe('Issue snapshot round trip', () => {
     const snap = { ...issue.toSnapshot(), name: '   ' }
     const restored = Issue.fromSnapshot(snap)
     expect(restored.name).toBe('   ')
+  })
+
+  it('fromSnapshot(toSnapshot()) preserves source and jiraKey — local issue', () => {
+    const issue = create()
+    const snap = issue.toSnapshot()
+    expect(snap.source).toBe(IssueSource.Local)
+    expect(snap.jiraKey).toBeUndefined()
+    const restored = Issue.fromSnapshot(snap)
+    expect(restored.source).toBe(IssueSource.Local)
+    expect(restored.jiraKey).toBeUndefined()
+  })
+
+  it('fromSnapshot(toSnapshot()) preserves source and jiraKey — jira issue', () => {
+    const issue = create({ source: IssueSource.Jira, jiraKey: 'PROJ-123' })
+    const snap = issue.toSnapshot()
+    expect(snap.source).toBe(IssueSource.Jira)
+    expect(snap.jiraKey).toBe('PROJ-123')
+    const restored = Issue.fromSnapshot(snap)
+    expect(restored.source).toBe(IssueSource.Jira)
+    expect(restored.jiraKey).toBe('PROJ-123')
   })
 })

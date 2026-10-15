@@ -65,6 +65,13 @@ import { MapRuntimeRegistry, type AppDependencies, type ScrollbackBuffers } from
 import type { StateLog, StateTransition } from '../../ports/state-log'
 import type { CreateTaskInput, CreateTaskFromNewInput } from '../commands'
 import { createAjvConfigValidator } from '../config-validator'
+import type {
+  JiraIssueSource,
+  JiraSearchFilters,
+  JiraSearchPage
+} from '../../ports/jira-issue-source'
+import { JiraSourceError } from '../../ports/jira-issue-source'
+import type { JiraIssue, JiraProject, JiraSprint } from '../../domain/jira-import'
 
 /**
  * Build a "From New Worktree" `CreateTaskInput` with sensible defaults for tests
@@ -211,6 +218,15 @@ export class FakePersistence implements WorkspacePersistence {
   readonly groups = new Map<GroupId, { taskId: TaskId; group: GroupSnapshot }>()
   transactions = 0
   checkpointed = false
+  /**
+   * When set, `upsertIssue` throws on its Nth call (1-indexed, counted across
+   * the whole fake's lifetime) instead of persisting — simulates a mid-batch
+   * failure inside `importJiraIssues`'s single `transaction` (v10, Jira
+   * import), so a test can assert the workspace/events stay untouched on
+   * rollback.
+   */
+  failUpsertIssueAt?: number
+  private upsertIssueCalls = 0
   private readonly initial: WorkspaceSnapshot
 
   constructor(initial: WorkspaceSnapshot = { tasks: [], activeTaskId: undefined }) {
@@ -238,6 +254,12 @@ export class FakePersistence implements WorkspacePersistence {
     }
   }
   upsertIssue(issue: IssueSnapshot): void {
+    this.upsertIssueCalls++
+    if (this.failUpsertIssueAt !== undefined && this.upsertIssueCalls === this.failUpsertIssueAt) {
+      throw new Error(
+        `FakePersistence: simulated upsertIssue failure at call ${this.upsertIssueCalls}`
+      )
+    }
     this.upsertedIssues.push(issue)
     this.issues.set(issue.id, issue)
   }
@@ -286,7 +308,19 @@ export class FakePersistence implements WorkspacePersistence {
   }
   transaction<T>(fn: () => T): T {
     this.transactions++
-    return fn()
+    // Mirror SQLite DDL/DML transactionality (§6.6): a throw mid-batch rolls
+    // the `issues` writes back to their pre-transaction state, same as a real
+    // crash mid-`importJiraIssues` leaving the DB untouched.
+    const issuesSnapshot = new Map(this.issues)
+    const upsertedIssuesLength = this.upsertedIssues.length
+    try {
+      return fn()
+    } catch (err) {
+      this.issues.clear()
+      for (const [id, issue] of issuesSnapshot) this.issues.set(id, issue)
+      this.upsertedIssues.length = upsertedIssuesLength
+      throw err
+    }
   }
   checkpointAndClose(): void {
     this.checkpointed = true
@@ -600,5 +634,55 @@ export function makeDeps(
     ids,
     clock,
     workspace
+  }
+}
+
+/**
+ * Fake `JiraIssueSource` (Wave 3, Jira import): seeded with `JiraIssue`s keyed
+ * by `key`, so `getIssues` and `search` answer from the seed rather than a
+ * network call. `failWith` (an error injector) makes every method reject with
+ * that error instead — e.g. a `JiraSourceError` to drive `preview-jira-issues`
+ * / `import-jira-issues` error paths without touching the real adapter.
+ */
+export class FakeJiraIssueSource implements JiraIssueSource {
+  readonly issuesByKey = new Map<string, JiraIssue>()
+  projects: readonly JiraProject[] = []
+  sprints: readonly JiraSprint[] = []
+  /** Page returned by `search`, overridable per test. Defaults to every seeded issue, one page. */
+  searchPage: JiraSearchPage
+  /** When set, every method rejects with this instead of answering. */
+  failWith?: JiraSourceError | Error
+  readonly searchCalls: Array<{ filters: JiraSearchFilters; cursor?: string }> = []
+  readonly getIssuesCalls: string[][] = []
+
+  constructor(seeded: readonly JiraIssue[] = []) {
+    for (const issue of seeded) {
+      this.issuesByKey.set(issue.key, issue)
+    }
+    this.searchPage = { issues: seeded, total: seeded.length }
+  }
+
+  async listProjects(): Promise<readonly JiraProject[]> {
+    if (this.failWith) throw this.failWith
+    return this.projects
+  }
+
+  async listSprints(): Promise<readonly JiraSprint[]> {
+    if (this.failWith) throw this.failWith
+    return this.sprints
+  }
+
+  async search(filters: JiraSearchFilters, cursor?: string): Promise<JiraSearchPage> {
+    this.searchCalls.push({ filters, cursor })
+    if (this.failWith) throw this.failWith
+    return this.searchPage
+  }
+
+  async getIssues(keys: readonly string[]): Promise<readonly JiraIssue[]> {
+    this.getIssuesCalls.push([...keys])
+    if (this.failWith) throw this.failWith
+    return keys
+      .map((key) => this.issuesByKey.get(key))
+      .filter((issue): issue is JiraIssue => issue !== undefined)
   }
 }

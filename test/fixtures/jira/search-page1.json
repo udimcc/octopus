@@ -1,0 +1,13 @@
+{
+  "_meta": null,
+  "content": [
+    {
+      "type": "text",
+      "text": "Found 820 total issues in project TM (showing 1-5 of 820)\n⚠️ 815 more tickets available. Use offset=5 to get the next batch.\n\n• [TM] TM-2617 - Olympus viewer depreaction\n  Status: To Do, Priority: Low, Type: Task\n  Assignee: Bob Example, Reporter: Carol Example\n  Dest. Team: RD_TRD Team\n  Created: 2026-10-11T12:57:21.845+0300\n\n• [TM] TM-2616 - Update Covar Grafana Alerts and make new\n  Status: Done, Priority: Low, Type: Task\n  Assignee: Dave Example, Reporter: Dave Example\n  Dest. Team: RD_TRD Team\n  Created: 2026-10-07T09:32:14.483+0300\n\n• [TM] TM-2614 - 26Q4 - TM - TradeNG Order Manager Infra layer\n  Status: Planned, Priority: Medium, Type: Epic\n  Assignee: Carol Example, Reporter: Frank Example\n  Dest. Team: RD_TRD Team\n  Created: 2026-10-06T09:14:01.785+0300\n\n• [TM] TM-2613 - 26Q4 - TM - TradeNG Position Manager calculate LL position\n  Status: Planned, Priority: Medium, Type: Epic\n  Assignee: Carol Example, Reporter: Frank Example\n  Dest. Team: RD_TRD Team\n  Created: 2026-10-06T09:09:17.746+0300\n\n• [TM] TM-2612 - 26Q4 - TM - TradeNG - New Trading application\n  Status: Planned, Priority: Medium, Type: Epic\n  Assignee: Carol Example, Reporter: Frank Example\n  Dest. Team: RD_TRD Team\n  Created: 2026-10-06T09:05:53.332+0300\n\n",
+      "annotations": null,
+      "_meta": null
+    }
+  ],
+  "structuredContent": null,
+  "isError": false
+}

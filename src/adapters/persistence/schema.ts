@@ -40,10 +40,20 @@
  * interprets, membership is the tree's leaves). An unshipped dev build stamped v8
  * with a `split_layouts` table (the first, per-task-per-window split-pane version)
  * and no `issues` table; v9 drops the former and creates the latter if missing.
- * `SqliteStore` runs the guarded migrations when an older DB opens (see
+ * 9 → 10 (Jira import) to add `issues.source` (default `'local'`, checked against
+ * `IssueSource`) and `issues.jira_key` (nullable, UNIQUE via a separate index —
+ * SQLite's `ALTER TABLE ADD COLUMN` cannot add a `UNIQUE` column, and `NULL`s are
+ * distinct under a unique index, so any number of `local` issues coexist). The v10
+ * migration is guarded (see {@link Migration.unlessColumnExists}) because, unlike
+ * every migration before it, the new columns are NOT just appended to an existing
+ * table: a v7 DB (pre-Issues) has no `issues` table at all yet, so on THAT upgrade
+ * path the bootstrap `CREATE TABLE IF NOT EXISTS issues` below (which already has
+ * the v10 columns) creates the table for the first time on this very open — a bare
+ * `ALTER TABLE issues ADD COLUMN source ...` right after would fail "duplicate
+ * column". `SqliteStore` runs the guarded migrations when an older DB opens (see
  * {@link MIGRATIONS}).
  */
-export const SCHEMA_VERSION = 9
+export const SCHEMA_VERSION = 10
 
 /**
  * Connection pragmas applied on every open. `foreign_keys` is per-connection
@@ -126,8 +136,19 @@ export const SCHEMA_STATEMENTS: readonly string[] = Object.freeze([
      status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo','in_progress','in_review','done')),
      task_id TEXT UNIQUE REFERENCES tasks(id) ON DELETE SET NULL,
      created_at INTEGER NOT NULL,
-     updated_at INTEGER NOT NULL
+     updated_at INTEGER NOT NULL,
+     source TEXT NOT NULL DEFAULT 'local' CHECK(source IN ('local','jira')),
+     jira_key TEXT CHECK((source = 'jira') = (jira_key IS NOT NULL))
    )`,
+  // NOTE: `idx_issues_jira_key` (the UNIQUE index on `issues.jira_key`, v10) is
+  // deliberately NOT listed here, unlike every other index in this file. These
+  // SCHEMA_STATEMENTS run on EVERY open, before any migration — on a v8/v9 DB
+  // `issues` already exists without `jira_key` at that point (the column is added
+  // later, by the guarded v10 migration), so an unconditional `CREATE INDEX ...
+  // ON issues(jira_key)` here would throw "no such column: jira_key" (verified
+  // against the real better-sqlite3 binary). `SqliteStore.create` instead creates
+  // this index itself, unconditionally, strictly AFTER both these statements and
+  // any migrations have run — see the comment there.
   // Split groups (DESIGN §5.7): 2+ sessions of one task, in one window, sharing a
   // layout tree and a palette color. `layout` is an opaque JSON blob (the domain's
   // `GroupTree`, leaves are member session ids) the backend never interprets, like
@@ -163,6 +184,19 @@ export const ACTIVE_TASK_KEY = 'active_task_id'
 export interface Migration {
   readonly toVersion: number
   readonly statements: readonly string[]
+  /**
+   * Skip this migration's `statements` ENTIRELY when `table.column` already
+   * exists (first used for v10, Jira import). Needed because bootstrap's
+   * {@link SCHEMA_STATEMENTS} runs before any migration — if the table in
+   * question did not exist on this DB until THIS open's `CREATE TABLE IF NOT
+   * EXISTS` just created it (true for a v7 DB, where `issues` is added only at
+   * v8), it is created already shaped with the new column, and an `ALTER TABLE
+   * ... ADD COLUMN` migration for that same column would fail "duplicate
+   * column". On a DB where the table already existed in its OLD shape (v8/v9 for
+   * `issues`), the column is genuinely missing and the migration must run.
+   * Checked via `PRAGMA table_info` in `runMigrations` (sqlite-store.ts).
+   */
+  readonly unlessColumnExists?: { readonly table: string; readonly column: string }
 }
 
 /**
@@ -281,6 +315,35 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
        )`,
       `CREATE INDEX IF NOT EXISTS idx_session_groups_task ON session_groups(task_id)`,
       'DROP TABLE IF EXISTS split_layouts'
+    ])
+  },
+  // v10 (Jira import): `issues.source` (default 'local', checked) and
+  // `issues.jira_key` (nullable). Guarded with `unlessColumnExists`: on a v7 DB
+  // (pre-Issues) the bootstrap `CREATE TABLE IF NOT EXISTS issues` above has just
+  // created the table for the FIRST time on this open, already shaped with both
+  // columns — so these `ALTER`s would fail "duplicate column" on exactly that
+  // path (and, moot but harmless to note, on a fresh DB too, except migrations
+  // never run there at all). On a v8/v9 DB `issues` already existed in its OLD
+  // shape, missing both columns, so the guard is false and the `ALTER`s run.
+  // The `jira_key` UNIQUE index is deliberately NOT appended here (nor to
+  // SCHEMA_STATEMENTS) — see the long comment on `idx_issues_jira_key` above and
+  // on the index-creation line in `SqliteStore.create`: bundling it into this
+  // guarded migration would skip it on exactly the v7 path that still needs it
+  // (the guard above is right for the ALTERs, wrong for the index, since the
+  // column already existing doesn't mean the index does), and listing it
+  // unconditionally in SCHEMA_STATEMENTS fails on v8/v9 (runs before the ALTERs
+  // above, when the column is still missing). `SqliteStore.create` creates the
+  // index itself, once, strictly after both SCHEMA_STATEMENTS and all migrations
+  // (this one included) have run — the one point in the open sequence where the
+  // column is guaranteed to exist on every DB shape.
+  {
+    toVersion: 10,
+    unlessColumnExists: { table: 'issues', column: 'source' },
+    statements: Object.freeze([
+      `ALTER TABLE issues ADD COLUMN source TEXT NOT NULL DEFAULT 'local' CHECK(source IN ('local','jira'))`,
+      // The CHECK mirrors the domain invariant (a Jira-sourced issue has a key, a key
+      // implies Jira) so a row `Issue.fromSnapshot` would reject can't be written.
+      `ALTER TABLE issues ADD COLUMN jira_key TEXT CHECK((source = 'jira') = (jira_key IS NOT NULL))`
     ])
   }
 ])

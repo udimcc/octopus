@@ -11,7 +11,11 @@
 import { vi } from 'vitest'
 import type { OctopusAPI } from '../../../shared/ipc'
 import type { EventDTO } from '../../../shared/events'
-import type { CommandAck, WindowedWorkspaceStateDTO } from '../../../shared/dto'
+import type {
+  CommandAck,
+  ImportJiraIssuesResultDTO,
+  WindowedWorkspaceStateDTO
+} from '../../../shared/dto'
 
 export interface StubBridge {
   readonly api: OctopusAPI
@@ -125,6 +129,23 @@ export function makeStubBridge(options?: {
     },
     shell: {
       openExternal: vi.fn().mockResolvedValue(true)
+    },
+    jira: {
+      projects: vi.fn().mockResolvedValue({ ok: true, value: [] }),
+      sprints: vi.fn().mockResolvedValue({ ok: true, value: [] }),
+      search: vi.fn().mockResolvedValue({ ok: true, value: { rows: [], total: 0 } }),
+      import: vi.fn(
+        () =>
+          Promise.resolve({
+            ok: true,
+            importedCount: 0,
+            skippedKeys: []
+          }) as Promise<ImportJiraIssuesResultDTO>
+      )
+    },
+    credentials: {
+      setJiraKey: newAck(),
+      hasJiraKey: vi.fn().mockResolvedValue(false)
     },
     onEvent: (handler) => {
       listeners.add(handler)
