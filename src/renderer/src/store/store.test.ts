@@ -861,6 +861,43 @@ describe('Issues store (drawer view-state + issues projection)', () => {
     })
   })
 
+  describe('issuesDrawerTab (Board tab, renderer-local view state)', () => {
+    it('defaults to "list"', () => {
+      expect(useStore.getState().issuesDrawerTab).toBe('list')
+    })
+
+    it('setIssuesDrawerTab survives a close/reopen of the drawer', () => {
+      useStore.getState().hydrate(issuesState)
+      useStore.getState().setIssuesDrawerTab('board')
+      useStore.getState().toggleIssuesDrawer() // open
+      useStore.getState().toggleIssuesDrawer() // close
+      expect(useStore.getState().issuesDrawerTab).toBe('board')
+      useStore.getState().toggleIssuesDrawer() // reopen
+      expect(useStore.getState().issuesDrawerTab).toBe('board')
+    })
+
+    it('survives openIssuesDrawer(id)', () => {
+      useStore.getState().hydrate(issuesState)
+      useStore.getState().setIssuesDrawerTab('board')
+      useStore.getState().openIssuesDrawer('i1')
+      expect(useStore.getState().issuesDrawerTab).toBe('board')
+    })
+
+    it('survives hydrate (never carried on the wire)', () => {
+      useStore.getState().hydrate(issuesState)
+      useStore.getState().setIssuesDrawerTab('board')
+      useStore.getState().hydrate(issuesState)
+      expect(useStore.getState().issuesDrawerTab).toBe('board')
+    })
+
+    it('setting the same tab is a no-op (no state replacement)', () => {
+      expect(useStore.getState().issuesDrawerTab).toBe('list')
+      const before = useStore.getState()
+      useStore.getState().setIssuesDrawerTab('list')
+      expect(useStore.getState()).toBe(before)
+    })
+  })
+
   describe('startNewIssue', () => {
     it('dirty-guards: raises discardPrompt {kind:"new"}', () => {
       useStore.setState({ issuesDrawerOpen: true, selectedIssueId: 'i1', issueEditDirty: true })

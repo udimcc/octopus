@@ -35,6 +35,13 @@
  * clickable right through it. `createPortal` only moves the raw DOM placement; React
  * event bubbling (so `stopPropagation` reaching `IssuesDrawer`'s handler) is
  * unaffected, since it follows the React tree, not the DOM tree.
+ *
+ * This pane stays mounted unconditionally by `IssuesDrawer` across both the List and
+ * Board tabs — only `IssueList`/`KanbanBoard` swap next to it — so its local edit-form
+ * state (`editing`, the field values, dirty tracking, …) survives a tab switch
+ * untouched; a tab switch never resets `issueEditSession` either, so none of the
+ * effects keyed on it fire. Its width is a fixed `ISSUE_VIEW_WIDTH_SHARE` of the
+ * drawer, identical on both tabs (see that constant).
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -67,6 +74,16 @@ const selectStyle: React.CSSProperties = { alignSelf: 'flex-start', minWidth: 22
 
 /** Keeps the form fields and the read-only view a readable width on a wide drawer. */
 const CONTENT_MAX_WIDTH = 760
+
+/**
+ * The issue-view pane's fixed share of the drawer width, identical on the List and Board
+ * tabs (DESIGN §13.5). The List/Board pane fills the remaining ~39%. A fixed flex-basis
+ * (`0 0 …`) rather than a grow weight keeps the share the same whatever sits beside it.
+ */
+const ISSUE_VIEW_WIDTH_SHARE = '61%'
+
+/** Modest floor so the pane stays usable on a narrow window; not a content minimum. */
+const ISSUE_VIEW_MIN_WIDTH = 360
 
 export function IssueDetail({
   onCreateTaskFromIssue,
@@ -404,8 +421,8 @@ export function IssueDetail({
   return (
     <div
       style={{
-        flex: 1,
-        minWidth: 0,
+        flex: `0 0 ${ISSUE_VIEW_WIDTH_SHARE}`,
+        minWidth: ISSUE_VIEW_MIN_WIDTH,
         padding: 16,
         overflowY: 'auto'
       }}

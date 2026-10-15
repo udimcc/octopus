@@ -22,6 +22,15 @@ rules. Otherwise focus restore, Escape routing and shortcut suppression silently
 - **No `backdrop-filter`, `filter` or blur** on overlays: the VDI host renders in software and
   stalls (see the New-Task modal history).
 
+## Non-modal overlays and the drawer's ancestors
+
+- **Drag ghosts** (the Board's dragged-card copy in `KanbanBoard.tsx`) are also portaled to
+  `document.body`, but are not dialogs. They are `aria-hidden`, use `pointerEvents: 'none'` and
+  have no `aria-modal`, so `topmostModal()` ignores them. They move by `transform` only.
+- **Keep the drawer's ancestors non-scrollable.** App's workspace area uses `overflow: 'clip'`,
+  not `'hidden'`. A `scrollIntoView` inside the sliding (transformed) drawer would otherwise
+  scroll that ancestor sideways. Don't switch it back.
+
 ## When adding one
 
 Add the dialog to the list in the `topmostModal()` doc comment in `IssuesDrawer.tsx`. Add a test

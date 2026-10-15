@@ -133,16 +133,26 @@ closes regardless of which task is active.
   window to the front and toggles its Issues window.
 - It always starts closed after a restart.
 
-**Layout:** a split view, with the issue list on the left and the selected issue on the right.
+**Layout:** a header row, then the issue list or the board on the left and the selected issue on the
+right.
 
-- **Issue list:**
+- **Header:** **+ New Issue** on the left, then the **List** and **Board** tabs, set a little apart.
+  - **+ New Issue** works on both tabs. It opens an empty issue in the issue view, ready to edit.
+    **Save** creates it as Todo (the name is required); **Cancel** discards it.
+  - The window opens on the last-used tab for the current app run, and on **List** after a restart.
+  - Both tabs share one selection. Switching tabs keeps the same issue open, including unsaved
+    edits, and never asks "Discard unsaved changes?".
+- **Width:** the issue view takes a fixed share of the drawer (about 61%), the same on both tabs, with
+  a minimum width so it stays usable on a narrow window, and scales with the window. The list or the
+  board fills the rest. With no issue selected, the issue view keeps its width and shows "Select an
+  issue, or create a new one."
+- **Issue list** (List tab):
   - Issues are grouped by status, in the order Todo, In progress, In review, Done.
   - Each group can be collapsed. **Done** starts collapsed.
   - Within a group, issues are shown newest first.
   - Each row shows the status icon, the name, a one-line preview of the description, and (when
     set) the project and the linked task.
-  - **+ New Issue** opens an empty issue in the right pane, ready to edit. **Save** creates it (the
-    name is required); **Cancel** discards it.
+- **Board** (Board tab): see *Board* below.
 - **Issue view:**
   - The description is rendered as markdown. Links open in the system browser, and Octopus never
     navigates away.
@@ -155,13 +165,45 @@ closes regardless of which task is active.
     is changed right there, at any time, and is not part of the Edit form.
   - Status icons: Todo is a dashed circle, In progress a play mark, In review an eye, Done a check.
 
+**Board:** the same issues as status columns, so the user sees where all the work stands at a glance
+and moves an issue to a new status by dragging its card.
+
+- **Columns:** Todo, In progress, In review, Done, always in that order, equal width and always
+  expanded (Done included).
+  - Each header shows the status icon, the status name and a count.
+  - Each column scrolls vertically on its own. Columns keep a minimum readable width; below it the
+    board scrolls horizontally, and the issue view's width is unaffected.
+  - An empty column shows "No issues" and still accepts drops.
+- **Cards** are compact: the name (at most two lines, then an ellipsis), the project (if set) and
+  the linked task's name (if linked). The selected card uses the same highlight as the selected row
+  in the list.
+- **Order:** newest first within each column, as in the list. There is no manual ordering.
+- **Click:** clicking a card selects it and shows it in the issue view. Unsaved edits ask "Discard
+  unsaved changes?" first, exactly as when clicking another row in the list.
+- **Drag-and-drop:**
+  - Dropping a card anywhere on **another** column (empty space included) changes its status, exactly
+    as if the user picked it in the toolbar status dropdown: no prompt, no link or unlink, and no task
+    action. A linked issue dropped on Done keeps its task. The card lands in its sorted position.
+  - Dropping on the same column, or outside all columns, changes nothing; the card returns.
+  - Dragging never changes the selection. If the dragged issue is open in the issue view, its toolbar
+    status updates at once, and any unsaved edits stay in the form (status is not part of Edit).
+  - **Esc** during a drag cancels only the drag; a second Esc closes the window as usual. Closing
+    the window mid-drag (button or shortcut) also cancels the drag.
+  - While dragging, the card dims in place, a light copy follows the pointer, and the column under
+    the pointer is highlighted. There are no slide or reflow animations, blur or shadows.
+- A status changed anywhere else (the dropdown, or Todo → In progress on linking) moves the card to
+  its new column immediately.
+- There is no filter and no keyboard drag. The toolbar status dropdown is the keyboard path.
+
 **On the task side:** a bound task shows its issue's status icon on its row in the Progress window.
-Hovering the icon shows the issue name; clicking it opens the Issues window on that issue.
+Hovering the icon shows the issue name; clicking it opens the Issues window on its last-used tab,
+with that issue selected and scrolled into view. On the List tab, a collapsed group (e.g. Done)
+expands to show it.
 
 ### Future
 
 - Fetch issues from Jira; instructions will come later.
-- A Kanban board tab in the Issues window.
+- A project filter on the List and Board tabs.
 - Start a Claude brainstorm conversation from a generated prompt based on the issue description.
 
 ## Sessions

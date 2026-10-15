@@ -6,10 +6,31 @@
  * rendering, no GPU) that is a visible multi-second stall, the same reason the
  * New-Task modal's backdrop blur was dropped.
  *
- * Split layout: `IssueList` on the left, `IssueDetail` on the right.
- * `onCreateTaskFromIssue`/`onDeleteBoundTask` are passed straight through to
- * `IssueDetail` — they are wired by the caller (`App.tsx`); this component and
- * `IssueDetail` are agnostic to what they actually do.
+ * Header row (DESIGN §13.5): **+ New Issue**, then `[List] [Board]` tabs —
+ * `role="tablist"`/`role="tab"`/`aria-selected`, the same lightweight pattern as
+ * `NewTaskModal`'s source tabs (unselected = plain button, selected = `btn-primary`) —
+ * reading/writing the store's `issuesDrawerTab` / `setIssuesDrawerTab` (renderer-only
+ * view state, never persisted, never part of the hydrated app state). **+ New Issue**
+ * sits on the left, before the tabs (set apart by a gap), and calls the store's
+ * `startNewIssue` directly, same as before the Board tab existed, including its dirty-guard (`discardPrompt`): it works identically
+ * on both tabs since it's hoisted here rather than living inside `IssueList`. Left as a
+ * plain (unstyled) button, same as the tabs' own unselected state, so it's the same
+ * height as them and reads as a distinct action rather than a third, always-on tab.
+ *
+ * Below the header: `IssueList` (List tab) or `KanbanBoard` (Board tab) on the left,
+ * each wrapped in an identical `role="tabpanel"` div (`aria-label` "List"/"Board",
+ * `flex: 1; minWidth: 0`, the single `borderRight` that separates it from `IssueDetail`)
+ * — only one is mounted at a time, swapped on `issuesDrawerTab` — and `IssueDetail` on
+ * the right, mounted UNCONDITIONALLY across both tabs so its local edit-form state
+ * (and any unsaved edit) survives a tab switch untouched; switching tabs only changes
+ * `issuesDrawerTab`, never `selectedIssueId`/`issueDraft`/`issueEditDirty`, so it can
+ * never raise `discardPrompt`. `IssueDetail` takes a fixed share of the drawer's width
+ * (`ISSUE_VIEW_WIDTH_SHARE`, defined there) identical on both tabs; the tabpanel wrapper
+ * takes the rest via `flex: 1` with `minWidth: 0` (so the Board's own horizontal
+ * scroll can actually kick in instead of widening the row). `onCreateTaskFromIssue`/
+ * `onDeleteBoundTask` are passed straight through to `IssueDetail` — they are wired by
+ * the caller (`App.tsx`); this component and `IssueDetail` are agnostic to what they
+ * actually do.
  *
  * ESCAPE: handled HERE (with `stopPropagation`) so an Esc meant for the drawer never
  * also reaches xterm underneath. It routes through the SAME guarded
@@ -57,6 +78,7 @@ import { memo, useEffect, useRef } from 'react'
 import { useStore, activeSessionInWindow } from '../store/store'
 import { IssueList } from './IssueList'
 import { IssueDetail } from './IssueDetail'
+import { KanbanBoard } from './KanbanBoard'
 import { DiscardChangesPrompt } from './DiscardChangesPrompt'
 import { color } from '../style/tokens'
 import { focusTerminal } from '../terminal/terminal-focus'
@@ -89,6 +111,9 @@ export const IssuesDrawer = memo(function IssuesDrawer({
   onDeleteBoundTask
 }: IssuesDrawerProps): React.JSX.Element {
   const open = useStore((s) => s.issuesDrawerOpen)
+  const tab = useStore((s) => s.issuesDrawerTab)
+  const setIssuesDrawerTab = useStore((s) => s.setIssuesDrawerTab)
+  const startNewIssue = useStore((s) => s.startNewIssue)
   const discardPrompt = useStore((s) => s.discardPrompt)
   const toggleIssuesDrawer = useStore((s) => s.toggleIssuesDrawer)
   const confirmDiscard = useStore((s) => s.confirmDiscard)
@@ -256,16 +281,68 @@ export const IssuesDrawer = memo(function IssuesDrawer({
         inset: 0,
         zIndex: 40,
         display: 'flex',
+        flexDirection: 'column',
         background: color.bgSurface,
         borderLeft: `1px solid ${color.border}`,
         transform: open ? 'translateX(0)' : 'translateX(100%)'
       }}
     >
-      <IssueList />
-      <IssueDetail
-        onCreateTaskFromIssue={onCreateTaskFromIssue}
-        onDeleteBoundTask={onDeleteBoundTask}
-      />
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          flexShrink: 0,
+          padding: '8px 12px',
+          borderBottom: `1px solid ${color.borderSubtle}`
+        }}
+      >
+        <button type="button" onClick={startNewIssue}>
+          + New Issue
+        </button>
+        <div
+          role="tablist"
+          aria-label="Issues view"
+          style={{ display: 'flex', gap: 6, marginLeft: 24 }}
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'list'}
+            className={tab === 'list' ? 'btn-primary' : undefined}
+            onClick={() => setIssuesDrawerTab('list')}
+          >
+            List
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'board'}
+            className={tab === 'board' ? 'btn-primary' : undefined}
+            onClick={() => setIssuesDrawerTab('board')}
+          >
+            Board
+          </button>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
+        <div
+          role="tabpanel"
+          aria-label={tab === 'list' ? 'List' : 'Board'}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            display: 'flex',
+            borderRight: `1px solid ${color.border}`
+          }}
+        >
+          {tab === 'list' ? <IssueList /> : <KanbanBoard />}
+        </div>
+        <IssueDetail
+          onCreateTaskFromIssue={onCreateTaskFromIssue}
+          onDeleteBoundTask={onDeleteBoundTask}
+        />
+      </div>
       {discardPrompt ? (
         <DiscardChangesPrompt onDiscard={confirmDiscard} onKeepEditing={cancelDiscard} />
       ) : null}

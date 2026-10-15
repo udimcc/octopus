@@ -85,6 +85,29 @@ export interface IssueStatusIconProps {
   readonly title?: string
 }
 
+/** A small chain-link mark for a linked-task chip (inline SVG, like the status icons
+ * above — no host font has a ⛓ glyph outside the color-emoji font). Shared by
+ * `IssueList`'s row and `KanbanCard`'s card, which both show the same chip. */
+export function LinkGlyph(): React.JSX.Element {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="1em"
+      height="1em"
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.25"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ verticalAlign: '-0.125em' }}
+    >
+      <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+      <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+    </svg>
+  )
+}
+
 export function IssueStatusIcon({ status, size, title }: IssueStatusIconProps): React.JSX.Element {
   const label = title ?? ISSUE_STATUS_LABELS[status]
   return (

@@ -1,22 +1,40 @@
 /**
  * The Issues drawer's left pane: the full issue list grouped by status (PRD "Issues"
  * → "Issues window"; DESIGN §13.5). Self-contained — reads `issues`/`selectedIssueId`/
- * `issueDraft` from the store directly and dispatches `selectIssue`/`startNewIssue`
- * itself, the same way `ProgressPanel` is the task list's own store-reading
- * container; there is no intermediate presentational layer here (unlike
- * `TaskListItem`/`ProjectSidebar`) because the drawer has no sibling that also needs
- * this data.
+ * `issueDraft` from the store directly and dispatches `selectIssue` itself, the same
+ * way `ProgressPanel` is the task list's own store-reading container; there is no
+ * intermediate presentational layer here (unlike `TaskListItem`/`ProjectSidebar`)
+ * because the drawer has no sibling that also needs this data.
  *
  * Each status group is collapsible — local, unpersisted state, since there's nothing
  * worth remembering across sessions. **Done** starts collapsed per the PRD. Group
  * order and newest-first-within-group come from `groupIssuesByStatus`.
+ *
+ * This is the drawer's List-tab pane (`IssuesDrawer` renders it, or `KanbanBoard`, from
+ * the store's `issuesDrawerTab`, and unmounts whichever one isn't active) — fills the
+ * drawer width next to the fixed-share `IssueDetail` pane. **+ New Issue** lives in the
+ * drawer's own header (shared with the Board tab), not here; a tab switch unmounts
+ * this component, so the collapsed-group state above resets (Done starts collapsed
+ * again) — acceptable since nothing here is persisted anyway.
+ *
+ * **Selection follow (DESIGN §13.5):** whenever `selectedIssueId` changes — including
+ * on mount, e.g. right after switching from the Board tab, or the task-row icon
+ * (`TaskListItem`) opening straight onto this tab with an issue already selected — a
+ * collapsed group holding that issue expands, then its row scrolls into view. Shared
+ * with `KanbanBoard` via `useFollowSelectedIssue`; here the hook's `onReady` callback
+ * expands the group (returning `false` until it has), and `collapsed`/`issues` are
+ * read from the closure rather than declared as dependencies, so a group the user
+ * deliberately (re-)collapses while the SAME issue stays selected is never re-touched —
+ * this only reacts to an actual selection change, the drawer re-opening, or the issue
+ * finishing loading.
  */
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useStore } from '../store/store'
 import { groupIssuesByStatus } from '../store/group-issues'
 import { repoBasename } from '../store/group-tasks'
-import { IssueStatusIcon, ISSUE_STATUS_LABELS } from './IssueStatusIcon'
+import { useFollowSelectedIssue } from '../hooks/useFollowSelectedIssue'
+import { IssueStatusIcon, ISSUE_STATUS_LABELS, LinkGlyph } from './IssueStatusIcon'
 import { color, fontSize, radius } from '../style/tokens'
 import type { IssueStatusDTO } from '../../../shared/dto'
 
@@ -35,35 +53,13 @@ export function descriptionPreview(markdown: string): string {
     .trim()
 }
 
-/** A small chain-link mark for the row's linked-task chip (inline SVG, like the
- * status icons — no host font has a ⛓ glyph outside the color-emoji font). */
-function LinkGlyph(): React.JSX.Element {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="1em"
-      height="1em"
-      aria-hidden="true"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.25"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      style={{ verticalAlign: '-0.125em' }}
-    >
-      <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
-      <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
-    </svg>
-  )
-}
-
 export function IssueList(): React.JSX.Element {
   const issues = useStore((s) => s.issues)
   const tasks = useStore((s) => s.tasks)
   const selectedIssueId = useStore((s) => s.selectedIssueId)
   const issueDraft = useStore((s) => s.issueDraft)
   const selectIssue = useStore((s) => s.selectIssue)
-  const startNewIssue = useStore((s) => s.startNewIssue)
+  const issuesDrawerOpen = useStore((s) => s.issuesDrawerOpen)
 
   // Done starts collapsed (PRD "Issues window"); local, unpersisted.
   const [collapsed, setCollapsed] = useState<Readonly<Record<IssueStatusDTO, boolean>>>({
@@ -79,38 +75,43 @@ export function IssueList(): React.JSX.Element {
     setCollapsed((prev) => ({ ...prev, [status]: !prev[status] }))
   }
 
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  // See the class doc comment ("Selection follow"). Guarded on `issuesDrawerOpen`,
+  // same reasoning as `KanbanBoard`'s own copy of this guard: while the drawer is
+  // closed it is merely translated off-screen via CSS `transform` — still mounted
+  // (DESIGN §13.5) — so a row inside it isn't somewhere worth scrolling into view
+  // yet; deferred until the drawer is actually open, which `useFollowSelectedIssue`
+  // re-runs for once it is, since `isOpen` is one of its own triggers.
+  const selectedIssue = selectedIssueId ? issues[selectedIssueId] : undefined
+  useFollowSelectedIssue(
+    containerRef,
+    issuesDrawerOpen,
+    selectedIssueId,
+    selectedIssue?.status,
+    () => {
+      if (!selectedIssue) return false
+      if (!collapsed[selectedIssue.status]) return true
+      setCollapsed((prev) => ({ ...prev, [selectedIssue.status]: false }))
+      return false
+    }
+  )
+
   return (
     <div
+      ref={containerRef}
       style={{
-        // Wide enough for real issue names; capped so the detail pane keeps room on a
-        // narrow window.
-        width: 660,
-        maxWidth: '50%',
-        flexShrink: 0,
+        // Fills its `IssuesDrawer`-owned `role="tabpanel"` wrapper (which carries the
+        // single border against the fixed-share `IssueDetail` pane next to it, and
+        // `minWidth: 0` so this can actually shrink that far); this div itself only
+        // needs to scroll.
+        flex: 1,
+        minWidth: 0,
         display: 'flex',
         flexDirection: 'column',
-        borderRight: `1px solid ${color.border}`,
         overflowY: 'auto'
       }}
     >
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          padding: '8px 12px',
-          borderBottom: `1px solid ${color.borderSubtle}`
-        }}
-      >
-        <button
-          type="button"
-          className="btn-primary"
-          style={{ fontSize: fontSize.sm, padding: '2px 10px' }}
-          onClick={startNewIssue}
-        >
-          + New Issue
-        </button>
-      </div>
-
       <ul style={{ margin: 0, padding: 0, listStyle: 'none', flex: 1 }}>
         {groups.map((group) => {
           const isCollapsed = collapsed[group.status]
@@ -166,6 +167,7 @@ export function IssueList(): React.JSX.Element {
                           <button
                             type="button"
                             className="issue-row"
+                            data-issue-id={issue.id}
                             aria-pressed={selected}
                             onClick={() => selectIssue(issue.id)}
                             style={{

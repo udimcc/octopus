@@ -125,6 +125,17 @@ describe('<IssueDetail>', () => {
     expect(screen.queryByLabelText('issue name')).not.toBeInTheDocument()
   })
 
+  it('falls back to the placeholder when the selected issue is deleted out from under it', () => {
+    seed([issue('i1', { name: 'Fix the bug' })])
+    act(() => useStore.getState().selectIssue('i1'))
+    renderDetail()
+    expect(screen.getByRole('heading', { name: 'Fix the bug' })).toBeInTheDocument()
+
+    act(() => useStore.getState().applyEvent({ type: 'issueDeleted', issueId: 'i1' }))
+    expect(screen.getByText('Select an issue, or create a new one.')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Fix the bug' })).not.toBeInTheDocument()
+  })
+
   it('view mode: shows name, description, project, task, status and the action buttons', () => {
     seed([issue('i1', { name: 'Fix the bug', description: 'details', status: 'in_review' })])
     act(() => useStore.getState().selectIssue('i1'))

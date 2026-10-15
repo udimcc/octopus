@@ -1746,6 +1746,72 @@ the same `IncompatibleDbError` fatal-dialog path as any other forward migration 
   Navigating away while `issueEditDirty` is set raises `discardPrompt` instead of acting immediately
   (close / select-another / new), mirroring the task delete dirty-gate's confirm-first shape (I3/I4 for
   tasks; no new invariant needed since this is UI-only, not aggregate state).
+- **List/Board tab** (PRD: *Issues window* → *Board*). `issuesDrawerTab: 'list' | 'board'`
+  (`setIssuesDrawerTab`) is more drawer view-state under the same rules: starts `'list'`, never persisted,
+  outside the hydrated projection, survives re-hydrate. `toggleIssuesDrawer`/`openIssuesDrawer(issueId)`
+  leave it untouched, so both the drawer and the task-row icon reopen on the last-used tab.
+- **Drawer layout.** `IssuesDrawer` renders a header — **+ New Issue** on the left
+  (hoisted out of `IssueList`, calling the same guarded `startNewIssue`), then `role="tablist"`
+  List/Board tabs set apart by a gap — above two panes.
+  `IssueDetail` is mounted **unconditionally**; only the left pane (`IssueList` or `KanbanBoard`) is
+  swapped. A tab switch writes only `issuesDrawerTab`, never `selectedIssueId`/`issueDraft`/
+  `issueEditDirty`, so the shared selection and the edit form's local state survive it and it can never
+  raise `discardPrompt`. `IssueDetail` has a fixed flex-basis `ISSUE_VIEW_WIDTH_SHARE = '61%'` (no
+  grow/shrink; floor `ISSUE_VIEW_MIN_WIDTH = 360`); the List/Board pane fills the remaining ~39%. A basis rather than a grow weight makes the share
+  identical whichever pane sits beside it; the left pane is `flex: 1; minWidth: 0` so the board's own
+  horizontal scroll engages instead of widening the row.
+- **Board.** `KanbanBoard` builds its four columns from the same `groupIssuesByStatus` as `IssueList`,
+  so counts and newest-first order match the List tab by construction. Each column is a
+  `data-issue-status` section with its own vertical scroll and a `COLUMN_MIN_WIDTH` (220px) below which
+  the board scrolls horizontally; an empty column's body still fills its height ("No issues"), so the
+  whole column is a drop target. `KanbanCard` is presentational (`data-issue-id`; two-line clamped name,
+  project, linked-task chip; the selected card reuses the list row's highlight). A click goes through
+  `selectIssue`, keeping the dirty guard.
+- **Drag-and-drop** reuses the manual pointer-capture pattern of `SplitDividers` and the tab-bar group
+  line (§5.7) — no dnd library, no new dependency. A small movement threshold separates a click from a
+  drag. Electron 33 drops pointer capture silently (no `lostpointercapture`), so a drag also ends on a
+  window-level `pointerup`/`pointercancel`, with an `ended` guard so it tears down once. The column under
+  the pointer is computed outside any state updater and only written to state on an actual change, so
+  `elementFromPoint` never runs inside a setState updater. The drop target's current status is re-read
+  from the store at drop time (not the status captured at drag start, which could be stale if something
+  else changed it mid-drag). A drop on a **different** column calls `issues.update({ issueId, status })`
+  — the toolbar dropdown's exact path, with no prompt and no bind/unbind or task side effect; the card
+  moves when the resulting `issueUpserted` is reduced, so List, Board and the task-row icon stay
+  consistent. **Error surfacing differs by entry point**, even though the IPC call is identical: the
+  toolbar dropdown (`IssueDetail`) shows the error inline, next to the control that caused it; a drag has
+  no such fixed location once the card has already returned to its original column, so it surfaces
+  through the same transient `pushToast('error', …)` used for other drag/reorder failures elsewhere
+  (`SessionTabBar`). Same column or outside all columns → no call. A drag never touches `selectedIssueId`,
+  and `issueEditDirty` covers only name/description/project, so dragging an issue that is open with
+  unsaved edits is safe by construction.
+- **Drag overlay (VDI + overlay contract).** The drawer's slide-in `transform` is a containing block for
+  `position: fixed`, so the pointer-following copy is portaled to `document.body` (as
+  `.claude/rules/modals-and-overlays.md` requires for dialogs opened from the drawer) and moved by
+  `transform` only — no per-move layout writes, no shadow/blur/filter/transition (SwiftShader, §5.3).
+  It is not a dialog: no `role="dialog"`/`aria-modal`, so `topmostModal()` and the drawer's focus/Esc
+  routing are unaffected.
+- **Click suppression.** A completed drag must not also select the card: a ref is set the instant a
+  real drag (past the threshold) is detected on release, checked by the dragged card's `onSelect`
+  wrapper instead of calling `selectIssue`, and self-clears on a macrotask (`setTimeout(0)`) rather than
+  being cleared by that same consumer, so it only ever swallows the ONE click synthesized by that same
+  pointerup. It is reset to `false`, and any previous in-flight gesture torn down, at the very start of
+  a new drag — a card that remounts mid-drag (e.g. a linked task's create flow moving it to another
+  column) must not leave a stale flag or leaked listeners from a prior gesture around.
+- **Esc and close mid-drag.** While a drag is active, a window `keydown` listener in the **capture**
+  phase — added imperatively the instant the drag threshold is crossed, not via a React-state-driven
+  effect, which would lag a render behind — takes Esc and cancels only the drag, before the drawer's own
+  `onKeyDown` or `useKeyboardShortcuts` can see it — the first Esc never closes the drawer. Cancelling
+  this way still leaves the pointer down and captured, so releasing it afterwards over the original card
+  would otherwise fire a `click` that selects it; the Esc handler additionally arms a one-shot window
+  `pointerup` (capture phase) that applies the same click suppression described above, removed on the
+  next pointerup or on unmount, whichever comes first. The drawer is always mounted, so the board
+  explicitly cancels an active drag when `issuesDrawerOpen` turns false (button or shortcut), when the
+  dragged issue disappears (deleted elsewhere), or when the board itself unmounts (a tab switch).
+- **Opening on an issue** (task-row icon): the drawer opens on the last-used tab and that tab scrolls
+  the selected card or row into view; on List, a collapsed group holding the selection (e.g. Done)
+  expands first.
+- **No backend change for the Board:** no new command, event, IPC channel, DTO field or schema
+  migration. It is a renderer-only view over the existing `issues` projection and `issues.update`.
 - **Markdown** renders via `react-markdown` + `remark-gfm` (GitHub tables/checklists) with `skipHtml` —
   raw HTML in a description is never rendered, closing the same injection surface the CSP already closes
   for remote content; `img` renders as alt text only, since `default-src 'self'` blocks a remote image
@@ -1763,6 +1829,8 @@ Unit/component tests follow the existing split (§11 testing strategy): domain (
 invariant, `todo → in_progress` only from `todo`), persistence (v7→v8 migration, round trip, `SET NULL`
 on task delete, the `UNIQUE` violation on a double bind), application (CRUD, the bind-on-Ready stale-view
 case, the delete-both all-or-nothing transaction, project-removal cleanup), and renderer (reducers, drawer
-view-state, the discard-prompt gate, link-scheme filtering). A `scripts/probe-sqlite-store.cjs` run
-exercises the migration and constraints against the real `better-sqlite3` binary, matching the existing
-real-SQLite probe pattern.
+view-state, the discard-prompt gate, link-scheme filtering; for the Board: tab state across close/reopen
+and re-hydrate, columns/order/empty column, shared selection and unsaved edits across a tab switch, and
+drag — a cross-column drop calls `issues.update`, same-column/outside drops, Esc and close-mid-drag make
+no call, and the selection is unchanged). A `scripts/probe-sqlite-store.cjs` run exercises the migration
+and constraints against the real `better-sqlite3` binary, matching the existing real-SQLite probe pattern.

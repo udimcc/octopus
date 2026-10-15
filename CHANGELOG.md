@@ -20,6 +20,16 @@ All notable changes to Octopus are documented here. The format is based on
   app window. Stored locally in a new `issues` table (schema v8) — upgrading writes an
   `octopus.db.bak-v7` backup first, and an older build refuses to open the upgraded database rather than
   risk corrupting it.
+- **Issues board.** The Issues drawer has **List** and **Board** tabs. The Board shows four columns —
+  Todo, In progress, In review, Done — always expanded, newest first, each with a count and its own
+  scroll; cards show the name, the project and the linked task. Drag a card to another column to change
+  its status, exactly like the status dropdown (no prompts, the linked task is untouched); dropping on
+  the same column or outside does nothing, and Esc or closing the drawer cancels a drag. Both tabs
+  share one selection, so switching keeps the open issue and any unsaved edits without a prompt. The
+  drawer reopens on the last-used tab (List after a restart), and a task's issue icon opens it there
+  with the issue scrolled into view, expanding a collapsed group on List. **+ New Issue** sits at the
+  left of the header row, followed by the tabs, and the issue view takes a fixed share of the
+  drawer (about 61%, the same on both tabs); the list or board fills the rest.
 - **Defined projects in the New-Task modal.** A left Projects sidebar on the "From New
   Worktree" and "From Existing Repo" tabs replaces the per-task directory picker. "+ Add
   project" opens the folder picker once per repo — a linked worktree resolves to its

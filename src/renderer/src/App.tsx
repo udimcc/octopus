@@ -41,16 +41,22 @@ const shellStyle: React.CSSProperties = {
  * Wraps `TaskWorkspace` + `IssuesDrawer` (PRD "Issues" → "Issues window"): the
  * drawer is `position: absolute; inset: 0` against this box, so `position: relative`
  * here scopes it to the session area only, never covering the `ProgressPanel`
- * beside it. `overflow: hidden` + `minWidth: 0` keep the drawer's slide-in
+ * beside it. `overflow: clip` + `minWidth: 0` keep the drawer's slide-in
  * (`transform`, never `left`/`width`) and the workspace's own content from pushing
- * this flex child wider than the space actually available.
+ * this flex child wider than the space actually available, without making this
+ * element a scroll container: `clip` (Chromium ≥90) clips overflow the same as
+ * `hidden` but is never programmatically scrollable, so a `scrollIntoView` call for
+ * a row/card still off-screen behind the drawer's in-flight slide transition (e.g.
+ * right after the drawer opens with a selection, DESIGN §13.5) can't walk up and
+ * scroll THIS ancestor sideways — `hidden` was script-scrollable and did exactly
+ * that. Neither this element nor anything else reads its `scrollLeft`/`scrollTop`.
  */
 const workspaceAreaStyle: React.CSSProperties = {
   position: 'relative',
   flex: 1,
   display: 'flex',
   minWidth: 0,
-  overflow: 'hidden'
+  overflow: 'clip'
 }
 
 /**

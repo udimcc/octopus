@@ -168,6 +168,16 @@ export interface StoreData {
    * every launch and survives a `hydrate()` re-hydration (see {@link useStore.hydrate}).
    */
   readonly issuesDrawerOpen: boolean
+  /**
+   * Which pane the drawer's left side shows ("Issues" → Board, DESIGN §13.5): `'list'`
+   * (grouped-by-status rows) or `'board'` (the Kanban columns). Renderer-local view-state,
+   * NEVER persisted and NEVER sent over the wire — like {@link issuesDrawerOpen} it starts
+   * on `'list'` every launch (PRD "Issues": "List after a restart") and survives a
+   * `hydrate()` re-hydration. Closing/reopening the drawer and selecting an issue from a
+   * task row (`openIssuesDrawer`) both leave it untouched, so the drawer reopens on
+   * whichever tab the user last used (DESIGN §13.5).
+   */
+  readonly issuesDrawerTab: IssuesDrawerTab
   /** The issue shown in the drawer's right pane, if any. Renderer-local view-state. */
   readonly selectedIssueId?: string
   /**
@@ -205,6 +215,9 @@ export type DiscardPendingAction =
   | { readonly kind: 'close' }
   | { readonly kind: 'select'; readonly issueId: string }
   | { readonly kind: 'new' }
+
+/** Which pane the Issues drawer shows ("Issues" → Board, DESIGN §13.5). See {@link StoreData.issuesDrawerTab}. */
+export type IssuesDrawerTab = 'list' | 'board'
 
 /** Duration of the focus flash (§5.4). Keep in sync with `.session-tab--focus-flash` in globals.css. */
 export const FOCUS_FLASH_MS = 1000
@@ -264,6 +277,13 @@ export interface StoreActions {
    * (or keeps the previous selection if omitted) — no dirty state can exist while closed.
    */
   openIssuesDrawer(issueId?: string): void
+  /**
+   * Switch the drawer's List/Board pane ("Issues" → Board, DESIGN §13.5). Never
+   * dirty-guarded: both panes share one selection (DESIGN §13.5), so a tab switch can
+   * never raise `discardPrompt` and never touches
+   * `selectedIssueId`/`issueDraft`/`issueEditDirty`.
+   */
+  setIssuesDrawerTab(tab: IssuesDrawerTab): void
   /** Select an issue in the drawer. Dirty-guarded: raises `discardPrompt {kind:'select', issueId}`. */
   selectIssue(id: string): void
   /** Start a "+ New Issue" draft. Dirty-guarded: raises `discardPrompt {kind:'new'}`. */
@@ -349,6 +369,7 @@ export function initialData(): StoreData {
     focusFlashSeq: 0,
     issues: {},
     issuesDrawerOpen: false,
+    issuesDrawerTab: 'list',
     selectedIssueId: undefined,
     issueDraft: false,
     issueEditDirty: false,
@@ -1414,6 +1435,7 @@ export const useStore = create<Store>((set, get) => ({
         // no such field): a re-hydration (e.g. after SettingsModal save) must not
         // reset it, the same way the window-focus fields above survive.
         issuesDrawerOpen: data.issuesDrawerOpen,
+        issuesDrawerTab: data.issuesDrawerTab,
         selectedIssueId,
         issueDraft: data.issueDraft,
         // Dropping a stale selection discards any dirty edit tied to it too,
@@ -1497,6 +1519,9 @@ export const useStore = create<Store>((set, get) => ({
   toggleIssuesDrawer: () => set(toggleDrawerData),
 
   openIssuesDrawer: (issueId) => set((data) => openDrawerData(data, issueId)),
+
+  setIssuesDrawerTab: (tab) =>
+    set((data) => (data.issuesDrawerTab === tab ? data : { issuesDrawerTab: tab })),
 
   selectIssue: (id) => set((data) => selectIssueData(data, id)),
 

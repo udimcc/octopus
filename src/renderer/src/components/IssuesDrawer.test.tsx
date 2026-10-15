@@ -666,4 +666,118 @@ describe('<IssuesDrawer>', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create task' }))
     expect(onCreateTaskFromIssue).toHaveBeenCalledWith('i1')
   })
+
+  describe('Board tab (header tabs, + New Issue, selection follow)', () => {
+    it('List is selected by default; clicking the Board tab switches the tabpanel and the store tab', () => {
+      seed()
+      render(<IssuesDrawer onCreateTaskFromIssue={vi.fn()} onDeleteBoundTask={vi.fn()} />)
+      act(() => useStore.getState().toggleIssuesDrawer())
+      expect(screen.getByRole('tab', { name: 'List' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByRole('tab', { name: 'Board' })).toHaveAttribute('aria-selected', 'false')
+      expect(screen.getByRole('tabpanel', { name: 'List' })).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('tab', { name: 'Board' }))
+      expect(useStore.getState().issuesDrawerTab).toBe('board')
+      expect(screen.getByRole('tabpanel', { name: 'Board' })).toBeInTheDocument()
+      expect(screen.getByRole('tab', { name: 'Board' })).toHaveAttribute('aria-selected', 'true')
+    })
+
+    it('switching tabs keeps the selection and a dirty edit, with no discard prompt', () => {
+      seed([issue('i1')])
+      render(<IssuesDrawer onCreateTaskFromIssue={vi.fn()} onDeleteBoundTask={vi.fn()} />)
+      act(() => {
+        useStore.getState().toggleIssuesDrawer()
+        useStore.getState().selectIssue('i1')
+        useStore.getState().setIssueEditDirty(true)
+      })
+
+      fireEvent.click(screen.getByRole('tab', { name: 'Board' }))
+      expect(useStore.getState().selectedIssueId).toBe('i1')
+      expect(useStore.getState().issueEditDirty).toBe(true)
+      expect(useStore.getState().discardPrompt).toBeNull()
+
+      fireEvent.click(screen.getByRole('tab', { name: 'List' }))
+      expect(useStore.getState().selectedIssueId).toBe('i1')
+      expect(useStore.getState().issueEditDirty).toBe(true)
+      expect(useStore.getState().discardPrompt).toBeNull()
+    })
+
+    it('+ New Issue starts a draft from the List tab', () => {
+      seed([])
+      render(<IssuesDrawer onCreateTaskFromIssue={vi.fn()} onDeleteBoundTask={vi.fn()} />)
+      act(() => useStore.getState().toggleIssuesDrawer())
+      fireEvent.click(screen.getByRole('button', { name: '+ New Issue' }))
+      expect(useStore.getState().issueDraft).toBe(true)
+    })
+
+    it('+ New Issue starts a draft from the Board tab', () => {
+      seed([])
+      render(<IssuesDrawer onCreateTaskFromIssue={vi.fn()} onDeleteBoundTask={vi.fn()} />)
+      act(() => {
+        useStore.getState().toggleIssuesDrawer()
+        useStore.getState().setIssuesDrawerTab('board')
+      })
+      fireEvent.click(screen.getByRole('button', { name: '+ New Issue' }))
+      expect(useStore.getState().issueDraft).toBe(true)
+    })
+
+    it('the "+ New Issue" button is a compact header button, not a full-width bar', () => {
+      seed([])
+      render(<IssuesDrawer onCreateTaskFromIssue={vi.fn()} onDeleteBoundTask={vi.fn()} />)
+      act(() => useStore.getState().toggleIssuesDrawer())
+      expect(screen.getByRole('button', { name: '+ New Issue' }).style.width).toBe('')
+    })
+
+    it('the placeholder shows with no selection, on both tabs', () => {
+      seed([])
+      render(<IssuesDrawer onCreateTaskFromIssue={vi.fn()} onDeleteBoundTask={vi.fn()} />)
+      act(() => useStore.getState().toggleIssuesDrawer())
+      expect(screen.getByText('Select an issue, or create a new one.')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('tab', { name: 'Board' }))
+      expect(screen.getByText('Select an issue, or create a new one.')).toBeInTheDocument()
+    })
+
+    it('the issue view keeps the same width style on both tabs', () => {
+      seed([issue('i1')])
+      render(<IssuesDrawer onCreateTaskFromIssue={vi.fn()} onDeleteBoundTask={vi.fn()} />)
+      act(() => {
+        useStore.getState().toggleIssuesDrawer()
+        useStore.getState().selectIssue('i1')
+      })
+      const wrapperOnList = document.querySelector<HTMLElement>('div[style*="360px"]')
+      expect(wrapperOnList).not.toBeNull()
+      expect(wrapperOnList).toHaveStyle({ flex: '0 0 61%', minWidth: '360px' })
+
+      fireEvent.click(screen.getByRole('tab', { name: 'Board' }))
+      const wrapperOnBoard = document.querySelector<HTMLElement>('div[style*="360px"]')
+      expect(wrapperOnBoard).not.toBeNull()
+      expect(wrapperOnBoard).toHaveStyle({ flex: '0 0 61%', minWidth: '360px' })
+    })
+
+    it('openIssuesDrawer(id) opens on the last-used tab', () => {
+      seed([issue('i1')])
+      render(<IssuesDrawer onCreateTaskFromIssue={vi.fn()} onDeleteBoundTask={vi.fn()} />)
+      act(() => useStore.getState().setIssuesDrawerTab('board')) // last-used, while closed
+      act(() => useStore.getState().openIssuesDrawer('i1'))
+      expect(useStore.getState().issuesDrawerOpen).toBe(true)
+      expect(screen.getByRole('tabpanel', { name: 'Board' })).toBeInTheDocument()
+    })
+
+    it('on List, a collapsed Done group holding the selected issue auto-expands and scrolls it into view', () => {
+      seed([issue('d1', { status: 'done', name: 'Finished thing' })])
+      const scrollSpy = vi.fn()
+      // jsdom doesn't implement scrollIntoView at all (no property to spy on).
+      ;(Element.prototype as unknown as { scrollIntoView: () => void }).scrollIntoView = scrollSpy
+      try {
+        render(<IssuesDrawer onCreateTaskFromIssue={vi.fn()} onDeleteBoundTask={vi.fn()} />)
+        act(() => useStore.getState().openIssuesDrawer('d1'))
+        const doneHeader = screen.getByText(/^[▾▸] Done$/).closest('button')
+        expect(doneHeader).toHaveAttribute('aria-expanded', 'true')
+        expect(scrollSpy).toHaveBeenCalled()
+      } finally {
+        delete (Element.prototype as unknown as { scrollIntoView?: () => void }).scrollIntoView
+      }
+    })
+  })
 })

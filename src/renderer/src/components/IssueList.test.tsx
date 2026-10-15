@@ -142,13 +142,6 @@ describe('<IssueList>', () => {
     expect(useStore.getState().selectedIssueId).toBe('t1')
   })
 
-  it('clicking "+ New Issue" starts a draft in the store', () => {
-    seed([])
-    render(<IssueList />)
-    fireEvent.click(screen.getByRole('button', { name: '+ New Issue' }))
-    expect(useStore.getState().issueDraft).toBe(true)
-  })
-
   it('each row shows the status icon and the issue name', () => {
     const statuses: IssueStatusDTO[] = ['todo', 'in_progress', 'in_review', 'done']
     seed(statuses.map((status, i) => issue(`i${i}`, { status, name: `Issue ${i}` })))
@@ -197,12 +190,6 @@ describe('<IssueList>', () => {
     const bare = issueRow('Bare')
     expect(bare.textContent).toBe('Bare')
     expect(within(bare).queryByTitle(/^Linked task/)).not.toBeInTheDocument()
-  })
-
-  it('the "+ New Issue" button is a compact header button, not a full-width bar', () => {
-    seed([])
-    render(<IssueList />)
-    expect(screen.getByRole('button', { name: '+ New Issue' }).style.width).toBe('')
   })
 })
 

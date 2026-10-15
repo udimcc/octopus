@@ -471,3 +471,17 @@ button:focus-visible {
 .issue-group-header:hover:not(:disabled) {
   background: var(--bg-hover);
 }
+
+/* Board tab cards (KanbanCard, DESIGN §13.5) — same hover-tint pattern as `.issue-row`
+   above (base background here, not inline, so `:hover` can override it), but with the
+   global button `transition` turned off: the VDI host (software SwiftShader, no GPU)
+   makes even a 90ms background fade on a surface this size worth avoiding, and the
+   dim/selected states already change instantly via `opacity`/`borderLeft`. */
+.kanban-card {
+  transition: none;
+  background: var(--bg-surface);
+}
+
+.kanban-card:hover:not([aria-pressed='true']) {
+  background: var(--bg-hover);
+}

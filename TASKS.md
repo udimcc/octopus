@@ -854,3 +854,64 @@ status.
 - [ ] Existing-test updates: task create/delete, project removal, app state, SQLite store/mappers, command
   loop, New-Task modal, delete-task confirm, Progress panel, Settings, keyboard shortcuts, store, terminal
   pass-through.
+
+---
+
+## Issues Board (Kanban tab) — DESIGN §13.5
+
+Plan: `docs/plans/kanban-board_2026-10-14-plan.md` (design: `docs/plans/kanban-board_2026-10-14-design.md`).
+Goal (PRD §Issues → *Issues window* → *Board*): a Board tab in the Issues drawer — four status columns of
+compact cards, drag a card to another column to change its status — sharing one selection with the List
+tab under a unified drawer header. **Renderer only:** no new command, event, IPC channel, DTO field, schema
+migration or npm dependency; a drop uses the existing `issues.update` status path.
+
+### Renderer store — DESIGN §13.5
+
+- [x] `src/renderer/src/store/store.ts`: `issuesDrawerTab: 'list' | 'board'` (`IssuesDrawerTab`) + action
+  `setIssuesDrawerTab`; renderer view-state, never persisted, not in the hydrated projection, starts
+  `'list'`, survives settings re-hydrate; `toggleIssuesDrawer`/`openIssuesDrawer(issueId)` keep the
+  last-used tab.
+
+### UI components — DESIGN §13.5
+
+- [x] `IssuesDrawer.tsx`: header row with `role="tablist"` List/Board tabs and **+ New Issue** (moved out of
+  `IssueList`, same guarded `startNewIssue`, works on both tabs). `IssueDetail` always mounted; only the
+  List/Board pane is swapped, so a tab switch keeps the selection and unsaved edits with no discard prompt.
+- [x] `IssueDetail.tsx`: fixed share of the drawer, `ISSUE_VIEW_WIDTH_SHARE = '61%'` /
+  `ISSUE_VIEW_MIN_WIDTH = 360`, identical on both tabs; "Select an issue" placeholder at the same width.
+  `IssueList.tsx`: the old `width: 660; maxWidth: 50%` sizing removed — the list fills the rest.
+- [x] New `KanbanBoard.tsx`: four always-expanded columns from `groupIssuesByStatus` (newest first), header
+  = status icon + label + count, per-column vertical scroll, `COLUMN_MIN_WIDTH = 220` with horizontal board
+  scroll, "No issues" in an empty column (whose body still fills its height as a drop target).
+- [x] New `KanbanCard.tsx`: two-line clamped name, project, linked-task chip; selected = list-row
+  highlight; click → `selectIssue` (keeps the dirty guard). No shadow/blur/filter/animation.
+- [x] Drag-and-drop (`KanbanBoard`/`KanbanCard`): manual pointer-capture drag modeled on `SplitDividers`/
+  `SessionTabBar` — click/drag threshold; window-level `pointerup`/`pointercancel` fallback with an `ended`
+  guard (Electron 33 has no `lostpointercapture`).
+  - Drop on another column (empty space included) → `issues.update({ issueId, status })`, no prompts and no
+    bind/task side effects; same column or outside → no call; the selection never changes.
+  - Esc mid-drag cancels only the drag (window capture-phase `keydown`, ahead of the drawer's Esc);
+    closing the drawer mid-drag cancels it (the drawer stays mounted).
+  - Visuals: the card dims in place; the copy is portaled to `document.body` (escapes the drawer's
+    `transform`), moved by `transform` only, not `aria-modal` (leaves `topmostModal()` alone); the target
+    column is highlighted; no shadow, blur, filter or reflow animation (VDI).
+- [x] Task-row icon: opens the drawer on the last-used tab with the issue selected and scrolled into view;
+  on List, a collapsed group holding it (e.g. Done) auto-expands.
+
+### Board Testing — DESIGN §13.6
+
+- [ ] Store: the tab defaults to List, is kept across close/reopen and re-hydrate, and is never persisted.
+- [ ] Board: four columns always render; cards in the right column, newest first; empty column shows "No
+  issues"; click selects; the selected card is highlighted.
+- [ ] Drag: a cross-column drop calls `issues.update` with the new status (also onto an empty column);
+  same-column and outside drops make no call; Esc cancels without closing the drawer; closing the drawer
+  mid-drag cancels; the selection is unchanged.
+- [ ] Drawer: a tab switch keeps the selection and unsaved edits with no prompt; same issue-view share on
+  both tabs; placeholder with no selection; + New Issue on both tabs. Task-row icon opens the last-used tab
+  and auto-expands a collapsed group.
+- [ ] Existing-test updates: `IssueList` / `IssuesDrawer` tests for the moved + New Issue and the new pane
+  widths; `group-issues.test.ts` passes unchanged.
+- [ ] Edge cases: a linked issue dropped on Done (task stays linked); the selected issue deleted while on
+  Board (placeholder); "Delete both" from the Progress window with the board open; many Done issues (only
+  that column scrolls); a long name (two-line clamp); a narrow window (horizontal scroll).
+- [ ] Manual: drag smoothness on the VDI host, no visual stalls.
