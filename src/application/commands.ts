@@ -265,22 +265,60 @@ export interface WindowBounds {
 
 /**
  * Open a new secondary window (V1.5, §6.7). `role` is always `secondary` — the
- * single main window is created at boot, never via a command. `bounds` seeds the
+ * single main window is created at boot, never via a command; a `view` window is
+ * minted only by `createView`, never through this input shape. `bounds` seeds the
  * OS window position (e.g. the drop point of a detached tab); omitted → OS default.
  */
 export interface CreateWindowInput {
   readonly role: 'secondary'
   readonly bounds?: WindowBounds
+  /**
+   * The window the open request came FROM (window-view feature) — e.g. the
+   * detach-tab gesture's source window. The use case normalizes this to its
+   * window-GROUP root (`use-cases/window-groups.ts`'s `windowGroupRoot`) before
+   * persisting: a new secondary of a VIEW's group gets `parentWindowId` set to
+   * that view's id; a new secondary of MAIN's group gets no `parentWindowId` at
+   * all, so plain secondaries round-trip exactly as before this feature.
+   * Omitted → treated as main (`MAIN_WINDOW_ID`).
+   */
+  readonly parentWindowId?: WindowId
 }
 
 /**
- * Close a secondary window (V1.5, §6.7). `disposition` decides its live sessions:
- * `move-to-main` reassigns each to the main window; `kill-sessions` closes each.
- * The renderer resolves this via the OS close dialog before dispatching.
+ * Close a window (V1.5, §6.7; window-view feature). `disposition` decides its
+ * live sessions: `move-to-main` reassigns each to the window's GROUP ROOT — main
+ * for a plain secondary, or the parent view for one of a view's secondaries
+ * (`use-cases/window-groups.ts`'s `windowGroupRoot`); `kill-sessions` closes each
+ * regardless of group. The renderer resolves this via the OS close dialog before
+ * dispatching. Closing a VIEW itself is a different, richer teardown
+ * (secondaries first, sessions to main, auto-switch) — `closeWindow` delegates to
+ * `closeView` defensively if `windowId` names one, but the renderer should
+ * dispatch `closeView` directly for a view's own close button.
  */
 export interface CloseWindowInput {
   readonly windowId: WindowId
   readonly disposition: 'move-to-main' | 'kill-sessions'
+}
+
+/**
+ * Pop task `taskId` into its own dedicated OS window (a "view"), pinned to it
+ * permanently — the main window's task-row "New Window From Task" context menu
+ * (window-view feature). Rejected (`ok: false`) if the task doesn't exist or
+ * already has a view (at most one per task). `bounds` seeds the OS window
+ * position; omitted → OS default (`DEFAULT_WINDOW_BOUNDS`).
+ */
+export interface CreateViewInput {
+  readonly taskId: TaskId
+  readonly bounds?: WindowBounds
+}
+
+/**
+ * Close a task's dedicated view window (window-view feature): its own
+ * secondaries close first, every session returns to main, and main auto-switches
+ * to the task. Rejected (`ok: false`) if `windowId` doesn't name a view.
+ */
+export interface CloseViewInput {
+  readonly windowId: WindowId
 }
 
 /** Reassign a session to another (already-open) window (V1.5, §3.7, §6.7). */
@@ -415,6 +453,8 @@ export type Command =
   | { readonly kind: 'closeWindow'; readonly input: CloseWindowInput }
   | { readonly kind: 'moveSessionToWindow'; readonly input: MoveSessionToWindowInput }
   | { readonly kind: 'createWindowWithSession'; readonly input: CreateWindowWithSessionInput }
+  | { readonly kind: 'createView'; readonly input: CreateViewInput }
+  | { readonly kind: 'closeView'; readonly input: CloseViewInput }
   | { readonly kind: 'addProject'; readonly input: AddProjectInput }
   | { readonly kind: 'removeProject'; readonly input: RemoveProjectInput }
   | { readonly kind: 'setProjectDefaultBranch'; readonly input: SetProjectDefaultBranchInput }
@@ -436,8 +476,9 @@ export interface CommandResult {
   readonly needsDirtyConfirm?: boolean
   readonly error?: string
   /**
-   * The id of a window just created by `createWindow`/`createWindowWithSession`
-   * (V1.5, §6.7). `main` needs it to open the OS `BrowserWindow` for the new id.
+   * The id of a window just created by `createWindow`/`createWindowWithSession`/
+   * `createView` (V1.5, §6.7; window-view feature). `main` needs it to open the
+   * OS `BrowserWindow` for the new id.
    */
   readonly windowId?: WindowId
   /** The resolved project, returned by `addProject` (§5.4, §6.3). */

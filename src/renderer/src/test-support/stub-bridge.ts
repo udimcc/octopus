@@ -100,6 +100,10 @@ export function makeStubBridge(options?: {
       createWithSession: newAck(),
       windowAtPoint: vi.fn().mockResolvedValue(null)
     },
+    views: {
+      create: newAck(),
+      close: newAck()
+    },
     pty: { write: vi.fn(), resize: vi.fn() },
     app: {
       getState: vi.fn().mockResolvedValue(state),

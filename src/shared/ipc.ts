@@ -40,6 +40,8 @@ import type {
   MoveSessionInput,
   CreateWindowWithSessionInput,
   WindowAtPointInput,
+  CreateViewInput,
+  CloseViewInput,
   SettingsPatchDTO,
   ProjectListItemDTO,
   ProjectWorktreeDTO,
@@ -127,6 +129,10 @@ export const CHANNELS = {
   windowCreate: 'window:create',
   windowClose: 'window:close',
   windowCreateWithSession: 'window:createWithSession',
+
+  // View commands (UI → backend, request/reply) (window-view feature).
+  viewCreate: 'view:create',
+  viewClose: 'view:close',
 
   // Project commands (UI → backend, request/reply) (defined projects, §5.4, §6.3).
   projectList: 'project:list',
@@ -326,6 +332,18 @@ export interface OctopusAPI {
     createWithSession(input: CreateWindowWithSessionInput): Promise<CommandAck>
     /** Hit-test a screen point → the `windowId` under it, or `null` (query). */
     windowAtPoint(input: WindowAtPointInput): Promise<string | null>
+  }
+
+  /**
+   * Dedicated per-task view windows (window-view feature). Unlike `windows`
+   * (anonymous secondaries), a view is pinned to one `taskId` permanently —
+   * only the main window may create one, and only one view exists per task.
+   */
+  views: {
+    /** Pop a task into its own window; the ack carries its new `windowId`. */
+    create(input: CreateViewInput): Promise<CommandAck>
+    /** Close a view window, returning its (and its secondaries') sessions to main. */
+    close(input: CloseViewInput): Promise<CommandAck>
   }
 
   pty: {

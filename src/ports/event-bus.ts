@@ -152,13 +152,17 @@ export interface ErrorEvent {
 export interface WindowCreatedEvent {
   readonly type: 'windowCreated'
   readonly windowId: WindowId
-  readonly role: 'main' | 'secondary'
+  readonly role: 'main' | 'secondary' | 'view'
   readonly bounds: {
     readonly x: number
     readonly y: number
     readonly width: number
     readonly height: number
   }
+  /** Set only when `role === 'view'` — the task this view window is pinned to. */
+  readonly taskId?: TaskId
+  /** Set only on a secondary of a VIEW: that view's id. Main's secondaries leave it unset. */
+  readonly parentWindowId?: WindowId
 }
 export interface WindowClosedEvent {
   readonly type: 'windowClosed'
@@ -182,6 +186,21 @@ export interface SessionMovedToWindowEvent {
    *    the target marks only the member that was directly sent, not these.
    */
   readonly cause?: 'windowClosed' | 'groupMove'
+}
+
+// ── View lifecycle events (window-view feature) ───────────────────────────────────
+
+/** A task's dedicated view window was created ("New Window From Task"). */
+export interface ViewCreatedEvent {
+  readonly type: 'viewCreated'
+  readonly windowId: WindowId
+  readonly taskId: TaskId
+}
+/** A task's view window was closed; its sessions returned to main (or, on task delete, were deleted with the task). */
+export interface ViewClosedEvent {
+  readonly type: 'viewClosed'
+  readonly windowId: WindowId
+  readonly taskId: TaskId
 }
 
 // ── Issue lifecycle events ("Issues", §13.3) ──────────────────────────────────────
@@ -234,6 +253,8 @@ export type DomainEvent =
   | WindowCreatedEvent
   | WindowClosedEvent
   | SessionMovedToWindowEvent
+  | ViewCreatedEvent
+  | ViewClosedEvent
   | IssueUpsertedEvent
   | IssueDeletedEvent
   | SessionStateChangedEvent

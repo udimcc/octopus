@@ -26,7 +26,7 @@ import { CHANNELS } from '../shared/ipc'
 import type { CommandLoop } from '../application/command-loop'
 import type { AppDependencies } from '../application/dependencies'
 import type { Command, CommandResult } from '../application/commands'
-import { asIssueId } from '../domain/ids'
+import { asIssueId, asWindowId, type WindowId } from '../domain/ids'
 import { makeDeps, FakeJiraIssueSource } from '../application/use-cases/test-fakes'
 import { JiraSourceError } from '../ports/jira-issue-source'
 import { JIRA_API_KEY_REF } from '../ports/credentials-provider'
@@ -459,6 +459,146 @@ describe('ipc-handlers field forwarding and command mapping (I4)', () => {
       expect(shell.openExternal).not.toHaveBeenCalled()
     }
   )
+})
+
+describe('window-view sender-identity checks (window-view feature, §6.7)', () => {
+  beforeEach(() => {
+    ;(ipcMain.handle as Mock).mockClear()
+    ;(ipcMain.on as Mock).mockClear()
+  })
+
+  /** A fake `e` whose `sender.id` resolves via `hooksFor`'s windowIds map. */
+  function senderEvent(id: number): { sender: { id: number } } {
+    return { sender: { id } }
+  }
+
+  function hooksFor(windowIds: Map<number, WindowId>): IpcHandlerHooks {
+    return { ...hooks, windowIds }
+  }
+
+  describe('window:close', () => {
+    it('allows the window itself to close itself', async () => {
+      const { loop, dispatched } = fakeLoop()
+      const windowIds = new Map([[7, asWindowId('win-2')]])
+      registerIpcHandlers(loop, noDeps(), hooksFor(windowIds))
+      const close = handlerFor(CHANNELS.windowClose)
+
+      const result = (await close(senderEvent(7), {
+        windowId: 'win-2',
+        disposition: 'move-to-main'
+      })) as { ok: boolean }
+
+      expect(result.ok).toBe(true)
+      expect(dispatched).toEqual([
+        { kind: 'closeWindow', input: { windowId: 'win-2', disposition: 'move-to-main' } }
+      ])
+    })
+
+    it('allows main to close ANY window', async () => {
+      const { loop, dispatched } = fakeLoop()
+      // Unmapped webContents id defaults to MAIN_WINDOW_ID (senderWindowId's fallback).
+      const windowIds = new Map<number, WindowId>()
+      registerIpcHandlers(loop, noDeps(), hooksFor(windowIds))
+      const close = handlerFor(CHANNELS.windowClose)
+
+      const result = (await close(senderEvent(999), {
+        windowId: 'win-2',
+        disposition: 'move-to-main'
+      })) as { ok: boolean }
+
+      expect(result.ok).toBe(true)
+      expect(dispatched).toHaveLength(1)
+    })
+
+    it("rejects a THIRD window closing a window that isn't its own, without reaching the command loop", async () => {
+      const { loop, dispatched } = fakeLoop()
+      const windowIds = new Map([[7, asWindowId('win-3')]])
+      registerIpcHandlers(loop, noDeps(), hooksFor(windowIds))
+      const close = handlerFor(CHANNELS.windowClose)
+
+      const result = (await close(senderEvent(7), {
+        windowId: 'win-2',
+        disposition: 'move-to-main'
+      })) as { ok: boolean; error?: string }
+
+      expect(result.ok).toBe(false)
+      expect(result.error).toMatch(/only the window itself or the main window/)
+      expect(dispatched).toEqual([])
+    })
+  })
+
+  describe('view:create', () => {
+    it('allows main to create a view', async () => {
+      const { loop, dispatched } = fakeLoop()
+      const windowIds = new Map<number, WindowId>()
+      registerIpcHandlers(loop, noDeps(), hooksFor(windowIds))
+      const create = handlerFor(CHANNELS.viewCreate)
+
+      const result = (await create(senderEvent(999), { taskId: 'task-1' })) as { ok: boolean }
+
+      expect(result.ok).toBe(true)
+      expect(dispatched).toHaveLength(1)
+      expect((dispatched[0] as { kind: string }).kind).toBe('createView')
+    })
+
+    it('rejects any non-main sender, without reaching the command loop', async () => {
+      const { loop, dispatched } = fakeLoop()
+      const windowIds = new Map([[7, asWindowId('win-2')]])
+      registerIpcHandlers(loop, noDeps(), hooksFor(windowIds))
+      const create = handlerFor(CHANNELS.viewCreate)
+
+      const result = (await create(senderEvent(7), { taskId: 'task-1' })) as {
+        ok: boolean
+        error?: string
+      }
+
+      expect(result.ok).toBe(false)
+      expect(result.error).toMatch(/only the main window may open a view/)
+      expect(dispatched).toEqual([])
+    })
+  })
+
+  describe('view:close', () => {
+    it('allows the view itself to close itself', async () => {
+      const { loop, dispatched } = fakeLoop()
+      const windowIds = new Map([[7, asWindowId('view-1')]])
+      registerIpcHandlers(loop, noDeps(), hooksFor(windowIds))
+      const close = handlerFor(CHANNELS.viewClose)
+
+      const result = (await close(senderEvent(7), { windowId: 'view-1' })) as { ok: boolean }
+
+      expect(result.ok).toBe(true)
+      expect(dispatched).toEqual([{ kind: 'closeView', input: { windowId: 'view-1' } }])
+    })
+
+    it('allows main to close a view', async () => {
+      const { loop, dispatched } = fakeLoop()
+      const windowIds = new Map<number, WindowId>()
+      registerIpcHandlers(loop, noDeps(), hooksFor(windowIds))
+      const close = handlerFor(CHANNELS.viewClose)
+
+      const result = (await close(senderEvent(999), { windowId: 'view-1' })) as { ok: boolean }
+
+      expect(result.ok).toBe(true)
+      expect(dispatched).toHaveLength(1)
+    })
+
+    it("rejects a secondary (or another view) closing a view it doesn't own", async () => {
+      const { loop, dispatched } = fakeLoop()
+      const windowIds = new Map([[7, asWindowId('win-2')]])
+      registerIpcHandlers(loop, noDeps(), hooksFor(windowIds))
+      const close = handlerFor(CHANNELS.viewClose)
+
+      const result = (await close(senderEvent(7), { windowId: 'view-1' })) as {
+        ok: boolean
+        error?: string
+      }
+
+      expect(result.ok).toBe(false)
+      expect(result.error).toMatch(/only the view itself or the main window/)
+      expect(dispatched).toEqual([])
+    })
+  })
 })
 
 describe('parseJiraFilters ("Jira import" validator, exported for direct testing)', () => {

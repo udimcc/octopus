@@ -271,6 +271,95 @@ describe('snapshot → DTO mappers (§5.2)', () => {
     expect(dto.initialMark).toEqual({ taskId: 't1', sessionId: 's1' })
   })
 
+  it('toWindowedWorkspaceStateDTO resolves viewTaskId for a VIEW window itself (window-view feature)', () => {
+    const view: AppStateView = {
+      workspace: { tasks: [task], activeTaskId: asTaskId('t1') },
+      sessionTypes: [],
+      settings: {
+        worktree: { location: '/home/u/octopus_repos' },
+        terminal: {},
+        defaultSessionTypeId: 'terminal',
+        groupTasksByRepo: true
+      },
+      version: 1,
+      windows: [
+        {
+          id: asWindowId('view-1'),
+          role: 'view',
+          bounds: { x: 0, y: 0, width: 800, height: 600 },
+          createdAt: 1000,
+          taskId: asTaskId('t1')
+        }
+      ]
+    }
+    const dto = toWindowedWorkspaceStateDTO(view, 'view-1', 'view')
+    expect(dto.viewTaskId).toBe('t1')
+  })
+
+  it("toWindowedWorkspaceStateDTO resolves viewTaskId for a VIEW'S SECONDARY to the SAME pinned task", () => {
+    const view: AppStateView = {
+      workspace: { tasks: [task], activeTaskId: asTaskId('t1') },
+      sessionTypes: [],
+      settings: {
+        worktree: { location: '/home/u/octopus_repos' },
+        terminal: {},
+        defaultSessionTypeId: 'terminal',
+        groupTasksByRepo: true
+      },
+      version: 1,
+      windows: [
+        {
+          id: asWindowId('view-1'),
+          role: 'view',
+          bounds: { x: 0, y: 0, width: 800, height: 600 },
+          createdAt: 1000,
+          taskId: asTaskId('t1')
+        },
+        {
+          id: asWindowId('sec-1'),
+          role: 'secondary',
+          bounds: { x: 0, y: 0, width: 800, height: 600 },
+          createdAt: 1000,
+          parentWindowId: asWindowId('view-1')
+        }
+      ]
+    }
+    // `thisWindowRole` stays 'secondary' — only the pin travels, not the role.
+    const dto = toWindowedWorkspaceStateDTO(view, 'sec-1', 'secondary')
+    expect(dto.thisWindowRole).toBe('secondary')
+    expect(dto.viewTaskId).toBe('t1')
+  })
+
+  it('toWindowedWorkspaceStateDTO leaves viewTaskId undefined for main and its own plain secondaries', () => {
+    const view: AppStateView = {
+      workspace: { tasks: [task], activeTaskId: asTaskId('t1') },
+      sessionTypes: [],
+      settings: {
+        worktree: { location: '/home/u/octopus_repos' },
+        terminal: {},
+        defaultSessionTypeId: 'terminal',
+        groupTasksByRepo: true
+      },
+      version: 1,
+      windows: [
+        {
+          id: asWindowId('main'),
+          role: 'main',
+          bounds: { x: 0, y: 0, width: 800, height: 600 },
+          createdAt: 1000
+        },
+        {
+          id: asWindowId('sec-1'),
+          role: 'secondary',
+          bounds: { x: 0, y: 0, width: 800, height: 600 },
+          createdAt: 1000
+        }
+      ]
+    }
+    expect(toWindowedWorkspaceStateDTO(view, 'main', 'main').viewTaskId).toBeUndefined()
+    expect(toWindowedWorkspaceStateDTO(view, 'sec-1', 'secondary').viewTaskId).toBeUndefined()
+  })
+
   it('toTaskDTO maps a 2-member group, including the split tree and color (§5.7)', () => {
     const grouped: TaskSnapshot = {
       ...task,

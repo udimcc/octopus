@@ -25,9 +25,10 @@
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { app, BrowserWindow, dialog, shell } from 'electron'
-import type { WindowId } from '../domain/ids'
+import type { WindowId, TaskId } from '../domain/ids'
 import { asWindowId, MAIN_WINDOW_ID } from '../domain/ids'
 import type { WindowRecord } from '../ports/workspace-persistence'
+import type { Unsubscribe } from '../ports/event-bus'
 import type { AppContext } from './composition-root'
 import { toSafeExternalUrl } from '../shared/external-url'
 import {
@@ -40,10 +41,51 @@ import { CRASH_BURST_WINDOW_MS, decideCrashRecovery } from './crash-recovery'
 /** How long to wait after the last move/resize before persisting bounds (§6.3). */
 const BOUNDS_SAVE_DEBOUNCE_MS = 500
 
+/**
+ * Window ids whose OS close is being driven BY A COMMAND the composition root
+ * already dispatched/resolved (window-view feature: a view's secondaries during
+ * `closeView`'s cascade, or the view's own window when closed from somewhere
+ * other than its own close button). `BrowserWindow.close()` re-fires the native
+ * `close` event synchronously, which would otherwise hit `wireCloseSemantics`'s
+ * handler below and re-dispatch a redundant/stale close command for a window
+ * whose session disposition the ORIGINAL command already resolved. Marked right
+ * before that programmatic `close()` call; the handler checks it first and, if
+ * set, just lets the OS teardown continue. Cleared on `closed` either way.
+ */
+const closingByCommand = new Set<WindowId>()
+
+/**
+ * Close an OS window as a REACTION to a `windowClosed` domain event — never the
+ * window's own close-button path (that path dispatches its OWN close command and
+ * calls `window.close()` itself once resolved). Used by the composition root for
+ * cascaded closes (a view's secondaries, or the view's own window) where the
+ * session-disposition command has already run and this is just catching up the OS
+ * window to match. A no-op if the window is already gone — the common case when
+ * the user closed it natively and this fires right after (see `closingByCommand`).
+ */
+export function closeWindowProgrammatically(window: BrowserWindow, windowId: WindowId): void {
+  if (window.isDestroyed()) {
+    return
+  }
+  closingByCommand.add(windowId)
+  window.close()
+}
+
 export interface CreateWindowOptions {
   readonly windowId: WindowId
-  readonly role: 'main' | 'secondary'
+  readonly role: 'main' | 'secondary' | 'view'
   readonly bounds?: { x?: number; y?: number; width: number; height: number }
+  /** Set only for `role: 'view'` ("Window View") — the task this window is pinned to. */
+  readonly taskId?: TaskId
+  /** Set only for `role: 'secondary'` — the window (main or a view) it belongs to. */
+  readonly parentWindowId?: WindowId
+}
+
+/** `<task name> [View]` — a view window's title (DESIGN "Window View"). Falls back
+ * to a generic label if the task can't be found (e.g. mid-teardown). */
+function viewWindowTitle(ctx: AppContext, taskId: TaskId | undefined): string {
+  const name = taskId ? ctx.deps.workspace.tasks().find((t) => t.id === taskId)?.name : undefined
+  return `${name ?? 'Task'} [View]`
 }
 
 /**
@@ -59,10 +101,14 @@ export function createWindow(ctx: AppContext, opts: CreateWindowOptions): Browse
     show: false,
     // Surface the release version (semver from package.json) in the title so users
     // can tell which build they're running — valuable after a version rollback.
+    // A view window instead shows the pinned task's name (kept live by
+    // `wireViewTitle` below) — the version is less useful than knowing which task.
     title:
       opts.role === 'main'
         ? `Octopus ${app.getVersion()}`
-        : `Octopus ${app.getVersion()} — Session Window`,
+        : opts.role === 'view'
+          ? viewWindowTitle(ctx, opts.taskId)
+          : `Octopus ${app.getVersion()} — Session Window`,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       // Security posture (§5.5): renderer gets no Node access; the only bridge is
@@ -77,16 +123,45 @@ export function createWindow(ctx: AppContext, opts: CreateWindowOptions): Browse
   // the renderer hydrates are buffered by the registry until its getState lands.
   ctx.registry.register(opts.windowId, window.webContents)
 
+  // `index.html`'s static `<title>Octopus</title>` would otherwise win: Electron's
+  // default behavior applies the loaded document's `<title>` via
+  // `page-title-updated`, clobbering the title set above (and `wireViewTitle`'s
+  // later updates) back to "Octopus" on every load/reload. Main's own titles are
+  // the source of truth for every role, so suppress it unconditionally.
+  window.on('page-title-updated', (e) => e.preventDefault())
+
   window.once('ready-to-show', () => window.show())
 
-  wireBoundsPersistence(ctx, window, opts.windowId, opts.role)
+  wireBoundsPersistence(ctx, window, opts.windowId, opts.role, opts.taskId, opts.parentWindowId)
   wireCloseSemantics(ctx, window, opts.windowId, opts.role)
   wireCrashRecovery(ctx, window, opts.windowId, opts.role)
   wireNavigationSafety(window)
+  if (opts.role === 'view') {
+    wireViewTitle(ctx, window, opts.taskId)
+  }
 
   loadRenderer(window, opts.windowId)
 
   return window
+}
+
+/**
+ * Keep a view window's OS title in sync with its pinned task's name ("Window
+ * View"). Titles aren't otherwise pushed from main after creation (today's
+ * secondary/main titles are static), so this is scoped narrowly to the one case
+ * that needs it. Unsubscribes on `closed` so a long-lived app doesn't accumulate
+ * one listener per view ever created.
+ */
+function wireViewTitle(ctx: AppContext, window: BrowserWindow, taskId: TaskId | undefined): void {
+  if (!taskId) {
+    return
+  }
+  const unsubscribe: Unsubscribe = ctx.bus.subscribe((event) => {
+    if (event.type === 'taskRenamed' && event.taskId === taskId && !window.isDestroyed()) {
+      window.setTitle(`${event.name} [View]`)
+    }
+  })
+  window.on('closed', unsubscribe)
 }
 
 /**
@@ -199,7 +274,9 @@ function wireBoundsPersistence(
   ctx: AppContext,
   window: BrowserWindow,
   windowId: WindowId,
-  role: 'main' | 'secondary'
+  role: 'main' | 'secondary' | 'view',
+  taskId: TaskId | undefined,
+  parentWindowId: WindowId | undefined
 ): void {
   let timer: ReturnType<typeof setTimeout> | undefined
 
@@ -209,11 +286,17 @@ function wireBoundsPersistence(
       return
     }
     const b = window.getBounds()
+    // `upsertWindow` is a full upsert (ON CONFLICT DO UPDATE every column, incl.
+    // `task_id`/`parent_window_id`) — omitting these on a bounds-only save would
+    // silently null out a view's task pin (or a secondary's parent link) the next
+    // time the window is merely moved/resized. Carry them through unchanged.
     ctx.deps.persistence.upsertWindow({
       id: windowId,
       role,
       bounds: { x: b.x, y: b.y, width: b.width, height: b.height },
-      createdAt: ctx.deps.clock.now()
+      createdAt: ctx.deps.clock.now(),
+      taskId,
+      parentWindowId
     })
   }
 
@@ -226,11 +309,19 @@ function wireBoundsPersistence(
 
   window.on('move', schedule)
   window.on('resize', schedule)
-  // Flush a pending save synchronously on close so the last position isn't lost.
+  // Flush a pending save synchronously on close so the last position isn't lost —
+  // UNLESS this close is driven by a command that already deleted the window's row
+  // (`closingByCommand`: a view's secondary during `closeView`'s cascade, or a
+  // window closed via `closeWindow`/`closeView` itself). `save()` is a full upsert,
+  // so firing it here would resurrect the just-deleted row with stale role/task/
+  // parent data. Registered before `wireCloseSemantics` (below), so `closingByCommand`
+  // is already set by the time this listener runs for a programmatic close.
   window.on('close', () => {
     if (timer) {
       clearTimeout(timer)
-      save()
+      if (!closingByCommand.has(windowId)) {
+        save()
+      }
     }
   })
 }
@@ -251,9 +342,12 @@ function wireCloseSemantics(
   ctx: AppContext,
   window: BrowserWindow,
   windowId: WindowId,
-  role: 'main' | 'secondary'
+  role: 'main' | 'secondary' | 'view'
 ): void {
-  window.on('closed', () => ctx.registry.unregister(windowId))
+  window.on('closed', () => {
+    ctx.registry.unregister(windowId)
+    closingByCommand.delete(windowId)
+  })
 
   if (role === 'main') {
     // Closing the main window quits the whole app (§6.7). `before-quit` runs the
@@ -263,15 +357,32 @@ function wireCloseSemantics(
     return
   }
 
+  if (role === 'view') {
+    // A view (DESIGN "Window View") never prompts: closing it unconditionally
+    // closes its secondaries and moves all its sessions to main. During quit (main
+    // closing quits the whole app, views included) we must NOT dispatch `closeView`
+    // — that would DELETE the window record, and quit must leave it in place so the
+    // view is restored on relaunch. Likewise skip if this close is itself a reaction
+    // to a command already resolved elsewhere (`closingByCommand`).
+    window.on('close', () => {
+      if (ctx.isQuitting || closingByCommand.has(windowId)) {
+        return
+      }
+      void ctx.commandLoop.dispatch({ kind: 'closeView', input: { windowId } })
+    })
+    return
+  }
+
   // Once the disposition is resolved we re-close the window; this flag lets that
   // second `close` pass straight through instead of re-prompting.
   let disposed = false
 
   // Secondary window: intercept close to resolve its live sessions first.
   window.on('close', (e) => {
-    // A quit-in-progress, or our own post-dialog re-close, must not (re)open the
-    // per-window dialog (§6.7).
-    if (ctx.isQuitting || disposed) {
+    // A quit-in-progress, our own post-dialog re-close, or a close already driven
+    // by a command elsewhere (a view's secondary during `closeView`'s cascade) must
+    // not (re)open the per-window dialog or re-dispatch (§6.7).
+    if (ctx.isQuitting || disposed || closingByCommand.has(windowId)) {
       return
     }
     const liveSessions = sessionsInWindow(ctx, windowId)
@@ -287,7 +398,16 @@ function wireCloseSemantics(
     // Cancel the OS close; ask the user what to do with the live sessions. The
     // command (once chosen) reassigns/kills them, and we re-close the window after.
     e.preventDefault()
-    void promptCloseDisposition(window, liveSessions).then((choice) => {
+    // Window View: a secondary's "Move to main window" offer is only accurate when
+    // its parent actually IS main — a view's secondary moves sessions back to the
+    // VIEW (`close-window.ts`), so the dialog's copy must say so instead. Looked up
+    // fresh (not cached at creation) since a window's `parentWindowId` is static for
+    // its lifetime anyway, but this keeps the check in one place.
+    const windows = ctx.deps.persistence.loadWindows()
+    const parentId = windows.find((w) => w.id === windowId)?.parentWindowId
+    const parentIsView =
+      parentId !== undefined && windows.find((w) => w.id === parentId)?.role === 'view'
+    void promptCloseDisposition(window, liveSessions, parentIsView).then((choice) => {
       if (choice === 'cancel') {
         return
       }
@@ -340,7 +460,7 @@ function wireCrashRecovery(
   ctx: AppContext,
   window: BrowserWindow,
   windowId: WindowId,
-  role: 'main' | 'secondary'
+  role: 'main' | 'secondary' | 'view'
 ): void {
   let attemptsInBurst = 0
   let lastCrashAt: number | null = null
@@ -409,9 +529,9 @@ function wireCrashRecovery(
  */
 async function promptCrashRecovery(
   window: BrowserWindow,
-  role: 'main' | 'secondary'
+  role: 'main' | 'secondary' | 'view'
 ): Promise<'reload' | 'quit'> {
-  const which = role === 'main' ? 'main window' : 'session window'
+  const which = role === 'main' ? 'main window' : role === 'view' ? 'view window' : 'session window'
   const result = await dialog.showMessageBox(window, {
     type: 'error',
     buttons: ['Reload', 'Quit'],
@@ -438,20 +558,27 @@ function sessionsInWindow(ctx: AppContext, windowId: WindowId): number {
   return count
 }
 
-/** Modal disposition dialog for closing a secondary window with live sessions. */
+/**
+ * Modal disposition dialog for closing a secondary window with live sessions.
+ * `parentIsView` (Window View): a secondary parented to a view window moves its
+ * sessions back to that VIEW, not main (`close-window.ts`) — the copy must say so
+ * rather than promising a destination the sessions won't actually land on.
+ */
 async function promptCloseDisposition(
   window: BrowserWindow,
-  count: number
+  count: number,
+  parentIsView: boolean
 ): Promise<'move-to-main' | 'kill-sessions' | 'cancel'> {
   const plural = count === 1 ? 'session' : 'sessions'
+  const destination = parentIsView ? 'view window' : 'main window'
   const result = await dialog.showMessageBox(window, {
     type: 'question',
-    buttons: ['Move to main window', 'Close sessions', 'Cancel'],
+    buttons: [`Move to ${destination}`, 'Close sessions', 'Cancel'],
     defaultId: 0,
     cancelId: 2,
     title: 'Close window',
     message: `This window has ${count} running ${plural}.`,
-    detail: 'Move them to the main window, or close them?'
+    detail: `Move them to the ${destination}, or close them?`
   })
   if (result.response === 0) {
     return 'move-to-main'
@@ -551,7 +678,9 @@ export function optionsFromRecord(record: WindowRecord): CreateWindowOptions {
   return {
     windowId: record.id,
     role: record.role,
-    bounds: record.bounds
+    bounds: record.bounds,
+    taskId: record.taskId,
+    parentWindowId: record.parentWindowId
   }
 }
 

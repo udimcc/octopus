@@ -151,3 +151,10 @@ restores the `.bak`. See `CHANGELOG.md` and `DESIGN §6.3`.
   (Linux) / `%APPDATA%\octopus\` (Windows) — **deliberately not** Electron's `app.getPath('userData')` (the XDG
   *config* dir). The resolver is a pure function of `(env, platform, home)` so it is unit-testable without
   Electron; the side-effecting `ensureAppDirs` is separate. Follow this pure-resolver / effectful-wrapper split.
+- **Single instance** (`src/main/index.ts`): a relaunch only raises main. Electron keys the lock on `userData`,
+  so unpackaged (dev) builds set `userData` to `<dataDir>/electron-dev`: a dev build on the same data dir as the
+  running installed app exits (logged), one with its own `XDG_DATA_HOME` runs alongside it.
+- **Window groups** (window-view feature): roots are `main` and each `view` window (pinned to one task); a
+  secondary belongs to the view named by its `parentWindowId`, else to main. Use `windowGroupRoot`/`viewForTask`
+  (`src/application/use-cases/window-groups.ts`, mirrored as store selectors) — never compare `parentWindowId`
+  to `MAIN_WINDOW_ID`.

@@ -28,6 +28,18 @@
  * publishes `groupsChanged` + `sessionReordered` after the existing
  * `sessionCreated` so the mark/focus behavior the renderer already drives off
  * `sessionCreated` is untouched.
+ *
+ * **View-group refusal (window-view feature).** Resolves the target window
+ * (`input.windowId ?? MAIN_WINDOW_ID`) and its window-GROUP root
+ * (`windowGroupRoot`), then refuses (throws, same as every other guard here) in
+ * either direction a session could land in the wrong group:
+ *   - T already has a dedicated view, but the target's group root is NOT that
+ *     view — main (or any other window) cannot open a session for a viewed task;
+ *     only that view's own group may.
+ *   - The target's group root IS some view, but that view is pinned to a
+ *     DIFFERENT task — a view group may only open sessions for its own task.
+ * Checked before any resolution of the session type / config / worktree below,
+ * so a refusal never creates partial state.
  */
 
 import type { AppDependencies } from '../dependencies'
@@ -39,12 +51,30 @@ import { InvariantViolationError } from '../../domain/errors'
 import { asTypeId, MAIN_WINDOW_ID, type TypeId } from '../../domain/ids'
 import { startSessionRuntime } from './start-session-runtime'
 import { persistGroups } from './persist-groups'
+import { windowGroupRoot, viewForTask } from './window-groups'
 
 export async function openSession(deps: AppDependencies, input: CreateSessionInput): Promise<void> {
   const task = deps.workspace.task(input.taskId)
   if (!task) {
     throw new InvariantViolationError(`task ${input.taskId} not found`)
   }
+
+  const windowId = input.windowId ?? MAIN_WINDOW_ID
+  const windows = deps.persistence.loadWindows()
+  const targetRoot = windowGroupRoot(windows, windowId)
+  const view = viewForTask(windows, input.taskId)
+  if (view && targetRoot !== view.id) {
+    throw new InvariantViolationError(
+      `task ${input.taskId} has a dedicated view window; sessions can only be opened from it`
+    )
+  }
+  const targetRootRecord = windows.find((w) => w.id === targetRoot)
+  if (targetRootRecord?.role === 'view' && targetRootRecord.taskId !== input.taskId) {
+    throw new InvariantViolationError(
+      `window ${windowId} belongs to another task's view; it cannot open a session for task ${input.taskId}`
+    )
+  }
+
   const worktree = task.worktree
   if (!worktree && !task.repoLess) {
     // A session's cwd is the worktree; a task without one is not Ready (I1') —
@@ -95,9 +125,9 @@ export async function openSession(deps: AppDependencies, input: CreateSessionInp
     createdAt: now
   })
 
-  // Host the session in the window that requested it (V1.5, §6.7). Stamped before
-  // toSnapshot() so the assignment is persisted and carried on `sessionCreated`.
-  const windowId = input.windowId ?? MAIN_WINDOW_ID
+  // Host the session in the window that requested it (V1.5, §6.7; `windowId`
+  // resolved + guarded above). Stamped before toSnapshot() so the assignment is
+  // persisted and carried on `sessionCreated`.
   session.assignToWindow(windowId)
 
   // Validate the split's anchor BEFORE any mutation (session create/add/start),

@@ -101,6 +101,10 @@ export interface WindowRow {
   width: number
   height: number
   created_at: number
+  /** Window View (v11): the task a `role: 'view'` window is pinned to; null otherwise. */
+  task_id: string | null
+  /** Window View (v11): the owner window (main or a view) of a secondary; null for main/view windows. */
+  parent_window_id: string | null
 }
 
 /**
@@ -201,7 +205,12 @@ export function issueToRow(snap: IssueSnapshot): IssueRow {
   }
 }
 
-/** Serialize a window record for persistence (V1.5, §3.7). */
+/**
+ * Serialize a window record for persistence (V1.5, §3.7). `taskId`/`parentWindowId`
+ * (Window View, v11) are `undefined` for an ordinary main/secondary window today;
+ * `undefined` becomes `null` on the row, same convention as the other optional
+ * fields in this file (e.g. `issueToRow`'s `projectPath`).
+ */
 export function windowToRow(record: WindowRecord): WindowRow {
   return {
     id: record.id,
@@ -210,7 +219,9 @@ export function windowToRow(record: WindowRecord): WindowRow {
     y: record.bounds.y,
     width: record.bounds.width,
     height: record.bounds.height,
-    created_at: record.createdAt
+    created_at: record.createdAt,
+    task_id: record.taskId ?? null,
+    parent_window_id: record.parentWindowId ?? null
   }
 }
 
@@ -388,12 +399,18 @@ export function rowToIssueSnapshot(row: IssueRow): IssueSnapshot {
   }
 }
 
-/** Reconstruct a window record from its row (V1.5, §3.7). */
+/**
+ * Reconstruct a window record from its row (V1.5, §3.7; `task_id`/
+ * `parent_window_id` added in v11, Window View). `null` columns become
+ * `undefined`, same convention as `rowToIssueSnapshot`'s nullable columns.
+ */
 export function rowToWindowRecord(row: WindowRow): WindowRecord {
   return {
     id: asWindowId(row.id),
-    role: row.role === 'secondary' ? 'secondary' : 'main',
+    role: row.role === 'secondary' ? 'secondary' : row.role === 'view' ? 'view' : 'main',
     bounds: { x: row.x, y: row.y, width: row.width, height: row.height },
-    createdAt: row.created_at
+    createdAt: row.created_at,
+    taskId: row.task_id ? asTaskId(row.task_id) : undefined,
+    parentWindowId: row.parent_window_id ? asWindowId(row.parent_window_id) : undefined
   }
 }

@@ -253,10 +253,13 @@ export type SplitNode =
  */
 export type SplitPath = readonly ('a' | 'b')[]
 
+/** A window's role on the wire (window-view feature). Mirror of `WindowRecord.role`. */
+export type WindowRole = 'main' | 'secondary' | 'view'
+
 /** A persisted OS window on the wire (V1.5, §6.7). Mirror of `WindowRecord`. */
 export interface WindowDTO {
   readonly id: string
-  readonly role: 'main' | 'secondary'
+  readonly role: WindowRole
   readonly bounds: {
     readonly x: number
     readonly y: number
@@ -264,6 +267,10 @@ export interface WindowDTO {
     readonly height: number
   }
   readonly createdAt: number
+  /** Set only for `role: 'view'` — the task this view window is pinned to. */
+  readonly taskId?: string
+  /** Set only on a secondary of a VIEW: that view's id. Main's secondaries leave it unset. */
+  readonly parentWindowId?: string
 }
 
 /**
@@ -276,7 +283,7 @@ export interface WindowDTO {
  */
 export interface WindowedWorkspaceStateDTO extends WorkspaceStateDTO {
   readonly thisWindowId: string
-  readonly thisWindowRole: 'main' | 'secondary'
+  readonly thisWindowRole: WindowRole
   readonly windows: readonly WindowDTO[]
   /**
    * Set only for a window created to show a detached session
@@ -287,6 +294,13 @@ export interface WindowedWorkspaceStateDTO extends WorkspaceStateDTO {
    * crash-reload) does not replay the detach-time session.
    */
   readonly initialMark?: { readonly taskId: string; readonly sessionId: string }
+  /**
+   * Set for a `view` window AND for any secondary parented to one (window-view
+   * feature): the task that window's GROUP is permanently pinned to. The renderer
+   * keeps `activeTaskId` fixed to this value, ignoring `activeTaskChanged` events
+   * (which the registry doesn't route to these windows anyway).
+   */
+  readonly viewTaskId?: string
 }
 
 // ── Projects (§5.4, §6.3) ──────────────────────────────────────────────────────
@@ -763,6 +777,18 @@ export interface CreateWindowWithSessionInput {
 export interface WindowAtPointInput {
   readonly x: number
   readonly y: number
+}
+
+// ── View command inputs (window-view feature) ─────────────────────────────────
+
+/** Pop a task into its own dedicated window (right-click a task row, "New Window From Task"). */
+export interface CreateViewInput {
+  readonly taskId: string
+}
+
+/** Close a view window, returning its sessions (and its secondaries') to main. */
+export interface CloseViewInput {
+  readonly windowId: string
 }
 
 // ── Project command inputs (UI → backend) ─────────────────────────────────────

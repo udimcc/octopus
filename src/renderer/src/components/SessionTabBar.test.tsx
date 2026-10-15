@@ -121,6 +121,19 @@ describe('<SessionTabBar>', () => {
     installStubBridge()
   })
 
+  it('names the task at the left of the bar in a secondary window only', () => {
+    seed({ sessions: [session('s1')] })
+    const { rerender } = render(<SessionTabBar taskId="t1" />)
+    expect(screen.queryByTitle('Alpha')).toBeNull() // main has the progress panel
+
+    act(() => useStore.setState({ windowRole: 'secondary' }))
+    rerender(<SessionTabBar taskId="t1" />)
+    expect(screen.getByTitle('Alpha')).toHaveTextContent('Alpha')
+
+    act(() => useStore.getState().applyEvent({ type: 'taskRenamed', taskId: 't1', name: 'Beta' }))
+    expect(screen.getByTitle('Beta')).toHaveTextContent('Beta')
+  })
+
   it('renders a tab per session, with an (exited) suffix on dead ones', () => {
     seed({
       sessions: [

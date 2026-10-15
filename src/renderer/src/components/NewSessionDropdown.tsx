@@ -24,6 +24,7 @@ export function NewSessionDropdown({
   disabled
 }: NewSessionDropdownProps): React.JSX.Element {
   const sessionTypes = useStore((s) => s.sessionTypes)
+  const pushToast = useStore((s) => s.pushToast)
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
 
@@ -39,7 +40,12 @@ export function NewSessionDropdown({
 
   const create = (typeId: string): void => {
     setOpen(false)
-    void window.octopusAPI.sessions.create({ taskId, typeId })
+    window.octopusAPI.sessions
+      .create({ taskId, typeId })
+      .then((ack) => {
+        if (!ack.ok) pushToast('error', ack.error ?? 'Failed to create session')
+      })
+      .catch(() => pushToast('error', 'Failed to create session'))
   }
 
   // Fall back to a lone "terminal" entry if the type list hasn't hydrated yet.

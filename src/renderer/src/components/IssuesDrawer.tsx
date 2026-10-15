@@ -88,7 +88,8 @@ import { matchesChord } from '../keybindings/chords'
 
 /**
  * The topmost currently-open `[aria-modal="true"]` dialog, if any — App-level
- * (`NewTaskModal`, `SettingsModal`, `DeleteTaskConfirm`) or one of the drawer's own
+ * (`NewTaskModal`, `SettingsModal`, `DeleteTaskConfirm`, `CreateViewConfirm` —
+ * window-view feature) or one of the drawer's own
  * (`DiscardChangesPrompt`, `BoundDeleteDialog`, `LinkTaskPicker`, `IssueDetail`'s
  * simple delete confirm, `JiraImportModal`). "Last in document order" is topmost because every overlay
  * shares `overlayStyle` (`position: fixed`, the same `zIndex`) and nothing around the

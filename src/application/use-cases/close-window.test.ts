@@ -4,10 +4,12 @@ import { openSession } from './open-session'
 import { joinGroup } from './join-group'
 import { moveSessionToWindow } from './move-session-to-window'
 import { createWindow } from './create-window'
+import { createView } from './create-view'
 import { closeWindow } from './close-window'
 import { makeDeps, taskInput, type FakeDeps } from './test-fakes'
 import { asTaskId, MAIN_WINDOW_ID, type WindowId, type SessionId } from '../../domain/ids'
 import { SessionLifecycle } from '../../domain/lifecycle'
+import { InvariantViolationError } from '../../domain/errors'
 
 /**
  * A task with two sessions, both moved into one freshly created secondary window —
@@ -101,6 +103,41 @@ describe('closeWindow (§3.7, §6.7)', () => {
     expect(fd.persistence.windows.has(windowId)).toBe(false)
     expect(fd.bus.ofType('windowClosed').map((e) => e.windowId)).toEqual([windowId])
     expect(fd.persistence.deletedSessions).toEqual([])
+  })
+
+  it('rejects closing MAIN_WINDOW_ID — quit is the only way to close main', async () => {
+    const fd = makeDeps()
+    await expect(
+      closeWindow(fd.deps, { windowId: MAIN_WINDOW_ID, disposition: 'move-to-main' })
+    ).rejects.toThrow(InvariantViolationError)
+    await expect(
+      closeWindow(fd.deps, { windowId: MAIN_WINDOW_ID, disposition: 'move-to-main' })
+    ).rejects.toThrow(/cannot close the main window/)
+  })
+
+  it("move-to-main on a VIEW's own secondary lands sessions back in the VIEW, not main (window-view feature)", async () => {
+    const fd = makeDeps()
+    await createTask(fd.deps, taskInput('T'))
+    const taskId = asTaskId('task-1')
+    await openSession(fd.deps, { taskId })
+    const viewResult = createView(fd.deps, { taskId })
+    const viewId = viewResult.ok ? viewResult.windowId! : (undefined as never)
+    const task = fd.workspace.task(taskId)!
+    const viewSession = task.sessions()[0]!
+
+    const secondaryId = createWindow(fd.deps, { role: 'secondary', parentWindowId: viewId })
+    await openSession(fd.deps, { taskId, windowId: secondaryId })
+    const secondarySession = task.sessions().find((s) => s.id !== viewSession.id)!
+    fd.bus.events.length = 0
+
+    await closeWindow(fd.deps, { windowId: secondaryId, disposition: 'move-to-main' })
+
+    // The secondary's own session (and the whole move target) resolves to the
+    // view's id via windowGroupRoot — NOT MAIN_WINDOW_ID.
+    expect(task.session(secondarySession.id)!.windowId).toBe(viewId)
+    expect(task.session(viewSession.id)!.windowId).toBe(viewId)
+    const moves = fd.bus.ofType('sessionMovedToWindow')
+    expect(moves.map((e) => e.toWindowId)).toEqual([viewId])
   })
 })
 

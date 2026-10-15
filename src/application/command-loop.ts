@@ -46,6 +46,10 @@ import { createWindow } from './use-cases/create-window'
 import { closeWindow } from './use-cases/close-window'
 import { moveSessionToWindow } from './use-cases/move-session-to-window'
 import { createWindowWithSession } from './use-cases/create-window-with-session'
+import { createView } from './use-cases/create-view'
+import { closeView } from './use-cases/close-view'
+import { windowGroupRoot } from './use-cases/window-groups'
+import { locateSession } from './use-cases/locate-session'
 import { addProject } from './use-cases/add-project'
 import { removeProject } from './use-cases/remove-project'
 import { setProjectDefaultBranch } from './use-cases/set-project-default-branch'
@@ -177,14 +181,50 @@ export class CommandLoop {
         return OK
       case 'createWindow':
         return { ok: true, windowId: createWindow(this.deps, command.input) }
-      case 'closeWindow':
+      case 'closeWindow': {
+        // A VIEW's own close needs the richer `closeView` teardown (its
+        // secondaries close first, then its sessions return to main, then main
+        // auto-switches) — routed HERE, not inside `close-window.ts`, so that use
+        // case and `close-view.ts` don't import each other (see `close-window.ts`
+        // header). A stray `closeWindow` dispatch against a view (renderer bug,
+        // stale id) still gets the correct teardown rather than the plain one.
+        const windows = this.deps.persistence.loadWindows()
+        const record = windows.find((w) => w.id === command.input.windowId)
+        if (record?.role === 'view') {
+          return closeView(this.deps, { windowId: command.input.windowId })
+        }
         await closeWindow(this.deps, command.input)
         return OK
-      case 'moveSessionToWindow':
+      }
+      case 'moveSessionToWindow': {
+        // Cross-group guard (window-view feature): a USER-initiated move (drag)
+        // dispatched here must stay inside one window group — no dragging a tab
+        // between a view and main, or between two views. Internal callers
+        // (`createView`, `closeView`, `createWindowWithSession`, `closeWindow`'s
+        // move-to-main) call `moveSessionToWindow` directly, bypassing this loop
+        // entirely, so this guard never applies to them.
+        const located = locateSession(this.deps.workspace, command.input.sessionId)
+        if (!located) {
+          return { ok: false, error: `session ${command.input.sessionId} not found` }
+        }
+        const windows = this.deps.persistence.loadWindows()
+        const fromRoot = windowGroupRoot(windows, located.session.windowId)
+        const toRoot = windowGroupRoot(windows, command.input.targetWindowId)
+        if (fromRoot !== toRoot) {
+          return {
+            ok: false,
+            error: `session ${command.input.sessionId} cannot move across window groups`
+          }
+        }
         moveSessionToWindow(this.deps, command.input)
         return OK
+      }
       case 'createWindowWithSession':
         return { ok: true, windowId: createWindowWithSession(this.deps, command.input) }
+      case 'createView':
+        return createView(this.deps, command.input)
+      case 'closeView':
+        return closeView(this.deps, command.input)
       case 'addProject':
         return addProject(this.deps, command.input)
       case 'removeProject':

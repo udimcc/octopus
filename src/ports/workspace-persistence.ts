@@ -21,11 +21,12 @@ import type {
  * A persisted OS window (V1.5, DESIGN §3.7, §6.3). Pixel geometry deliberately
  * lives here — in the persistence port + adapter + main — and never in the pure
  * domain. `role` distinguishes the single `main` window (which owns the progress
- * panel) from session-only `secondary` windows.
+ * panel), session-only `secondary` windows, and a `view` window (window-view
+ * feature) pinned to one task permanently.
  */
 export interface WindowRecord {
   readonly id: WindowId
-  readonly role: 'main' | 'secondary'
+  readonly role: 'main' | 'secondary' | 'view'
   readonly bounds: {
     readonly x: number
     readonly y: number
@@ -33,6 +34,14 @@ export interface WindowRecord {
     readonly height: number
   }
   readonly createdAt: number
+  /** Set only for `role: 'view'` — the task this view window is pinned to. */
+  readonly taskId?: TaskId
+  /**
+   * Set only on a secondary of a VIEW: that view's id. Main's secondaries leave
+   * it unset (no parent = main's group), so filtering on `MAIN_WINDOW_ID` matches
+   * nothing — use `windowGroupRoot`.
+   */
+  readonly parentWindowId?: WindowId
 }
 
 export interface WorkspacePersistence {

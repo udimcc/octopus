@@ -3,6 +3,8 @@ import { createTask } from './create-task'
 import { openSession } from './open-session'
 import { closeSession } from './close-session'
 import { makeDeps, taskInput, type FakeDeps } from './test-fakes'
+import { createView } from './create-view'
+import { createWindow } from './create-window'
 import { asTaskId, asSessionId, asWindowId, MAIN_WINDOW_ID } from '../../domain/ids'
 import { SessionLifecycle } from '../../domain/lifecycle'
 import { InvariantViolationError } from '../../domain/errors'
@@ -342,6 +344,56 @@ describe('openSession plain create tab order (§6.1, review C1)', () => {
     const newSession = task.sessions().find((s) => s.title === 'Terminal 4')!
     // Lands strictly after the current tail, not back-filled into the gap at 0.
     expect(newSession.order).toBe(maxOrderBeforeNew + 1)
+  })
+})
+
+describe('openSession window-view group refusal (window-view feature)', () => {
+  it("refuses a request from outside the task's own view group once the task has a view", async () => {
+    const fd = await seedReadyTask()
+    const viewResult = createView(fd.deps, { taskId: fd.taskId })
+    expect(viewResult.ok).toBe(true)
+
+    // Defaults to MAIN_WINDOW_ID when no windowId is given — outside the view's group.
+    await expect(openSession(fd.deps, { taskId: fd.taskId })).rejects.toThrow(
+      InvariantViolationError
+    )
+    await expect(openSession(fd.deps, { taskId: fd.taskId })).rejects.toThrow(
+      /dedicated view window/
+    )
+  })
+
+  it("still allows opening a session FROM the task's own view (and its secondaries)", async () => {
+    const fd = await seedReadyTask()
+    const viewResult = createView(fd.deps, { taskId: fd.taskId })
+    const viewId = viewResult.ok ? viewResult.windowId! : (undefined as never)
+
+    await expect(
+      openSession(fd.deps, { taskId: fd.taskId, windowId: viewId })
+    ).resolves.toBeUndefined()
+    const task = fd.workspace.task(fd.taskId)!
+    expect(task.sessions().some((s) => s.windowId === viewId)).toBe(true)
+
+    const secondaryId = createWindow(fd.deps, { role: 'secondary', parentWindowId: viewId })
+    await expect(
+      openSession(fd.deps, { taskId: fd.taskId, windowId: secondaryId })
+    ).resolves.toBeUndefined()
+    expect(task.sessions().some((s) => s.windowId === secondaryId)).toBe(true)
+  })
+
+  it("refuses opening a session for task B in a window that belongs to task A's view", async () => {
+    const fd = await seedReadyTask() // task-1 ("T")
+    await createTask(fd.deps, taskInput('Other'))
+    const otherTaskId = asTaskId('task-2')
+
+    const viewResult = createView(fd.deps, { taskId: fd.taskId })
+    const viewId = viewResult.ok ? viewResult.windowId! : (undefined as never)
+
+    await expect(openSession(fd.deps, { taskId: otherTaskId, windowId: viewId })).rejects.toThrow(
+      InvariantViolationError
+    )
+    await expect(openSession(fd.deps, { taskId: otherTaskId, windowId: viewId })).rejects.toThrow(
+      /belongs to another task's view/
+    )
   })
 })
 

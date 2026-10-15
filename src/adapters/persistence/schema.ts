@@ -51,9 +51,16 @@
  * the v10 columns) creates the table for the first time on this very open — a bare
  * `ALTER TABLE issues ADD COLUMN source ...` right after would fail "duplicate
  * column". `SqliteStore` runs the guarded migrations when an older DB opens (see
- * {@link MIGRATIONS}).
+ * {@link MIGRATIONS}). 10 → 11 (Window View) to add the nullable
+ * `windows.task_id` and `windows.parent_window_id` columns: a view window
+ * (role `'view'`, a domain-layer extension of `WindowRecord.role`) is pinned to
+ * a task via `task_id`; `parent_window_id` links a secondary window to its
+ * owner (main or a view), making today's implicit "every secondary belongs to
+ * main" link explicit. Both are nullable. The `role` CHECK must also admit
+ * `'view'`, and SQLite cannot alter a CHECK in place, so v11 REBUILDS the table
+ * (guarded like v10 — see the v11 {@link Migration} entry).
  */
-export const SCHEMA_VERSION = 10
+export const SCHEMA_VERSION = 11
 
 /**
  * Connection pragmas applied on every open. `foreign_keys` is per-connection
@@ -104,14 +111,19 @@ export const SCHEMA_STATEMENTS: readonly string[] = Object.freeze([
   // V1.5 (§3.7, §6.7): one row per OS window. `role` distinguishes the single
   // main window (progress panel) from session-only secondary windows. Bounds are
   // saved debounced on move/resize and restored (with off-screen clamping) at boot.
+  // `task_id`/`parent_window_id` (v11, Window View) are nullable: `task_id` pins a
+  // view window to its task; `parent_window_id` links a secondary to its owner
+  // (main or a view). Both are null for ordinary main/secondary windows today.
   `CREATE TABLE IF NOT EXISTS windows (
      id TEXT PRIMARY KEY,
-     role TEXT NOT NULL CHECK(role IN ('main','secondary')),
+     role TEXT NOT NULL CHECK(role IN ('main','secondary','view')),
      x INTEGER NOT NULL DEFAULT 0,
      y INTEGER NOT NULL DEFAULT 0,
      width INTEGER NOT NULL DEFAULT 1280,
      height INTEGER NOT NULL DEFAULT 800,
-     created_at INTEGER NOT NULL
+     created_at INTEGER NOT NULL,
+     task_id TEXT,
+     parent_window_id TEXT
    )`,
   // Persisted terminal output per session, replayed into a fresh PTY on restart
   // (§6.6 backend ring buffer). A separate table (not a `sessions` column) keeps
@@ -344,6 +356,35 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       // The CHECK mirrors the domain invariant (a Jira-sourced issue has a key, a key
       // implies Jira) so a row `Issue.fromSnapshot` would reject can't be written.
       `ALTER TABLE issues ADD COLUMN jira_key TEXT CHECK((source = 'jira') = (jira_key IS NOT NULL))`
+    ])
+  },
+  // v11 (Window View): `windows.task_id` (pins a view window to its task),
+  // `windows.parent_window_id` (links a secondary to its owner window — main or
+  // a view), and a `role` CHECK that admits `'view'`. SQLite cannot alter a
+  // CHECK, so this rebuilds the table (create new, copy, drop, rename); nothing
+  // references `windows` by FK, so the drop/rename is safe with foreign_keys ON.
+  // Guarded with `unlessColumnExists` like v10: on a v3 DB (pre-windows) the
+  // bootstrap `CREATE TABLE IF NOT EXISTS windows` has just created the table
+  // already in its v11 shape, so there is nothing to rebuild.
+  {
+    toVersion: 11,
+    unlessColumnExists: { table: 'windows', column: 'task_id' },
+    statements: Object.freeze([
+      `CREATE TABLE windows_v11 (
+         id TEXT PRIMARY KEY,
+         role TEXT NOT NULL CHECK(role IN ('main','secondary','view')),
+         x INTEGER NOT NULL DEFAULT 0,
+         y INTEGER NOT NULL DEFAULT 0,
+         width INTEGER NOT NULL DEFAULT 1280,
+         height INTEGER NOT NULL DEFAULT 800,
+         created_at INTEGER NOT NULL,
+         task_id TEXT,
+         parent_window_id TEXT
+       )`,
+      `INSERT INTO windows_v11 (id, role, x, y, width, height, created_at)
+         SELECT id, role, x, y, width, height, created_at FROM windows`,
+      'DROP TABLE windows',
+      'ALTER TABLE windows_v11 RENAME TO windows'
     ])
   }
 ])

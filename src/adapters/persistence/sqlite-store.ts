@@ -337,14 +337,16 @@ export class SqliteStore implements WorkspacePersistence {
     const row = windowToRow(record)
     this.db
       .prepare(
-        `INSERT INTO windows (id, role, x, y, width, height, created_at)
-         VALUES (@id, @role, @x, @y, @width, @height, @created_at)
+        `INSERT INTO windows (id, role, x, y, width, height, created_at, task_id, parent_window_id)
+         VALUES (@id, @role, @x, @y, @width, @height, @created_at, @task_id, @parent_window_id)
          ON CONFLICT(id) DO UPDATE SET
            role = excluded.role,
            x = excluded.x,
            y = excluded.y,
            width = excluded.width,
-           height = excluded.height`
+           height = excluded.height,
+           task_id = excluded.task_id,
+           parent_window_id = excluded.parent_window_id`
       )
       .run(row)
   }

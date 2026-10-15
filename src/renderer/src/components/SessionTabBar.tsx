@@ -20,6 +20,17 @@
  *  - Handle overflow: chevron buttons scroll the strip when it overflows, and an "⋯" menu
  *    lists every tab to jump to when there are many (~8+); it dispatches through the same
  *    `activate` as a tab click.
+ *  - No cross-window-GROUP drag (window-view feature): `detach` only hit-tests/moves within
+ *    this window's own group (`sameWindowGroup`) — a tab dropped on an EXISTING window of a
+ *    different group (main ↔ a view, or view ↔ view) is a no-op (with an explanatory toast)
+ *    rather than reinterpreted as a detach-to-empty-desktop. The backend's command loop
+ *    already rejects a cross-group `sessions.move` (`command-loop.ts`'s `moveSessionToWindow`
+ *    case), so this is a UX guard — it keeps the drop from being silently swallowed server-
+ *    side with no feedback, and keeps the "Move to window" context-menu item from ever
+ *    OFFERING a cross-group target in the first place (`moveTargets` below). Detaching onto
+ *    bare desktop is unaffected — `createWindowWithSession` always parents the new secondary
+ *    to the dragged session's OWN group (`window-groups.ts`), so that path can never cross a
+ *    group boundary and needs no guard here.
  *  - Split groups (§5.7, split-groups design): color each grouped tab's bottom-edge line
  *    from `GROUP_COLOR_PALETTE[group.colorIndex]` (`style/tokens.ts`), bridging the gap to
  *    the next tab when it's a fellow member so a group's whole span reads as one
@@ -70,11 +81,13 @@ import {
   useStore,
   sessionDisplayState,
   isSessionFocused,
-  activeSessionInWindow
+  activeSessionInWindow,
+  sameWindowGroup,
+  isViewedElsewhere
 } from '../store/store'
 import { hasLeaf, canSplit } from '../store/split-layout'
 import { measurePane } from '../terminal/terminal-metrics'
-import { color, radius, shadow, GROUP_COLOR_PALETTE } from '../style/tokens'
+import { color, fontSize, radius, shadow, GROUP_COLOR_PALETTE } from '../style/tokens'
 import type { GroupDTO } from '../../../shared/dto'
 
 export interface SessionTabBarProps {
@@ -104,7 +117,14 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
   const sessions = useStore((s) => s.sessions)
   const hasUnseenFinishedTurn = useStore((s) => s.hasUnseenFinishedTurn)
   const windowId = useStore((s) => s.windowId)
+  const windowRole = useStore((s) => s.windowRole)
   const windows = useStore((s) => s.windows)
+  // Main (and any view's secondaries pinned elsewhere) shows a viewed task's own
+  // (empty) tab bar with session creation disabled — its sessions already moved to
+  // the view (window-view feature). `isViewedElsewhere` is group-aware: inside the
+  // view window ITSELF (and its own secondaries), it's false, so that window group
+  // adds sessions normally.
+  const viewedElsewhere = useStore((s) => isViewedElsewhere(s, taskId))
   // This task's split groups (§5.7). `groupFor` below is the per-session lookup every
   // tab (color, drag handle, split-menu enablement) goes through.
   const groups = useStore((s) => s.groupsByTask[taskId] ?? EMPTY_GROUPS)
@@ -205,6 +225,14 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
       .then((targetWindowId) => {
         if (targetWindowId === windowId) return // dropped back on our own window: no-op.
         if (targetWindowId) {
+          // Cross-group guard (window-view feature, see header comment): dropped ON an
+          // EXISTING window of a different group — a no-op, not a reinterpreted detach.
+          if (!sameWindowGroup(useStore.getState(), windowId, targetWindowId)) {
+            useStore
+              .getState()
+              .pushToast('info', "Can't move a session to a different window's group")
+            return
+          }
           void window.octopusAPI.sessions.move({ sessionId, targetWindowId })
         } else {
           // Empty desktop → open a new secondary window hosting this session, placed
@@ -489,20 +517,31 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
     return { splitRightDisabled: !fits('row'), splitDownDisabled: !fits('col') }
   }
 
-  const canAddSession = task?.lifecycle === 'ready'
+  // Window-view feature: main grays out "+ New Session" for a task that's being
+  // viewed elsewhere — its sessions live in the view now, so main creating one here
+  // would strand it in the wrong window group.
+  const canAddSession = task?.lifecycle === 'ready' && !viewedElsewhere
 
   // Human labels for the "Move to window" menu. Windows carry no name, so the main
   // window is "Main window" and secondaries are numbered "Window N" in creation
   // order (array order — event-created windows share createdAt 0, §6.7). The number
   // is stable across tabs; the current window is excluded from each tab's targets.
+  // A `view` window can itself appear as a target (window-view feature): a secondary
+  // parented to a view shares that view's group, so the view is a valid same-group
+  // target alongside its own secondaries — labeled "View window" rather than falling
+  // through to the secondary-numbering branch (which would mislabel it "Window 0",
+  // since `secondaries` excludes `role === 'view'` and `indexOf` would miss it).
   const secondaries = windows.filter((w) => w.role === 'secondary')
   const windowLabel = (id: string): string => {
     const win = windows.find((w) => w.id === id)
     if (!win || win.role === 'main') return 'Main window'
+    if (win.role === 'view') return 'View window'
     return `Window ${secondaries.indexOf(win) + 1}`
   }
+  // Cross-group guard (window-view feature, see header comment): never OFFER a window
+  // outside this one's group, so the menu itself can't start an illegal move.
   const moveTargets = windows
-    .filter((w) => w.id !== windowId)
+    .filter((w) => w.id !== windowId && sameWindowGroup(useStore.getState(), windowId, w.id))
     .map((w) => ({ id: w.id, label: windowLabel(w.id) }))
 
   return (
@@ -717,6 +756,29 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
             </ul>
           ) : null}
         </div>
+      ) : null}
+
+      {/* A secondary has no progress panel, so name the task it shows: fixed in a
+          view's secondary (pinned), follows main's active task in main's secondaries
+          (this bar is per task, so switching tasks swaps it). */}
+      {windowRole === 'secondary' && task ? (
+        <span
+          title={task.name}
+          style={{
+            alignSelf: 'center',
+            flexShrink: 0,
+            maxWidth: 220,
+            padding: '0 4px 6px 8px',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            fontSize: fontSize.sm,
+            fontWeight: 600,
+            color: color.textSecondary
+          }}
+        >
+          {task.name}
+        </span>
       ) : null}
 
       <NewSessionDropdown taskId={taskId} disabled={!canAddSession} />

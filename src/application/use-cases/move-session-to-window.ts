@@ -32,6 +32,12 @@
  * groupmates (DESIGN §5.7 "the target marks only the member that was sent"). The
  * publish loop below relies on `moveToWindow`'s sent-first ordering to apply this
  * tag correctly without a second lookup.
+ *
+ * `cause: 'groupMove'` is also available to an internal caller directly (not just
+ * auto-applied to riding-along groupmates) — `create-view.ts`'s bulk-move uses it
+ * for every one of a task's sessions EXCEPT the one it sends without a cause, so
+ * the new view ends up marking only that one, exactly as if the user had dragged
+ * it there and its "groupmates" (here: the task's other sessions) rode along.
  */
 
 import type { AppDependencies } from '../dependencies'
@@ -40,7 +46,7 @@ import { locateSession } from './locate-session'
 import { InvariantViolationError } from '../../domain/errors'
 
 export interface MoveSessionToWindowOptions {
-  readonly cause?: 'windowClosed'
+  readonly cause?: 'windowClosed' | 'groupMove'
 }
 
 export function moveSessionToWindow(

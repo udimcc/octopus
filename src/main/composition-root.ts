@@ -12,7 +12,9 @@
  *      Terminal provider, ajv config validator).
  *   4. `persistence.load()` → `Workspace.hydrate` → `reconcileStaleGroups` (sweep
  *      `session_groups` rows hydrate rejected, review I1) → `reconcileOnStartup`
- *      (missing worktree → Stale, I14).
+ *      (missing worktree → Stale, I14) → `pruneStaleViews` (drop a view's window
+ *      record, plus its secondaries', for a task gone from the hydrated workspace —
+ *      "Window View" — strictly before `index.ts` restores any window).
  *   5. `new CommandLoop(deps)`; late-bind `deps.onRuntimeExit` to route a runtime's
  *      spontaneous exit back through the loop as `handleRuntimeExit` (single-writer,
  *      §6.6). Also dispatch the one-shot `seedProjects` command here, fire-and-forget
@@ -83,6 +85,7 @@ import {
 } from '../application/dependencies'
 import { CommandLoop } from '../application/command-loop'
 import { reconcileOnStartup, reconcileStaleGroups } from '../application/reconcile'
+import { pruneStaleViews } from '../application/use-cases/prune-stale-views'
 import { shutdown } from '../application/quit'
 import { worstStatusWins } from '../domain/task-state-aggregator'
 import { Workspace } from '../domain/workspace'
@@ -171,7 +174,7 @@ export function resolveNotificationTargetWindow(
  * so the destroyed-check and the `windowIds` reverse-lookup live in one place
  * (§13.4, §6.7).
  */
-function findWindow(
+export function findWindow(
   windowIds: ReadonlyMap<number, WindowId>,
   id: WindowId
 ): BrowserWindow | undefined {
@@ -191,7 +194,7 @@ function findWindow(
  * cost on a real GPU), needed because SwiftShader doesn't otherwise paint a
  * freshly-raised-but-uninteracted window's first frame.
  */
-function raiseWindow(win: BrowserWindow): void {
+export function raiseWindow(win: BrowserWindow): void {
   if (win.isMinimized()) {
     win.restore()
   }
@@ -377,6 +380,13 @@ export function bootstrap(): AppContext {
 
   reconcileOnStartup(deps, { existsDir })
 
+  // 4d. Discard view window records (plus their secondaries) whose task no longer
+  //     exists in the hydrated workspace ("Window View" — a view restored for a
+  //     deleted task is silently dropped, never shown). Must run before any window
+  //     is restored (`index.ts`, which runs strictly after `bootstrap()` returns) and
+  //     before the command loop accepts a command that could race it.
+  pruneStaleViews(deps)
+
   // 5. Command loop; late-bind the spontaneous-exit sink to re-enter the loop
   //    (so `markExited` runs on the single writer, never inline in a PTY callback).
   const commandLoop = new CommandLoop(deps)
@@ -449,10 +459,22 @@ export function bootstrap(): AppContext {
   //    window(s) that should see it; `resolveSessionWindow` looks up a session's
   //    current window via the live workspace (undefined once it's removed → the
   //    registry broadcasts, so a just-closed tab's event still reaches its window).
-  const windowRegistry = createWindowRegistry(bus, (sessionId) => {
-    const located = locateSession(workspace, asSessionId(sessionId))
-    return located?.session.windowId
-  })
+  const windowRegistry = createWindowRegistry(
+    bus,
+    (sessionId) => {
+      const located = locateSession(workspace, asSessionId(sessionId))
+      return located?.session.windowId
+    },
+    // View-awareness ("Window View"): a view (and its own secondaries) is
+    // permanently pinned to its task, so `activeTaskChanged` must skip the whole
+    // group (window-registry.ts header, `viewTaskIdForWindow`). Read straight from
+    // persistence rather than tracking a parallel in-memory map — this is only
+    // consulted on a task switch (not a hot path, and read once per broadcast, not
+    // once per window — see `LoadWindowRecords`) and persistence is always the
+    // live ground truth for a window's role/taskId, including a boot-restored view
+    // that never went through `windowCreated`.
+    () => deps.persistence.loadWindows()
+  )
 
   // webContents.id → WindowId, filled as windows open (backs windowAtPoint +
   // per-window markReady). Mutated by the entry point/window.ts as windows appear.

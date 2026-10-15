@@ -842,3 +842,73 @@ describe('useKeyboardShortcuts — next/prev session with a group present (§5.7
     expect(window.octopusAPI.sessions.switch).toHaveBeenCalledWith({ sessionId: 's3' })
   })
 })
+
+describe('useKeyboardShortcuts — session walk scoped to the window-view group (window-view feature)', () => {
+  beforeEach(() => {
+    useStore.setState(initialData())
+    installStubBridge()
+  })
+
+  it("includes a SECONDARY parented to the view in the view's group, excluding main's session", () => {
+    // view-1 is the task's view; view-1-sec is parented to it, so the two form one
+    // group together. s1 (hosted in plain `main`) must be excluded from the walk
+    // when cycling from inside that group.
+    const t = task('t1', {
+      sessions: [
+        session('s1', { windowId: 'main' }),
+        session('s2', { order: 1, windowId: 'view-1' }),
+        session('s3', { order: 2, windowId: 'view-1-sec' })
+      ],
+      // Anchored on `view-1-sec` (this window's own hosted tab) — cur resolves via
+      // `activeSessionInWindow`, scoped to THIS window, same as the other cycling tests.
+      activeSessionId: 's3'
+    })
+    seed([t], 't1', 'view-1-sec', [
+      win('main'),
+      win('view-1', { role: 'view', taskId: 't1' }),
+      win('view-1-sec', { parentWindowId: 'view-1' })
+    ])
+    render(<Host onNewTask={vi.fn()} />)
+
+    chord('ArrowRight')
+    // Wraps within [s2, s3] only — from s3 (last), wraps to s2, never reaching s1 in
+    // main's group.
+    expect(window.octopusAPI.sessions.switch).toHaveBeenLastCalledWith({ sessionId: 's2' })
+  })
+
+  it('is a no-op (no sessions.switch call) when the active task is viewed elsewhere, from outside that view', () => {
+    // The task's sessions all live in its view (view-1); this window is `main`,
+    // outside the view's group, so `isViewedElsewhere` gates the walk to a hard no-op
+    // rather than reaching across group boundaries.
+    const t = task('t1', {
+      sessions: [
+        session('s1', { windowId: 'view-1' }),
+        session('s2', { order: 1, windowId: 'view-1' })
+      ],
+      activeSessionId: 's1'
+    })
+    seed([t], 't1', 'main', [win('main'), win('view-1', { role: 'view', taskId: 't1' })])
+    render(<Host onNewTask={vi.fn()} />)
+
+    chord('ArrowRight')
+    expect(window.octopusAPI.sessions.switch).not.toHaveBeenCalled()
+  })
+
+  it('cycles normally from INSIDE the view itself across its own sessions', () => {
+    // Same task/session layout as above, but this renderer IS the view window —
+    // `isViewedElsewhere` is false here, so the walk proceeds over the view's own
+    // (only) group of sessions.
+    const t = task('t1', {
+      sessions: [
+        session('s1', { windowId: 'view-1' }),
+        session('s2', { order: 1, windowId: 'view-1' })
+      ],
+      activeSessionId: 's1'
+    })
+    seed([t], 't1', 'view-1', [win('main'), win('view-1', { role: 'view', taskId: 't1' })])
+    render(<Host onNewTask={vi.fn()} />)
+
+    chord('ArrowRight')
+    expect(window.octopusAPI.sessions.switch).toHaveBeenLastCalledWith({ sessionId: 's2' })
+  })
+})

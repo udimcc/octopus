@@ -26,8 +26,13 @@
  *     its HOSTING window (the one matching `session.windowId`); others just store it.
  *   - **`sessionMovedToWindow`** → BOTH endpoints (`fromWindowId` + `toWindowId`),
  *     so the source unmounts the pane and the target mounts it in one cycle.
- *   - **everything else** (task-level, `activeTaskChanged`, script/error, window
- *     lifecycle, dormant V2 state) → ALL windows.
+ *   - **everything else** (task-level, script/error, window lifecycle, dormant V2
+ *     state) → ALL windows.
+ *   - **`activeTaskChanged`** → ALL windows EXCEPT view windows (window-view
+ *     feature): a view is permanently pinned to one task (DESIGN "Window View"),
+ *     so broadcasting the main window's task switch to it would fight the pin.
+ *     Every other event (including task-scoped ones like `taskRenamed`) still
+ *     reaches view windows unchanged — they render that task's row same as main.
  *
  * Per-window readiness mirrors the old forwarder: events published before a
  * window's renderer has hydrated (its `getState`) are buffered per entry (bounded —
@@ -43,9 +48,11 @@ import type { WebContents } from 'electron'
 import type { EventBus, DomainEvent, Unsubscribe } from '../ports/event-bus'
 import type { EventDTO } from '../shared/events'
 import type { WindowId } from '../domain/ids'
+import type { WindowRecord } from '../ports/workspace-persistence'
 import { CHANNELS } from '../shared/ipc'
 import { OutputTail } from '../shared/output-tail'
 import { toEventDTO } from './dto-mappers'
+import { viewTaskIdForWindow } from '../application/use-cases/window-groups'
 
 interface WindowEntry {
   readonly webContents: WebContents
@@ -83,6 +90,16 @@ export const PENDING_MAX_EVENTS = 2000
  * stays free of domain-aggregate traversal.
  */
 export type ResolveSessionWindow = (sessionId: string) => WindowId | undefined
+
+/**
+ * Load the current window records, for resolving which windows are pinned to a
+ * task (window-view feature). Injected by the composition root as a closure over
+ * `persistence.loadWindows()` — read once per `broadcastSkippingViews` call (not
+ * once per window) so an N-window broadcast costs one persistence read, not N.
+ * Defaults to "no windows" so every existing call site, none of which know about
+ * views, keeps compiling unchanged.
+ */
+export type LoadWindowRecords = () => readonly WindowRecord[]
 
 export interface WindowRegistry {
   /** Attach a window's `webContents` under its id (called at window creation). */
@@ -125,7 +142,10 @@ const SESSION_SCOPED: ReadonlySet<EventDTO['type']> = new Set([
 
 export function createWindowRegistry(
   bus: EventBus,
-  resolveSessionWindow: ResolveSessionWindow
+  resolveSessionWindow: ResolveSessionWindow,
+  // Optional (3rd param, defaults to "no windows") so every existing call site —
+  // none of which know about views — keeps compiling unchanged.
+  loadWindowRecords: LoadWindowRecords = () => []
 ): WindowRegistry {
   const windows = new Map<WindowId, WindowEntry>()
 
@@ -178,6 +198,22 @@ export function createWindowRegistry(
   }
 
   /**
+   * `activeTaskChanged` only (window-view feature): broadcast to every window
+   * EXCEPT one pinned to a task (a view, or a view's own secondary) — see the
+   * header comment. Loads the window records ONCE for the whole broadcast
+   * (`LoadWindowRecords` doc comment) rather than once per window.
+   */
+  const broadcastSkippingViews = (dto: EventDTO): void => {
+    const records = loadWindowRecords()
+    for (const [windowId, entry] of windows) {
+      if (viewTaskIdForWindow(records, windowId) !== undefined) {
+        continue
+      }
+      sendTo(entry, dto)
+    }
+  }
+
+  /**
    * Pull the routing session id off a session-scoped event. Every member of
    * SESSION_SCOPED carries a `sessionId` EXCEPT `sessionReordered`, which is
    * task-scoped in shape (a list of ids) — it is routed by its `taskId`'s… no:
@@ -216,6 +252,11 @@ export function createWindowRegistry(
 
     if (SESSION_SCOPED.has(dto.type)) {
       routeSessionScoped(dto)
+      return
+    }
+
+    if (dto.type === 'activeTaskChanged') {
+      broadcastSkippingViews(dto)
       return
     }
 

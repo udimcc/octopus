@@ -11,6 +11,10 @@ import {
   taskDisplayState,
   issueForTask,
   isIssueBoundElsewhere,
+  isViewedTask,
+  windowGroupRoot,
+  sameWindowGroup,
+  isViewedElsewhere,
   type StoreData
 } from './store'
 import type {
@@ -481,6 +485,116 @@ describe('reduceEvent (§5.2)', () => {
     })
     d = reduceEvent(d, { type: 'windowClosed', windowId: 'win-2' })
     expect(d.windows).toEqual([])
+  })
+
+  it('viewCreated is an informational no-op — windowCreated already tracked the window (window-view feature)', () => {
+    const bounds = { x: 0, y: 0, width: 900, height: 640 }
+    let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
+    d = reduceEvent(d, {
+      type: 'windowCreated',
+      windowId: 'view-1',
+      role: 'view',
+      bounds,
+      taskId: 't1'
+    })
+    const before = d
+    const next = reduceEvent(d, { type: 'viewCreated', windowId: 'view-1', taskId: 't1' })
+    expect(next).toBe(before)
+  })
+
+  it('viewClosed is an informational no-op — windowClosed already removed the window (window-view feature)', () => {
+    const d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
+    const before = d
+    const next = reduceEvent(d, { type: 'viewClosed', windowId: 'view-1', taskId: 't1' })
+    expect(next).toBe(before)
+  })
+})
+
+describe('window-view group selectors (isViewedTask / windowGroupRoot / sameWindowGroup / isViewedElsewhere)', () => {
+  const bounds = { x: 0, y: 0, width: 900, height: 640 }
+
+  /** `t1` with a dedicated view `view-1`, and a secondary `view-1-sec` parented to it. */
+  function withView(): StoreData {
+    let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
+    d = reduceEvent(d, { type: 'taskCreated', task: task('t2') })
+    d = reduceEvent(d, {
+      type: 'windowCreated',
+      windowId: 'view-1',
+      role: 'view',
+      bounds,
+      taskId: 't1'
+    })
+    d = reduceEvent(d, {
+      type: 'windowCreated',
+      windowId: 'view-1-sec',
+      role: 'secondary',
+      bounds,
+      parentWindowId: 'view-1'
+    })
+    d = reduceEvent(d, { type: 'windowCreated', windowId: 'win-2', role: 'secondary', bounds })
+    return d
+  }
+
+  describe('isViewedTask', () => {
+    it('is true exactly for a task with a dedicated view window', () => {
+      const d = withView()
+      expect(isViewedTask(d, 't1')).toBe(true)
+      expect(isViewedTask(d, 't2')).toBe(false)
+    })
+  })
+
+  describe('windowGroupRoot', () => {
+    it('resolves a view window to itself', () => {
+      const d = withView()
+      expect(windowGroupRoot(d, 'view-1')).toBe('view-1')
+    })
+
+    it("resolves the view's own secondary to the view's id", () => {
+      const d = withView()
+      expect(windowGroupRoot(d, 'view-1-sec')).toBe('view-1')
+    })
+
+    it("resolves main, main's plain secondaries, and unknown ids to main", () => {
+      const d = withView()
+      expect(windowGroupRoot(d, 'main')).toBe('main')
+      expect(windowGroupRoot(d, 'win-2')).toBe('main')
+      expect(windowGroupRoot(d, 'ghost')).toBe('main')
+    })
+
+    it('falls back to main for a secondary whose parent view has since closed', () => {
+      let d = withView()
+      d = reduceEvent(d, { type: 'windowClosed', windowId: 'view-1' })
+      expect(windowGroupRoot(d, 'view-1-sec')).toBe('main')
+    })
+  })
+
+  describe('sameWindowGroup', () => {
+    it('is true within the same group and false across groups', () => {
+      const d = withView()
+      expect(sameWindowGroup(d, 'view-1', 'view-1-sec')).toBe(true)
+      expect(sameWindowGroup(d, 'main', 'win-2')).toBe(true)
+      expect(sameWindowGroup(d, 'view-1', 'main')).toBe(false)
+      expect(sameWindowGroup(d, 'view-1', 'win-2')).toBe(false)
+    })
+  })
+
+  describe('isViewedElsewhere', () => {
+    it('is false for a task with no view at all', () => {
+      const d = withView()
+      expect(isViewedElsewhere({ ...d, windowId: 'main' }, 't2')).toBe(false)
+    })
+
+    it('is true from main (and from an unrelated secondary) for a task with a view', () => {
+      const d = withView()
+      expect(isViewedElsewhere({ ...d, windowId: 'main' }, 't1')).toBe(true)
+      expect(isViewedElsewhere({ ...d, windowId: 'win-2' }, 't1')).toBe(true)
+    })
+
+    it("is false from inside the task's own view, and from its own secondary", () => {
+      const d = withView()
+      expect(isViewedElsewhere({ ...d, windowId: 'view-1' }, 't1')).toBe(false)
+      expect(isViewedElsewhere({ ...d, windowId: 'view-1-sec' }, 't1')).toBe(false)
+    })
   })
 })
 

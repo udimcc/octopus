@@ -28,10 +28,11 @@
  *
  * ISSUES DRAWER (`issuesKey`, PRD "Issues window"): the drawer exists only in the main
  * window (§13.4/§13.5). In the main window the chord toggles the store's own guarded
- * `toggleIssuesDrawer()` action directly. In a secondary window (`store.windowRole ===
- * 'secondary'`) there is no drawer to toggle locally, so the chord fires
- * `window.octopusAPI.issues.toggleDrawer()` instead — a fire-and-forget IPC that asks
- * main to raise/focus the main window and relay `issuesDrawerToggle` to it.
+ * `toggleIssuesDrawer()` action directly. In any non-main window (`store.windowRole !==
+ * 'main'` — a `secondary`, or a `view`/its secondaries, window-view feature) there is no
+ * drawer to toggle locally, so the chord fires `window.octopusAPI.issues.toggleDrawer()`
+ * instead — a fire-and-forget IPC that asks main to raise/focus the main window and relay
+ * `issuesDrawerToggle` to it.
  *
  * ESCAPE FALLBACK: the drawer's own `onKeyDown` handles Escape, but only when
  * the keydown's target is actually inside its DOM subtree — once focus has fallen
@@ -81,7 +82,13 @@
  */
 
 import { useEffect } from 'react'
-import { useStore, activeSessionInWindow, groupOfSession } from '../store/store'
+import {
+  useStore,
+  activeSessionInWindow,
+  groupOfSession,
+  sameWindowGroup,
+  isViewedElsewhere
+} from '../store/store'
 import { groupTasksByRepo } from '../store/group-tasks'
 import { matchesChord } from '../keybindings/chords'
 import { canSplit, neighbor, type PaneDirection } from '../store/split-layout'
@@ -140,6 +147,8 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
       // helper it renders from, keyed on the `groupTasksByRepo` setting, so keyboard
       // cycling matches what the user sees.
       const cycleTask = (delta: number): void => {
+        // A view window is pinned to its one task (window-view feature) — no-op.
+        if (store.viewTaskId !== undefined) return
         const order = store.settings.groupTasksByRepo
           ? groupTasksByRepo(taskOrder, store.tasks).flatMap((g) => g.taskIds)
           : taskOrder
@@ -152,20 +161,28 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
       }
 
       // Cycle the active session of the active task by `delta`, wrapping. Cycling spans
-      // ALL windows (§5.4) but is GROUPED by window: we take the task's global tab order
-      // (`task.sessionIds`, already ordered by each session's `order`) and STABLE-sort it
-      // by the hosting window's rank — its index in `store.windows`, which is creation
-      // order (hydrated ORDER BY created_at, then append-on-`windowCreated`). A stable sort
-      // keeps each window's tabs in their tab order, so the cycle walks window 1's tabs,
-      // then window 2's, etc., and wraps across the whole set. We anchor "current" on THIS
-      // window's mark (§3.7): shortcuts are handled by the OS-focused window, whose mark IS
-      // the focused session. We dispatch `sessions.switch`, which round-trips, moves the
-      // persisted pointer, raises the hosting window, and broadcasts `activeSessionChanged`
+      // every window IN THIS WINDOW'S GROUP (§5.4; window-view feature) but is GROUPED by
+      // window: we take the task's global tab order (`task.sessionIds`, already ordered by
+      // each session's `order`), restrict it to sessions hosted in a window that shares
+      // THIS window's group (`sameWindowGroup` — main's own group for a main/secondary
+      // window, or a view-and-its-secondaries group for a view window), and STABLE-sort
+      // what's left by the hosting window's rank — its index in `store.windows`, which is
+      // creation order (hydrated ORDER BY created_at, then append-on-`windowCreated`). A
+      // stable sort keeps each window's tabs in their tab order, so the cycle walks window
+      // 1's tabs, then window 2's, etc., and wraps across the whole GROUP (never crossing
+      // into main's windows from a view, another view, or vice versa). We anchor "current"
+      // on THIS window's mark (§3.7): shortcuts are handled by the OS-focused window, whose
+      // mark IS the focused session. We dispatch `sessions.switch`, which round-trips, moves
+      // the persisted pointer, raises the hosting window, and broadcasts `activeSessionChanged`
       // (only the host moves its mark, so this window keeps showing what it had).
       const cycleSession = (delta: number): void => {
         if (!activeTaskId) return
         const task = store.tasks[activeTaskId]
         if (!task) return
+        // A viewed task's sessions all live in its view group; a non-endpoint window's
+        // copy of `windowId` can be stale (`sessionMovedToWindow` goes only to the two
+        // endpoints), so don't walk from outside the group into the view.
+        if (isViewedElsewhere(store, activeTaskId)) return
         // Window rank = index in `store.windows` (creation order). Orphans (window not
         // tracked) sort to the end deterministically rather than jumping to the front.
         const windowRank = (id: string): number => {
@@ -173,7 +190,11 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
           const idx = w === undefined ? -1 : store.windows.findIndex((win) => win.id === w)
           return idx === -1 ? store.windows.length : idx
         }
-        const ids = [...task.sessionIds].sort((a, b) => windowRank(a) - windowRank(b))
+        const inGroup = (id: string): boolean => {
+          const w = store.sessions[id]?.windowId
+          return w !== undefined && sameWindowGroup(store, w, store.windowId)
+        }
+        const ids = task.sessionIds.filter(inGroup).sort((a, b) => windowRank(a) - windowRank(b))
         if (ids.length === 0) return
         const curId = activeSessionInWindow(store, activeTaskId, store.windowId)
         const cur = curId ? ids.indexOf(curId) : -1
@@ -181,10 +202,22 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
         if (next) void window.octopusAPI.sessions.switch({ sessionId: next })
       }
 
-      // Create a new session (terminal) in the active task, if it is `ready`.
+      // Create a new session (terminal) in the active task, if it is `ready` and not
+      // viewed elsewhere (window-view feature: its sessions already moved to the view,
+      // so this window has no business starting a new one there — same gate as the
+      // disabled "+ New Session" control in `SessionTabBar`).
       const newSession = (): void => {
-        if (activeTaskId && store.tasks[activeTaskId]?.lifecycle === 'ready') {
-          void window.octopusAPI.sessions.create({ taskId: activeTaskId })
+        if (
+          activeTaskId &&
+          store.tasks[activeTaskId]?.lifecycle === 'ready' &&
+          !isViewedElsewhere(store, activeTaskId)
+        ) {
+          window.octopusAPI.sessions
+            .create({ taskId: activeTaskId })
+            .then((ack) => {
+              if (!ack.ok) store.pushToast('error', ack.error ?? 'Failed to create session')
+            })
+            .catch(() => store.pushToast('error', 'Failed to create session'))
         }
       }
 
@@ -314,7 +347,10 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
       }
       if (matchesChord(e, issuesKey)) {
         e.preventDefault()
-        if (store.windowRole === 'secondary') {
+        // The drawer exists only in the main window (§13.4/§13.5). A `secondary` OR a
+        // `view` window (window-view feature) has no local drawer, so both relay through
+        // main instead of toggling anything here.
+        if (store.windowRole !== 'main') {
           window.octopusAPI.issues.toggleDrawer()
         } else {
           store.toggleIssuesDrawer()

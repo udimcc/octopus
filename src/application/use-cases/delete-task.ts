@@ -33,6 +33,17 @@
  * mutation that already ran inside the callback (the same reasoning
  * `bind-issue.ts`/`create-task.ts` document for their own rollback paths, just
  * applied by reordering instead of restoring).
+ *
+ * **View teardown (window-view feature).** `windows.task_id` carries no FK
+ * (`schema.ts`), so a task's dedicated view (and the view's OWN secondaries)
+ * would otherwise survive the task row's deletion as a stale, task-less
+ * window. Run LAST, after step 5 actually removes the task, as a final
+ * cleanup pass over the window table: secondaries first, then the view
+ * itself, each via a plain `deleteWindow` + `windowClosed` (no
+ * `moveSessionToWindow` — every session that was hosted there is already gone
+ * with the task), then `viewClosed`. No `switchTask`: the task is gone, so
+ * there is nothing to switch back to (contrast `closeView`, which always has
+ * a surviving task to return to).
  */
 
 import type { AppDependencies } from '../dependencies'
@@ -40,6 +51,7 @@ import type { DeleteTaskInput, CommandResult } from '../commands'
 import type { IssueId } from '../../domain/ids'
 import type { IssueSnapshot } from '../../domain/snapshots'
 import { TaskLifecycle } from '../../domain/lifecycle'
+import { viewForTask, secondariesOf } from './window-groups'
 
 export async function deleteTask(
   deps: AppDependencies,
@@ -174,5 +186,22 @@ export async function deleteTask(
   } else if (upsertedIssue) {
     deps.bus.publish({ type: 'issueUpserted', issue: upsertedIssue })
   }
+
+  // View teardown (see module doc): the task is fully gone now, so any
+  // dedicated view it had is a stale, task-less window — close it (and its
+  // own secondaries) rather than leave it orphaned.
+  const windows = deps.persistence.loadWindows()
+  const view = viewForTask(windows, input.taskId)
+  if (view) {
+    const secondaries = secondariesOf(windows, view.id)
+    for (const secondary of secondaries) {
+      deps.persistence.deleteWindow(secondary.id)
+      deps.bus.publish({ type: 'windowClosed', windowId: secondary.id })
+    }
+    deps.persistence.deleteWindow(view.id)
+    deps.bus.publish({ type: 'windowClosed', windowId: view.id })
+    deps.bus.publish({ type: 'viewClosed', windowId: view.id, taskId: input.taskId })
+  }
+
   return { ok: true }
 }

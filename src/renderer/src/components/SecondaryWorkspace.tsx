@@ -11,11 +11,14 @@
  *
  * All windows sync on the single `activeTaskId` (switch a task → sessions switch in
  * every window). A secondary window may host ZERO of the active task's sessions — it
- * then shows an empty prompt inviting the user to drag a tab over.
+ * then shows an empty prompt inviting the user to drag a tab over, UNLESS the active
+ * task is viewed in a window outside this one's group (window-view feature), in which
+ * case its sessions didn't just fail to land here — they were bulk-moved to the view —
+ * so the prompt instead says the task now lives in its own window.
  */
 
 import { TaskView } from './TaskView'
-import { useStore } from '../store/store'
+import { useStore, isViewedElsewhere } from '../store/store'
 import { color, fontSize } from '../style/tokens'
 
 export function SecondaryWorkspace(): React.JSX.Element {
@@ -24,6 +27,9 @@ export function SecondaryWorkspace(): React.JSX.Element {
   const windowId = useStore((s) => s.windowId)
   const sessions = useStore((s) => s.sessions)
   const tasks = useStore((s) => s.tasks)
+  const activeTaskViewedElsewhere = useStore(
+    (s) => !!activeTaskId && isViewedElsewhere(s, activeTaskId)
+  )
 
   // Does this window host any session of the active task? Drives the empty state.
   const activeTask = activeTaskId ? tasks[activeTaskId] : undefined
@@ -64,7 +70,9 @@ export function SecondaryWorkspace(): React.JSX.Element {
         >
           <span style={{ fontSize: 40, opacity: 0.5 }}>🪟</span>
           <p style={{ margin: 0, fontSize: fontSize.lg }}>
-            No sessions here — drag a tab onto this window.
+            {activeTaskViewedElsewhere
+              ? 'This task is shown in its own window.'
+              : 'No sessions here — drag a tab onto this window.'}
           </p>
         </div>
       ) : null}

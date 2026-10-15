@@ -12,6 +12,7 @@ import type { EventDTO } from '../shared/events'
 import { asTaskId, asSessionId, asWindowId, asTypeId } from '../domain/ids'
 import { SessionLifecycle } from '../domain/lifecycle'
 import { SessionState } from '../domain/state'
+import type { WindowRecord } from '../ports/workspace-persistence'
 
 /** A fake WebContents recording `send` calls, with a controllable destroyed flag. */
 class FakeWebContents {
@@ -355,6 +356,114 @@ describe('createWindowRegistry routing (§6.7)', () => {
       main.destroyed = false
       registry.markReady(MAIN)
       expect(main.sent).toEqual([])
+    })
+  })
+
+  describe('activeTaskChanged skips view windows (window-view feature)', () => {
+    const T1 = asTaskId('t1')
+
+    /** Minimal fields a WindowRecord test fixture needs. */
+    function winRec(over: Omit<Partial<WindowRecord>, 'id'> & { id: string }): WindowRecord {
+      return {
+        role: 'secondary',
+        bounds: { x: 0, y: 0, width: 800, height: 600 },
+        createdAt: 1,
+        ...over,
+        id: asWindowId(over.id)
+      } as WindowRecord
+    }
+
+    it('skips a VIEW window but still reaches main and a plain secondary', () => {
+      const bus = new InMemoryEventBus()
+      const records: WindowRecord[] = [
+        winRec({ id: 'main', role: 'main' }),
+        winRec({ id: 'win-2', role: 'secondary' }),
+        winRec({ id: 'view-1', role: 'view', taskId: T1 })
+      ]
+      const registry = createWindowRegistry(
+        bus,
+        () => undefined,
+        () => records
+      )
+      const main = new FakeWebContents()
+      const win2 = new FakeWebContents()
+      const view1 = new FakeWebContents()
+      registry.register(MAIN, main.as())
+      registry.register(WIN2, win2.as())
+      registry.register(asWindowId('view-1'), view1.as())
+      registry.markReady(MAIN)
+      registry.markReady(WIN2)
+      registry.markReady(asWindowId('view-1'))
+
+      bus.publish({ type: 'activeTaskChanged', taskId: T1 })
+
+      expect(main.sent.map((d) => d.type)).toEqual(['activeTaskChanged'])
+      expect(win2.sent.map((d) => d.type)).toEqual(['activeTaskChanged'])
+      expect(view1.sent).toEqual([])
+    })
+
+    it('also skips a secondary PARENTED to the view (the pin travels to the whole group)', () => {
+      const bus = new InMemoryEventBus()
+      const records: WindowRecord[] = [
+        winRec({ id: 'main', role: 'main' }),
+        winRec({ id: 'view-1', role: 'view', taskId: T1 }),
+        winRec({ id: 'view-1-sec', role: 'secondary', parentWindowId: asWindowId('view-1') })
+      ]
+      const registry = createWindowRegistry(
+        bus,
+        () => undefined,
+        () => records
+      )
+      const main = new FakeWebContents()
+      const view1 = new FakeWebContents()
+      const viewSec = new FakeWebContents()
+      registry.register(MAIN, main.as())
+      registry.register(asWindowId('view-1'), view1.as())
+      registry.register(asWindowId('view-1-sec'), viewSec.as())
+      registry.markReady(MAIN)
+      registry.markReady(asWindowId('view-1'))
+      registry.markReady(asWindowId('view-1-sec'))
+
+      bus.publish({ type: 'activeTaskChanged', taskId: T1 })
+
+      expect(main.sent.map((d) => d.type)).toEqual(['activeTaskChanged'])
+      expect(view1.sent).toEqual([])
+      expect(viewSec.sent).toEqual([])
+    })
+
+    it('every OTHER event type still reaches a view window unchanged (only activeTaskChanged is special-cased)', () => {
+      const bus = new InMemoryEventBus()
+      const records: WindowRecord[] = [
+        winRec({ id: 'main', role: 'main' }),
+        winRec({ id: 'view-1', role: 'view', taskId: T1 })
+      ]
+      const registry = createWindowRegistry(
+        bus,
+        () => undefined,
+        () => records
+      )
+      const main = new FakeWebContents()
+      const view1 = new FakeWebContents()
+      registry.register(MAIN, main.as())
+      registry.register(asWindowId('view-1'), view1.as())
+      registry.markReady(MAIN)
+      registry.markReady(asWindowId('view-1'))
+
+      bus.publish({ type: 'taskRenamed', taskId: T1, name: 'Renamed' })
+      bus.publish({ type: 'windowClosed', windowId: asWindowId('win-9') })
+
+      expect(main.sent.map((d) => d.type)).toEqual(['taskRenamed', 'windowClosed'])
+      expect(view1.sent.map((d) => d.type)).toEqual(['taskRenamed', 'windowClosed'])
+    })
+
+    it('defaults to treating every window as non-view when loadWindowRecords is omitted (back-compat)', () => {
+      // No 3rd arg at all — the pre-window-view call sites keep broadcasting
+      // activeTaskChanged to everyone, since `viewTaskIdForWindow([], id)` is
+      // always undefined.
+      const { bus, main, win2 } = twoWindows(() => WIN2)
+      bus.publish({ type: 'activeTaskChanged', taskId: T1 })
+      expect(main.sent.map((d) => d.type)).toEqual(['activeTaskChanged'])
+      expect(win2.sent.map((d) => d.type)).toEqual(['activeTaskChanged'])
     })
   })
 })

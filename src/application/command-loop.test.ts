@@ -10,7 +10,10 @@ import type {
   RepoWorktree
 } from '../ports/worktree-provider'
 import { makeDeps, taskInput } from './use-cases/test-fakes'
-import { asTaskId, asSessionId, asTypeId } from '../domain/ids'
+import { createTask } from './use-cases/create-task'
+import { openSession } from './use-cases/open-session'
+import { createWindow } from './use-cases/create-window'
+import { asTaskId, asSessionId, asTypeId, MAIN_WINDOW_ID } from '../domain/ids'
 import { SessionLifecycle, TaskLifecycle } from '../domain/lifecycle'
 import { SessionState, TaskState } from '../domain/state'
 import type { WorkspaceSnapshot } from '../domain/snapshots'
@@ -363,6 +366,125 @@ describe('startTaskSessions command (Bug: status only shows on focus — §6.2, 
     // The active pointer did NOT move (unlike switchTask) — no activeTaskChanged.
     expect(workspace.activeTaskId).toBe(asTaskId('task-1'))
     expect(bus.ofType('activeTaskChanged')).toEqual([])
+  })
+})
+
+describe('closeWindow command routing (window-view feature, §3.7/§6.7)', () => {
+  it("routes a closeWindow dispatch against a VIEW's id to closeView's richer teardown", async () => {
+    const { deps, workspace, persistence } = makeDeps()
+    const loop = new CommandLoop(deps)
+    await loop.dispatch({ kind: 'createTask', input: taskInput('T') })
+    const taskId = asTaskId('task-1')
+    await loop.dispatch({ kind: 'createSession', input: { taskId, typeId: asTypeId('terminal') } })
+    const createViewRes = await loop.dispatch({ kind: 'createView', input: { taskId } })
+    expect(createViewRes.ok).toBe(true)
+    const viewId = createViewRes.ok ? createViewRes.windowId! : (undefined as never)
+
+    const res = await loop.dispatch({
+      kind: 'closeWindow',
+      input: { windowId: viewId, disposition: 'move-to-main' }
+    })
+
+    expect(res.ok).toBe(true)
+    // closeView's teardown ran (not plain closeWindow): the window row is
+    // gone AND the task's session returned to main.
+    expect(persistence.windows.has(viewId)).toBe(false)
+    const task = workspace.task(taskId)!
+    expect(task.sessions()[0]!.windowId).toBe(MAIN_WINDOW_ID)
+  })
+
+  it('routes a closeWindow dispatch against a plain secondary to the ordinary closeWindow teardown', async () => {
+    const { deps, persistence } = makeDeps()
+    const loop = new CommandLoop(deps)
+    const windowId = createWindow(deps, { role: 'secondary' })
+
+    const res = await loop.dispatch({
+      kind: 'closeWindow',
+      input: { windowId, disposition: 'move-to-main' }
+    })
+
+    expect(res.ok).toBe(true)
+    expect(persistence.windows.has(windowId)).toBe(false)
+  })
+})
+
+describe('moveSessionToWindow command cross-group guard (window-view feature, §3.7/§6.7)', () => {
+  it('refuses a user-initiated move that would cross from main into a view', async () => {
+    const { deps, workspace } = makeDeps()
+    const loop = new CommandLoop(deps)
+    await loop.dispatch({ kind: 'createTask', input: taskInput('T') })
+    const taskId = asTaskId('task-1')
+    await createTask(deps, taskInput('Other'))
+    const otherTaskId = asTaskId('task-2')
+    await openSession(deps, { taskId: otherTaskId })
+    const otherSession = workspace.task(otherTaskId)!.sessions()[0]!
+
+    const createViewRes = await loop.dispatch({ kind: 'createView', input: { taskId } })
+    const viewId = createViewRes.ok ? createViewRes.windowId! : (undefined as never)
+
+    const res = await loop.dispatch({
+      kind: 'moveSessionToWindow',
+      input: { sessionId: otherSession.id, targetWindowId: viewId }
+    })
+
+    expect(res.ok).toBe(false)
+    // The session never actually moved.
+    expect(workspace.task(otherTaskId)!.session(otherSession.id)!.windowId).toBe(MAIN_WINDOW_ID)
+  })
+
+  it('refuses a move between two different views', async () => {
+    const { deps, workspace } = makeDeps()
+    const loop = new CommandLoop(deps)
+    await loop.dispatch({ kind: 'createTask', input: taskInput('A') })
+    const taskA = asTaskId('task-1')
+    await loop.dispatch({ kind: 'createTask', input: taskInput('B') })
+    const taskB = asTaskId('task-2')
+    await openSession(deps, { taskId: taskA })
+    const sessionA = workspace.task(taskA)!.sessions()[0]!
+
+    const viewAResult = await loop.dispatch({ kind: 'createView', input: { taskId: taskA } })
+    const viewAId = viewAResult.ok ? viewAResult.windowId! : (undefined as never)
+    const viewBResult = await loop.dispatch({ kind: 'createView', input: { taskId: taskB } })
+    const viewBId = viewBResult.ok ? viewBResult.windowId! : (undefined as never)
+
+    const res = await loop.dispatch({
+      kind: 'moveSessionToWindow',
+      input: { sessionId: sessionA.id, targetWindowId: viewBId }
+    })
+
+    expect(res.ok).toBe(false)
+    expect(workspace.task(taskA)!.session(sessionA.id)!.windowId).toBe(viewAId)
+  })
+
+  it('allows a move that stays within the same window group (view + its own secondary)', async () => {
+    const { deps, workspace } = makeDeps()
+    const loop = new CommandLoop(deps)
+    await loop.dispatch({ kind: 'createTask', input: taskInput('T') })
+    const taskId = asTaskId('task-1')
+    await openSession(deps, { taskId })
+    const session = workspace.task(taskId)!.sessions()[0]!
+
+    const viewResult = await loop.dispatch({ kind: 'createView', input: { taskId } })
+    const viewId = viewResult.ok ? viewResult.windowId! : (undefined as never)
+    const secondaryId = createWindow(deps, { role: 'secondary', parentWindowId: viewId })
+
+    const res = await loop.dispatch({
+      kind: 'moveSessionToWindow',
+      input: { sessionId: session.id, targetWindowId: secondaryId }
+    })
+
+    expect(res.ok).toBe(true)
+    expect(workspace.task(taskId)!.session(session.id)!.windowId).toBe(secondaryId)
+  })
+
+  it('still refuses an unknown session id (existing guard, unaffected)', async () => {
+    const { deps } = makeDeps()
+    const loop = new CommandLoop(deps)
+    const res = await loop.dispatch({
+      kind: 'moveSessionToWindow',
+      input: { sessionId: asSessionId('ghost'), targetWindowId: MAIN_WINDOW_ID }
+    })
+    expect(res.ok).toBe(false)
   })
 })
 

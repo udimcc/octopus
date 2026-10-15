@@ -12,7 +12,7 @@
  * up state without a signature change (§10); nobody emits them in V1.
  */
 
-import type { TaskDTO, SessionDTO, IssueDTO, GroupDTO } from './dto'
+import type { TaskDTO, SessionDTO, IssueDTO, GroupDTO, WindowRole } from './dto'
 
 export interface PtyDataEventDTO {
   readonly type: 'ptyData'
@@ -145,13 +145,17 @@ export interface ErrorEventDTO {
 export interface WindowCreatedEventDTO {
   readonly type: 'windowCreated'
   readonly windowId: string
-  readonly role: 'main' | 'secondary'
+  readonly role: WindowRole
   readonly bounds: {
     readonly x: number
     readonly y: number
     readonly width: number
     readonly height: number
   }
+  /** Set only when `role === 'view'` — the task this view window is pinned to. */
+  readonly taskId?: string
+  /** Set only on a secondary of a VIEW: that view's id. Main's secondaries leave it unset. */
+  readonly parentWindowId?: string
 }
 export interface WindowClosedEventDTO {
   readonly type: 'windowClosed'
@@ -175,6 +179,21 @@ export interface SessionMovedToWindowEventDTO {
    *    target window marks only the member actually sent, not these passengers.
    */
   readonly cause?: 'windowClosed' | 'groupMove'
+}
+
+// ── View lifecycle events (window-view feature) ──────────────────────────────
+
+/** A task's dedicated view window was created ("New Window From Task"). DTO mirror of `ViewCreatedEvent`. */
+export interface ViewCreatedEventDTO {
+  readonly type: 'viewCreated'
+  readonly windowId: string
+  readonly taskId: string
+}
+/** A task's view window was closed; its sessions returned to main (or, on task delete, were deleted with the task). DTO mirror of `ViewClosedEvent`. */
+export interface ViewClosedEventDTO {
+  readonly type: 'viewClosed'
+  readonly windowId: string
+  readonly taskId: string
 }
 
 // ── Dormant V2 state seams (§10) — emitted by nobody in V1 ───────────────────
@@ -267,6 +286,8 @@ export type EventDTO =
   | WindowCreatedEventDTO
   | WindowClosedEventDTO
   | SessionMovedToWindowEventDTO
+  | ViewCreatedEventDTO
+  | ViewClosedEventDTO
   | SessionStateChangedEventDTO
   | TaskStateChangedEventDTO
   | SessionStateNotificationEventDTO

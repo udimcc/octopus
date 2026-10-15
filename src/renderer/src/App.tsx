@@ -5,8 +5,24 @@
  *     `TaskWorkspace` (keep-alive session panes) — the full IDE.
  *   - **secondary** (V1.5) → session-only: no progress panel, just the active
  *     task's sessions that belong to THIS window (`SecondaryWorkspace`).
- * Both share the `Toaster` and the boot sequence; only the main window mounts the
- * New-Task modal + task-creation shortcut. All real UI lives in `components/`.
+ *   - **view** (window-view feature) → a window permanently pinned to one task
+ *     (`store.viewTaskId`): the left `ProgressPanel` in its `readOnly` mode (every
+ *     task listed, but non-interactive — no switching/drag/reorder/create/delete)
+ *     plus the SAME `TaskWorkspace` main uses for its session area. Reusing
+ *     `TaskWorkspace` unmodified works here because a view window's `activeTaskId`
+ *     is pinned to `viewTaskId` (store.ts's `activeTaskChanged` reducer no-ops while
+ *     it's set) — so `TaskWorkspace`'s existing "only the active task is laid out,
+ *     every other task stays keep-alive-hidden" behavior already shows exactly, and
+ *     only, the viewed task's sessions. A thin banner above both panels is the
+ *     explicit view indicator (the OS window title is ALSO `<task name> [View]`,
+ *     set and kept in sync by the main process alone — `wireViewTitle`,
+ *     `src/main/window.ts` — which also blocks Electron's `page-title-updated`
+ *     event, so nothing in this renderer, including a stray `document.title`
+ *     write, could ever reach the OS title or fight main for ownership of it).
+ *     No Issues drawer here (main-only, DESIGN §13.4/§13.5) and no task-creation
+ *     shortcut.
+ * All three share the `Toaster` and the boot sequence; only the main window mounts
+ * the New-Task modal + task-creation shortcut. All real UI lives in `components/`.
  *
  * MOUNT ORDER IS LOAD-BEARING (§5.2/§6.5): subscribe via `initEventRouting` BEFORE
  * `getState().then(hydrate)`, so startup events the backend emits while we hydrate
@@ -27,6 +43,7 @@ import { DeleteTaskConfirm } from './components/DeleteTaskConfirm'
 import { IssuesDrawer } from './components/IssuesDrawer'
 import { DebugOverlay } from './components/DebugOverlay'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
+import { color, fontSize } from './style/tokens'
 
 const shellStyle: React.CSSProperties = {
   display: 'flex',
@@ -176,7 +193,14 @@ function useBoot(): void {
       // `Workspace.hydrate`), so this switch skips the pointer move + event and only
       // runs the idempotent session start. Every window issues it (idempotent), so a
       // window opened later still gets its sessions started.
-      if (state.activeTaskId) void window.octopusAPI.tasks.switch({ taskId: state.activeTaskId })
+      //
+      // Window-view feature: skip this entirely when `viewTaskId` is set (a view or
+      // one of its secondaries). The backend already starts a view task's sessions as
+      // part of `createView`/window-open, and `state.activeTaskId` there is MAIN's
+      // global pointer, not this window's pinned task — issuing `tasks.switch` with it
+      // would wrongly move that global pointer out from under main.
+      if (state.activeTaskId && state.viewTaskId === undefined)
+        void window.octopusAPI.tasks.switch({ taskId: state.activeTaskId })
     })
     return unsubscribe
   }, [hydrate, applyEvent])
@@ -290,6 +314,52 @@ function SecondaryWindowApp(): React.JSX.Element {
   )
 }
 
+/**
+ * A view window (window-view feature, §5.1 of the window-view design doc): pinned
+ * permanently to one task (`store.viewTaskId`). Layout mirrors `MainWindowApp` minus
+ * the Issues drawer and task-creation shortcut — see the module doc comment for why
+ * `ProgressPanel readOnly` + the unmodified `TaskWorkspace` are the right reuse here.
+ */
+function ViewWindowApp(): React.JSX.Element {
+  // Only the search shortcut is meaningful here; task creation/Issues live in main.
+  useKeyboardShortcuts({ onNewTask: () => {}, onSearch: openSearchForActive })
+
+  const viewTaskId = useStore((s) => s.viewTaskId)
+  const taskName = useStore((s) => (viewTaskId ? s.tasks[viewTaskId]?.name : undefined))
+
+  return (
+    <main style={{ ...shellStyle, flexDirection: 'column' }}>
+      {/* Explicit view indicator (product spec: "a clear view indicator... near the
+          task bar"). The OS window title already carries `<task name> [View]` — set
+          and exclusively owned by the main process (`wireViewTitle`, src/main/window.ts,
+          which also blocks `page-title-updated` so nothing else can overwrite it) — so
+          this banner is purely an in-page reinforcement, not the source of truth. */}
+      <div
+        style={{
+          flex: '0 0 auto',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '4px 12px',
+          background: color.infoBg,
+          color: color.infoText,
+          fontSize: fontSize.sm,
+          borderBottom: `1px solid ${color.border}`
+        }}
+      >
+        <span style={{ fontWeight: 700 }}>View</span>
+        {taskName ? <span>— {taskName}</span> : null}
+      </div>
+      <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+        <ProgressPanel onNewTask={() => {}} readOnly />
+        <TaskWorkspace />
+      </div>
+      <Toaster />
+      <DebugOverlay />
+    </main>
+  )
+}
+
 export function App(): React.JSX.Element {
   useBoot()
   useWindowFocus()
@@ -297,5 +367,7 @@ export function App(): React.JSX.Element {
   usePersistFocusedSession()
   useFocusFlashExpiry()
   const windowRole = useStore((s) => s.windowRole)
-  return windowRole === 'secondary' ? <SecondaryWindowApp /> : <MainWindowApp />
+  if (windowRole === 'secondary') return <SecondaryWindowApp />
+  if (windowRole === 'view') return <ViewWindowApp />
+  return <MainWindowApp />
 }

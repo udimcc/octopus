@@ -53,6 +53,8 @@ import type { SessionConfig } from '../domain/session-config'
 import type { JiraProject, JiraSprint, JiraClassification } from '../domain/jira-import'
 import type { JiraIssuePreview } from '../application/queries/preview-jira-issues'
 import { JiraSourceError } from '../ports/jira-issue-source'
+import { asWindowId } from '../domain/ids'
+import { viewTaskIdForWindow } from '../application/use-cases/window-groups'
 
 // ── Outbound: domain snapshot → wire DTO ────────────────────────────────────────
 
@@ -301,7 +303,9 @@ export function toWindowDTO(w: WindowRecord): WindowDTO {
     id: w.id,
     role: w.role,
     bounds: { x: w.bounds.x, y: w.bounds.y, width: w.bounds.width, height: w.bounds.height },
-    createdAt: w.createdAt
+    createdAt: w.createdAt,
+    taskId: w.taskId,
+    parentWindowId: w.parentWindowId
   }
 }
 
@@ -319,15 +323,24 @@ export function toWindowDTO(w: WindowRecord): WindowDTO {
 export function toWindowedWorkspaceStateDTO(
   view: AppStateView,
   thisWindowId: string,
-  thisWindowRole: 'main' | 'secondary',
+  thisWindowRole: 'main' | 'secondary' | 'view',
   initialMark?: { taskId: string; sessionId: string }
 ): WindowedWorkspaceStateDTO {
+  // `viewTaskId` (window-view feature) is the task THIS WINDOW'S GROUP is
+  // permanently pinned to: set for a `role: 'view'` window AND for a secondary
+  // parented to one (`thisWindowRole` stays `'secondary'` for those — only the
+  // pin travels, not the role). Resolved via `viewTaskIdForWindow`
+  // (`windowGroupRoot` under the hood) over `view.windows` (populated unfiltered
+  // by `getState`) rather than threading a separate lookup through the
+  // application layer.
+  const viewTaskId = viewTaskIdForWindow(view.windows, asWindowId(thisWindowId))
   return {
     ...toWorkspaceStateDTO(view),
     thisWindowId,
     thisWindowRole,
     windows: view.windows.map(toWindowDTO),
-    initialMark
+    initialMark,
+    viewTaskId
   }
 }
 
@@ -402,10 +415,16 @@ export function toEventDTO(e: DomainEvent): EventDTO {
         type: 'windowCreated',
         windowId: e.windowId,
         role: e.role,
-        bounds: { x: e.bounds.x, y: e.bounds.y, width: e.bounds.width, height: e.bounds.height }
+        bounds: { x: e.bounds.x, y: e.bounds.y, width: e.bounds.width, height: e.bounds.height },
+        taskId: e.taskId,
+        parentWindowId: e.parentWindowId
       }
     case 'windowClosed':
       return { type: 'windowClosed', windowId: e.windowId }
+    case 'viewCreated':
+      return { type: 'viewCreated', windowId: e.windowId, taskId: e.taskId }
+    case 'viewClosed':
+      return { type: 'viewClosed', windowId: e.windowId, taskId: e.taskId }
     case 'sessionMovedToWindow':
       return {
         type: 'sessionMovedToWindow',

@@ -37,6 +37,8 @@ import type {
   MoveSessionInput,
   CreateWindowWithSessionInput,
   WindowAtPointInput,
+  CreateViewInput,
+  CloseViewInput,
   SettingsPatchDTO,
   WindowedWorkspaceStateDTO,
   ProjectListItemDTO,
@@ -122,6 +124,13 @@ const octopusAPI: OctopusAPI = {
       ipcRenderer.invoke(CHANNELS.windowCreateWithSession, input),
     windowAtPoint: (input: WindowAtPointInput): Promise<string | null> =>
       ipcRenderer.invoke(CHANNELS.windowAtPoint, input)
+  },
+
+  views: {
+    create: (input: CreateViewInput): Promise<CommandAck> =>
+      ipcRenderer.invoke(CHANNELS.viewCreate, input),
+    close: (input: CloseViewInput): Promise<CommandAck> =>
+      ipcRenderer.invoke(CHANNELS.viewClose, input)
   },
 
   pty: {

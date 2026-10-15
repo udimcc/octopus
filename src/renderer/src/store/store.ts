@@ -24,6 +24,7 @@ import type {
   SettingsDTO,
   WorktreeRefDTO,
   WindowDTO,
+  WindowRole,
   IssueDTO,
   GroupDTO,
   JiraFiltersDTO
@@ -111,10 +112,26 @@ export interface StoreData {
   readonly nextToastId: number
   /** Which window this renderer is (V1.5, §5.6); filters the session view. */
   readonly windowId: string
-  /** `main` → owns the progress panel; `secondary` → session-only. */
-  readonly windowRole: 'main' | 'secondary'
+  /**
+   * `main` → owns the progress panel; `secondary` → session-only; `view` → pinned to
+   * one task (window-view feature), with the progress panel read-only (all tasks
+   * grayed out except the viewed one).
+   */
+  readonly windowRole: WindowRole
   /** All open windows (V1.5, §6.7); patched by window lifecycle events. */
   readonly windows: readonly WindowDTO[]
+  /**
+   * Set for a `view` window AND for any `secondary` parented to one (window-view
+   * feature) — NOT keyed on `windowRole === 'view'` alone, since a view's own
+   * secondary keeps `windowRole: 'secondary'` but is still permanently pinned to the
+   * same task. The task this window's GROUP is pinned to, hydrated from
+   * {@link WindowedWorkspaceStateDTO.viewTaskId}. `activeTaskId` is kept fixed to this
+   * value — the `activeTaskChanged` reducer no-ops while it is set (defensive; main
+   * already never sends the event to a view window or its secondaries), and
+   * {@link StoreActions.setActiveTask} no-ops too, so no local "switch task" path can
+   * move either off its pinned task.
+   */
+  readonly viewTaskId?: string
   /**
    * "Unseen finished turn" memory (§9.5): session id → true once it went `Working →
    * Waiting` (a turn finished) and hasn't been looked at since. Raised
@@ -483,7 +500,8 @@ function armFlash(data: StoreData): StoreData {
  * authoritative and already enforces its invariants, so `groupsByTask` is just the DTO's
  * `groups` per task, as-is.
  *
- * `activeTaskId` always comes from `state.activeTaskId` (never from `initialMark`): a
+ * `activeTaskId` comes from `state.viewTaskId ?? state.activeTaskId` (the view pin wins;
+ * never from `initialMark`): a
  * renderer crash-reload (`window.ts`'s `render-process-gone`) re-runs this hydrate with no
  * prior state, and overriding the active task here would yank the window back to the
  * detach-time task even if the user had since switched away from it. `initialMark` only
@@ -521,7 +539,10 @@ function hydrateData(
     tasks,
     sessions,
     taskOrder: ordered.map((t) => t.id),
-    activeTaskId: state.activeTaskId,
+    // A view window is pinned to its one task (window-view feature): its active
+    // task is always `viewTaskId`, never the backend's generic `activeTaskId` (which
+    // tracks main's own last-active task and is irrelevant here).
+    activeTaskId: state.viewTaskId ?? state.activeTaskId,
     activeSessionByTask,
     groupsByTask,
     sessionTypes: state.sessionTypes,
@@ -530,6 +551,7 @@ function hydrateData(
     windowId: state.thisWindowId,
     windowRole: state.thisWindowRole,
     windows: state.windows,
+    viewTaskId: state.viewTaskId,
     issues
   }
 }
@@ -625,6 +647,79 @@ export function issueForTask(data: StoreData, taskId: string): IssueDTO | undefi
  */
 export function isIssueBoundElsewhere(issue: IssueDTO, taskId?: string): boolean {
   return issue.taskId !== undefined && issue.taskId !== taskId
+}
+
+// ── Window groups (window-view feature) ───────────────────────────────────────
+
+/**
+ * The renderer's own id for the main window. Mirrors the domain's `MAIN_WINDOW_ID`
+ * (`domain/ids.ts`) in wire-string form — the renderer may not import `domain` (and
+ * `application`'s own `windowGroupRoot`/`viewForTask` helpers, `application/use-cases/
+ * window-groups.ts`, work over branded `WindowRecord[]`, not the wire `WindowDTO[]`
+ * this module holds), so the small amount of logic is duplicated here rather than
+ * shared across the boundary.
+ */
+const MAIN_WINDOW_ID = 'main'
+
+/** The task's dedicated view window, if one exists (window-view feature; at most one per task). */
+export function viewWindowForTask(data: StoreData, taskId: string): WindowDTO | undefined {
+  return data.windows.find((w) => w.role === 'view' && w.taskId === taskId)
+}
+
+/**
+ * Whether `taskId` currently has a dedicated view window open (window-view feature).
+ * Drives the disabled "New Window From Task" menu item ("can't open a second view
+ * for the same task") — any OTHER "is this task viewed/off-limits HERE" decision
+ * should go through {@link isViewedElsewhere} instead, which is group-aware.
+ */
+export function isViewedTask(data: StoreData, taskId: string): boolean {
+  return viewWindowForTask(data, taskId) !== undefined
+}
+
+/**
+ * `windowId`'s window-GROUP root (window-view feature, DESIGN): itself if it names a
+ * `view`; its `parentWindowId` if it names a secondary parented to a STILL-OPEN view;
+ * `MAIN_WINDOW_ID` otherwise — covers main itself, every one of main's (parent-less)
+ * secondaries, an unknown/not-yet-tracked window id, and a secondary whose parent view
+ * has since closed. Mirrors the application layer's `windowGroupRoot` one-for-one, just
+ * over `WindowDTO[]` instead of persisted `WindowRecord[]`.
+ */
+export function windowGroupRoot(data: StoreData, windowId: string): string {
+  const record = data.windows.find((w) => w.id === windowId)
+  if (!record) return MAIN_WINDOW_ID
+  if (record.role === 'view') return record.id
+  if (record.parentWindowId !== undefined) {
+    const parent = data.windows.find((w) => w.id === record.parentWindowId)
+    if (parent?.role === 'view') return parent.id
+  }
+  return MAIN_WINDOW_ID
+}
+
+/** Whether windows `a` and `b` belong to the same window group (window-view feature). */
+export function sameWindowGroup(data: StoreData, a: string, b: string): boolean {
+  return windowGroupRoot(data, a) === windowGroupRoot(data, b)
+}
+
+/**
+ * Is `taskId` viewed in a window OUTSIDE THIS window's own group (window-view
+ * feature)? True exactly when the task has a dedicated view AND this window
+ * (`data.windowId`) is not part of that view's group — covers main, main's
+ * secondaries, and any other view's windows. False from INSIDE the task's own
+ * view (and its secondaries parented to it): the task's sessions live right here,
+ * so session creation/the empty-state overlay must behave normally there. This is
+ * the group-based replacement for the earlier `windowRole === 'main'` checks —
+ * those wrongly left a view's OWN secondary (which keeps `windowRole: 'secondary'`,
+ * pinned via `viewTaskId`) treated as if it could never be "elsewhere", which
+ * happened to be harmless for THIS task but gave the wrong answer in general.
+ * Drives the disabled "+ New Session" controls (`SessionTabBar`), the
+ * `TaskWorkspace`/`SecondaryWorkspace` empty-state overlays, the new-session
+ * keyboard shortcut's no-op, and the "Viewing in window" badge (shown only when
+ * `true` — never inside the view's own list, where it would be redundant).
+ */
+export function isViewedElsewhere(data: StoreData, taskId: string): boolean {
+  const view = viewWindowForTask(data, taskId)
+  if (!view) return false
+  return windowGroupRoot(data, data.windowId) !== view.id
 }
 
 /**
@@ -1040,6 +1135,10 @@ export function reduceEvent(
     }
 
     case 'activeTaskChanged':
+      // A view window is pinned to its task (window-view feature) and ignores this —
+      // defensively: main's `WindowRegistry` already never sends `activeTaskChanged`
+      // to a view window, so this never actually fires there in practice.
+      if (data.viewTaskId !== undefined) return data
       // Pure visibility (I9). NO ready-for-review clear here (§9.5): a task switch makes
       // each window show ITS OWN mark for the task, and only the focused window's mark is
       // actually looked at — which window that is, only that window knows. Its
@@ -1343,19 +1442,34 @@ export function reduceEvent(
     }
 
     case 'windowCreated': {
-      // Track the new window (§6.7). Upsert-safe: ignore a duplicate id.
+      // Track the new window (§6.7). Upsert-safe: ignore a duplicate id. Carries
+      // `taskId`/`parentWindowId` (window-view feature) so `viewWindowForTask`/
+      // `windowGroupRoot` resolve correctly for a freshly-created view or its
+      // secondaries without waiting for a re-hydrate.
       if (data.windows.some((w) => w.id === event.windowId)) return data
       const win: WindowDTO = {
         id: event.windowId,
         role: event.role,
         bounds: event.bounds,
-        createdAt: 0
+        createdAt: 0,
+        taskId: event.taskId,
+        parentWindowId: event.parentWindowId
       }
       return { ...data, windows: [...data.windows, win] }
     }
 
     case 'windowClosed':
       return { ...data, windows: data.windows.filter((w) => w.id !== event.windowId) }
+
+    case 'viewCreated':
+    case 'viewClosed':
+      // Informational markers (window-view feature): the window list is already kept
+      // correct by `windowCreated`/`windowClosed` (which the backend always emits
+      // around these, in either order relative to them) and session reassignment rides
+      // its own `sessionMovedToWindow` events — nothing left for these two to patch, so
+      // they're intentional no-ops. They exist as reducer cases purely so the
+      // exhaustive `EventDTO` switch below stays total.
+      return data
 
     case 'issueUpserted':
       return { ...data, issues: { ...data.issues, [event.issue.id]: event.issue } }
@@ -1476,7 +1590,11 @@ export const useStore = create<Store>((set, get) => ({
   // activeTaskChanged. No ready-for-review clear here (§9.5): the on-screen session is
   // cleared — and relayed to every window — by `markVisibleSessionSeen` on the settled
   // render; clearing it locally first would swallow that cross-window relay.
-  setActiveTask: (taskId) => set({ activeTaskId: taskId }),
+  //
+  // A view window is pinned to its task (window-view feature) — no-op there, so no local
+  // "switch task" path (keyboard task-cycle, a stray call) can move it off `viewTaskId`.
+  setActiveTask: (taskId) =>
+    set((data) => (data.viewTaskId !== undefined ? data : { activeTaskId: taskId })),
 
   setActiveSession: (taskId, sessionId) =>
     set((data) => {

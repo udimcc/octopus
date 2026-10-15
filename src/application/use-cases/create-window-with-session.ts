@@ -16,6 +16,15 @@
  * window together, and only `input.sessionId` is marked there (groupmates ride
  * along with `cause: 'groupMove'`). A lone session detaches alone, unchanged.
  *
+ * **Window-group linkage (window-view feature).** The new secondary's
+ * `parentWindowId` is the detached session's CURRENT window-group root
+ * (`windowGroupRoot`, resolved before anything is created): detaching a tab out
+ * of a view's own window or one of its secondaries creates a new secondary OF
+ * THAT VIEW, never main's — the detach gesture never moves a session across a
+ * window-group boundary, it just gives it a new sibling window in the SAME
+ * group. Detaching from main (or any of main's secondaries) behaves exactly as
+ * before (no `parentWindowId`).
+ *
  * Also marks `input.sessionId` as its task's persisted focused session (review
  * IMP2), mirroring `focus-session.ts`'s own `setActiveSession` + `upsertTask`
  * write. This does NOT make the new window show the detached session — the new
@@ -41,19 +50,26 @@ import type { WindowId } from '../../domain/ids'
 import { createWindow } from './create-window'
 import { moveSessionToWindow } from './move-session-to-window'
 import { locateSession } from './locate-session'
+import { windowGroupRoot } from './window-groups'
 import { InvariantViolationError } from '../../domain/errors'
 
 export function createWindowWithSession(
   deps: AppDependencies,
   input: CreateWindowWithSessionInput
 ): WindowId {
-  const windowId = createWindow(deps, { role: 'secondary', bounds: input.bounds })
-  moveSessionToWindow(deps, { sessionId: input.sessionId, targetWindowId: windowId })
-
   const located = locateSession(deps.workspace, input.sessionId)
   if (!located) {
     throw new InvariantViolationError(`session ${input.sessionId} not found`)
   }
+  const parentWindowId = windowGroupRoot(deps.persistence.loadWindows(), located.session.windowId)
+
+  const windowId = createWindow(deps, {
+    role: 'secondary',
+    bounds: input.bounds,
+    parentWindowId
+  })
+  moveSessionToWindow(deps, { sessionId: input.sessionId, targetWindowId: windowId })
+
   located.task.setActiveSession(input.sessionId)
   deps.persistence.upsertTask(located.task.toSnapshot(deps.aggregator))
 

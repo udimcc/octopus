@@ -48,6 +48,8 @@ import type {
   SplitPath,
   CreateWindowInput,
   CloseWindowInput,
+  CreateViewInput,
+  CloseViewInput,
   MoveSessionInput,
   CreateWindowWithSessionInput,
   WindowAtPointInput,
@@ -434,6 +436,31 @@ function senderWindowId(windowIds: Map<number, WindowId>, sender: Electron.WebCo
 }
 
 /**
+ * Resolve the live `BrowserWindow` for a given `WindowId` (mirrors the inline
+ * loop `windowAtPoint` below already does over `BrowserWindow.getAllWindows()` +
+ * `hooks.windowIds`). Can't import `composition-root.ts`'s own `findWindow` —
+ * `composition-root.ts` is the one that imports THIS module (registerIpcHandlers),
+ * so that would be circular.
+ */
+function findOpenWindow(windowIds: Map<number, WindowId>, id: WindowId): BrowserWindow | undefined {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed() && windowIds.get(win.webContents.id) === id) {
+      return win
+    }
+  }
+  return undefined
+}
+
+/** Same size as `bounds`, shifted by `(dx, dy)` — the new-view placement offset. */
+function offsetBounds(
+  bounds: { x: number; y: number; width: number; height: number },
+  dx: number,
+  dy: number
+): { x: number; y: number; width: number; height: number } {
+  return { x: bounds.x + dx, y: bounds.y + dy, width: bounds.width, height: bounds.height }
+}
+
+/**
  * Register every IPC handler against the command loop + deps. Called once at the
  * end of bootstrap, before any window loads.
  */
@@ -734,19 +761,72 @@ export function registerIpcHandlers(
   // ── Window commands (V1.5, §6.7) ────────────────────────────────────────────
   ipcMain.handle(
     CHANNELS.windowCreate,
-    async (_e, input: CreateWindowInput): Promise<CommandAck> => {
+    async (e, input: CreateWindowInput): Promise<CommandAck> => {
       const result = await loop.dispatch({
         kind: 'createWindow',
-        input: { role: 'secondary', bounds: input.bounds }
+        // `parentWindowId` is the sender's own window (window-view feature) — the
+        // use case normalizes it to that window's group root (main, or the
+        // enclosing view) before persisting; see `CreateWindowInput`'s doc comment.
+        input: {
+          role: 'secondary',
+          bounds: input.bounds,
+          parentWindowId: senderWindowId(hooks.windowIds, e.sender)
+        }
       })
       return ack(result)
     }
   )
 
-  ipcMain.handle(CHANNELS.windowClose, async (_e, input: CloseWindowInput): Promise<CommandAck> => {
+  ipcMain.handle(CHANNELS.windowClose, async (e, input: CloseWindowInput): Promise<CommandAck> => {
+    // Same rule as `view:close` (the command loop routes a view's id to `closeView`):
+    // only the window itself or main may close a window.
+    const windowId = asWindowId(input.windowId)
+    const sender = senderWindowId(hooks.windowIds, e.sender)
+    if (sender !== MAIN_WINDOW_ID && sender !== windowId) {
+      return invalidAck('window:close: only the window itself or the main window may close it')
+    }
     const result = await loop.dispatch({
       kind: 'closeWindow',
-      input: { windowId: asWindowId(input.windowId), disposition: input.disposition }
+      input: { windowId, disposition: input.disposition }
+    })
+    return ack(result)
+  })
+
+  // ── View commands (window-view feature, §6.7) ───────────────────────────────
+  // `views:create` is only ever offered by the main window's UI (the task-row
+  // context menu), but main is still the single writer of truth here: a
+  // compromised/buggy secondary or view renderer dispatching this directly must
+  // not be able to mint a second view for a task (or any view at all) from a
+  // window that has no business doing so. Rejected outright for any sender other
+  // than MAIN, without reaching the command loop.
+  ipcMain.handle(CHANNELS.viewCreate, async (e, input: CreateViewInput): Promise<CommandAck> => {
+    if (senderWindowId(hooks.windowIds, e.sender) !== MAIN_WINDOW_ID) {
+      return invalidAck('views:create: only the main window may open a view')
+    }
+    // Open the view offset from MAIN's current placement (+40/+40, same size) so
+    // it lands on main's own monitor, rather than `createView`'s (0,0) fallback —
+    // a VDI with multiple/offset displays may have nothing useful at the origin.
+    const mainWindow = findOpenWindow(hooks.windowIds, MAIN_WINDOW_ID)
+    const bounds = mainWindow ? offsetBounds(mainWindow.getBounds(), 40, 40) : undefined
+    const result = await loop.dispatch({
+      kind: 'createView',
+      input: { taskId: asTaskId(input.taskId), bounds }
+    })
+    return ack(result)
+  })
+
+  ipcMain.handle(CHANNELS.viewClose, async (e, input: CloseViewInput): Promise<CommandAck> => {
+    // Mirrors `view:create`'s sender check: accept only from the view itself (its
+    // own close button/titlebar close) or from main (window-view feature). A
+    // secondary, or some OTHER view, has no business closing a view it doesn't own.
+    const windowId = asWindowId(input.windowId)
+    const sender = senderWindowId(hooks.windowIds, e.sender)
+    if (sender !== MAIN_WINDOW_ID && sender !== windowId) {
+      return invalidAck('view:close: only the view itself or the main window may close it')
+    }
+    const result = await loop.dispatch({
+      kind: 'closeView',
+      input: { windowId }
     })
     return ack(result)
   })
@@ -1093,7 +1173,7 @@ export function registerIpcHandlers(
     const windowId = senderWindowId(hooks.windowIds, e.sender)
     const view = getState(deps)
     const record = view.windows.find((w) => w.id === windowId)
-    const role: 'main' | 'secondary' = record?.role ?? 'main'
+    const role: 'main' | 'secondary' | 'view' = record?.role ?? 'main'
     const dto = toWindowedWorkspaceStateDTO(view, windowId, role, initialMarks.get(windowId))
     // One-shot (see `initialMarks` above): consumed by this window's first getState only.
     initialMarks.delete(windowId)

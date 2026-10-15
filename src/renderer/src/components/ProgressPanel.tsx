@@ -5,14 +5,29 @@
  *  - The task list: a dnd-kit vertical `SortableContext` of `TaskListItem`s. A drop
  *    dispatches `tasks.reorder({ taskId, toIndex })`; the store reconciles from the
  *    `taskReordered` event (never optimistically, §5.2).
- *  - The modals it launches: `NewTaskModal`, `DeleteTaskConfirm`, `SettingsModal`. `SettingsModal`
+ *  - The modals it launches: `NewTaskModal`, `DeleteTaskConfirm`, `SettingsModal`, and
+ *    (window-view feature) `CreateViewConfirm`. `SettingsModal`
  *    mounts here but its open/closed state lives in the store (`settingsOpen`/`openSettings`/
  *    `closeSettings`), not a local `useState`, so other UI (e.g. the Jira Import modal) can open
  *    Settings too — this is the only mount of `SettingsModal` in the app.
+ *  - (Window-view feature) each row's right-click "+ New Window From Task" (`TaskListItem`'s
+ *    `onCreateView`): if the task has sessions hosted in THIS window's group (main or main's
+ *    secondaries), confirms first (`CreateViewConfirm`, since those sessions are about to move);
+ *    otherwise dispatches `views.create` immediately. A failed ack pushes an error toast —
+ *    the same `pushToast` pattern used throughout the renderer.
  *
  * Each row leads with its aggregate status icon (§5.4, §9): a `taskDisplayState`
  * roll-up (§3.4/§9.5, folding session state + ready-for-review) is derived per task
  * from the store and passed to `TaskListItem`.
+ *
+ * `readOnly` (window-view feature, Task 5): renders the VIEW window's own permanently
+ * non-interactive copy of this panel — every task is listed (so the user can still see
+ * the whole workspace at a glance) with the viewed task shown selected via the normal
+ * `activeTaskId` (a view window's `activeTaskId` is pinned to its `viewTaskId`, store.ts),
+ * but nothing here can switch/drag/reorder/rename, and the New Task / Delete Task / New
+ * Window / grouping-toggle / Issues controls are omitted outright (not merely disabled) —
+ * none of them apply to a window permanently pinned to one task. `onNewTask` is unused
+ * in that mode.
  */
 
 import { useEffect, useMemo, useState } from 'react'
@@ -28,16 +43,23 @@ import { SortableContext, verticalListSortingStrategy, arrayMove } from '@dnd-ki
 import { TaskListItem } from './TaskListItem'
 import { DeleteTaskConfirm } from './DeleteTaskConfirm'
 import { SettingsModal } from './SettingsModal'
-import { useStore, taskDisplayState } from '../store/store'
+import { CreateViewConfirm } from './CreateViewConfirm'
+import { useStore, taskDisplayState, isViewedTask, sameWindowGroup } from '../store/store'
 import { groupTasksByRepo, repoKeyOf, NO_REPOSITORY_KEY } from '../store/group-tasks'
 import { color, fontSize } from '../style/tokens'
 
 export interface ProgressPanelProps {
-  /** Open the New-Task modal (owned by `App` so the new-task shortcut shares it). */
+  /** Open the New-Task modal (owned by `App` so the new-task shortcut shares it). Unused
+   * when `readOnly`. */
   readonly onNewTask: () => void
+  /** Window-view feature (Task 5): render the non-interactive variant — see header comment. */
+  readonly readOnly?: boolean
 }
 
-export function ProgressPanel({ onNewTask }: ProgressPanelProps): React.JSX.Element {
+export function ProgressPanel({
+  onNewTask,
+  readOnly = false
+}: ProgressPanelProps): React.JSX.Element {
   const taskOrder = useStore((s) => s.taskOrder)
   const tasks = useStore((s) => s.tasks)
   const activeTaskId = useStore((s) => s.activeTaskId)
@@ -80,6 +102,40 @@ export function ProgressPanel({ onNewTask }: ProgressPanelProps): React.JSX.Elem
   const switchTask = (taskId: string): void => {
     setActiveTask(taskId)
     void window.octopusAPI.tasks.switch({ taskId })
+  }
+
+  // Window-view feature (Task 2/3): pending confirmation for "+ New Window From Task"
+  // when the task has sessions that would move. `null` = no dialog up.
+  const [createViewTaskId, setCreateViewTaskId] = useState<string | null>(null)
+
+  const dispatchCreateView = (taskId: string): void => {
+    void window.octopusAPI.views
+      .create({ taskId })
+      .then((ack) => {
+        if (!ack.ok) useStore.getState().pushToast('error', ack.error ?? 'Failed to open window')
+      })
+      .catch(() => useStore.getState().pushToast('error', 'Failed to open window'))
+  }
+
+  const requestCreateView = (taskId: string): void => {
+    const data = useStore.getState()
+    if (isViewedTask(data, taskId)) return // menu item is disabled for this case; double-guard
+    const task = data.tasks[taskId]
+    // "Has sessions" (per the product spec) means hosted in THIS window's group — main
+    // or main's own secondaries — which is exactly what `createView` bulk-moves. A task
+    // that's never been started, or whose sessions somehow already live elsewhere, has
+    // nothing to confirm moving.
+    const hasSessions = task
+      ? task.sessionIds.some((id) => {
+          const windowId = data.sessions[id]?.windowId
+          return windowId !== undefined && sameWindowGroup(data, windowId, data.windowId)
+        })
+      : false
+    if (hasSessions) {
+      setCreateViewTaskId(taskId)
+    } else {
+      dispatchCreateView(taskId)
+    }
   }
 
   const toggleGrouped = (): void => {
@@ -130,27 +186,42 @@ export function ProgressPanel({ onNewTask }: ProgressPanelProps): React.JSX.Elem
         >
           Octopus{version ? ` - ${version}` : ''}
         </h1>
-        <button type="button" className="icon-button" aria-label="settings" onClick={openSettings}>
-          ⚙
-        </button>
+        {/* Window-view feature: this panel is the VIEW window's pinned, read-only
+            copy when `readOnly` — no settings here (nothing it opens applies to this
+            window), and no pill either: `App.tsx`'s banner above both panels is the
+            single view indicator, so this header stays empty rather than duplicating
+            it. */}
+        {readOnly ? null : (
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="settings"
+            onClick={openSettings}
+          >
+            ⚙
+          </button>
+        )}
       </div>
 
-      <div style={{ display: 'flex', gap: 6, padding: '0 12px 12px' }}>
-        <button type="button" className="btn-primary" onClick={onNewTask} style={headerButton}>
-          + New Task
-        </button>
-        <button
-          type="button"
-          onClick={() => setDeleteTaskId(activeTaskId ?? null)}
-          disabled={!activeTaskId}
-          style={headerButton}
-        >
-          Delete Task
-        </button>
-      </div>
+      {readOnly ? null : (
+        <div style={{ display: 'flex', gap: 6, padding: '0 12px 12px' }}>
+          <button type="button" className="btn-primary" onClick={onNewTask} style={headerButton}>
+            + New Task
+          </button>
+          <button
+            type="button"
+            onClick={() => setDeleteTaskId(activeTaskId ?? null)}
+            disabled={!activeTaskId}
+            style={headerButton}
+          >
+            Delete Task
+          </button>
+        </div>
+      )}
 
       {/* Open an empty secondary session-only window (V1.5, §6.7); the backend emits
-          `windowCreated` and the main process opens the OS window. */}
+          `windowCreated` and the main process opens the OS window. Shown in a view too:
+          the backend parents it to the sender's group, so it joins the view's group. */}
       <div style={{ display: 'flex', padding: '0 12px 12px' }}>
         <button
           type="button"
@@ -161,23 +232,27 @@ export function ProgressPanel({ onNewTask }: ProgressPanelProps): React.JSX.Elem
         </button>
       </div>
 
-      {/* Toggle between the repo-grouped and flat task views (§5.1); persisted as a
-          setting so it survives restart. Grouped is the default. */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '0 12px 12px' }}>
-        <button
-          type="button"
-          onClick={toggleGrouped}
-          aria-pressed={grouped}
-          aria-label="group tasks by repo"
-          title={
-            grouped
-              ? 'Grouping by repo — click for a flat list'
-              : 'Flat list — click to group by repo'
-          }
-        >
-          {grouped ? 'Grouped ▾' : 'Flat ▸'}
-        </button>
-      </div>
+      {readOnly ? null : (
+        <>
+          {/* Toggle between the repo-grouped and flat task views (§5.1); persisted as a
+              setting so it survives restart. Grouped is the default. */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '0 12px 12px' }}>
+            <button
+              type="button"
+              onClick={toggleGrouped}
+              aria-pressed={grouped}
+              aria-label="group tasks by repo"
+              title={
+                grouped
+                  ? 'Grouping by repo — click for a flat list'
+                  : 'Flat list — click to group by repo'
+              }
+            >
+              {grouped ? 'Grouped ▾' : 'Flat ▸'}
+            </button>
+          </div>
+        </>
+      )}
 
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
         {grouped ? (
@@ -212,8 +287,10 @@ export function ProgressPanel({ onNewTask }: ProgressPanelProps): React.JSX.Elem
                           active={id === activeTaskId}
                           display={taskDisplayState(useStore.getState(), id)}
                           indent
+                          readOnly={readOnly}
                           onActivate={() => switchTask(id)}
                           onRename={(name) => window.octopusAPI.tasks.rename({ taskId: id, name })}
+                          onCreateView={readOnly ? undefined : () => requestCreateView(id)}
                         />
                       )
                     })}
@@ -234,8 +311,10 @@ export function ProgressPanel({ onNewTask }: ProgressPanelProps): React.JSX.Elem
                     task={t}
                     active={id === activeTaskId}
                     display={taskDisplayState(useStore.getState(), id)}
+                    readOnly={readOnly}
                     onActivate={() => switchTask(id)}
                     onRename={(name) => window.octopusAPI.tasks.rename({ taskId: id, name })}
+                    onCreateView={readOnly ? undefined : () => requestCreateView(id)}
                   />
                 )
               })}
@@ -249,23 +328,38 @@ export function ProgressPanel({ onNewTask }: ProgressPanelProps): React.JSX.Elem
           scroller, so this sits in the remaining space and never scrolls with it.
           The `id` is a focus-restore fallback target for `IssuesDrawer`:
           if the drawer can't restore focus to whatever had it before opening (or
-          to an on-screen terminal), it lands here instead of `<body>`. */}
-      <div style={{ padding: 12, borderTop: `1px solid ${color.border}` }}>
-        <button
-          id="issues-drawer-toggle"
-          type="button"
-          onClick={toggleIssuesDrawer}
-          aria-pressed={issuesDrawerOpen}
-          style={{ width: '100%' }}
-        >
-          Issues
-        </button>
-      </div>
+          to an on-screen terminal), it lands here instead of `<body>`.
+          Window-view feature: the Issues drawer is main-only (DESIGN §13.4/§13.5) —
+          omitted entirely in the `readOnly` (view-window) panel, not just disabled,
+          since `IssuesDrawer` itself is never mounted there either (`App.tsx`). */}
+      {readOnly ? null : (
+        <div style={{ padding: 12, borderTop: `1px solid ${color.border}` }}>
+          <button
+            id="issues-drawer-toggle"
+            type="button"
+            onClick={toggleIssuesDrawer}
+            aria-pressed={issuesDrawerOpen}
+            style={{ width: '100%' }}
+          >
+            Issues
+          </button>
+        </div>
+      )}
 
       {deleteTaskId && tasks[deleteTaskId] ? (
         <DeleteTaskConfirm taskId={deleteTaskId} onClose={() => setDeleteTaskId(null)} />
       ) : null}
       {settingsOpen ? <SettingsModal onClose={closeSettings} /> : null}
+      {createViewTaskId && tasks[createViewTaskId] ? (
+        <CreateViewConfirm
+          taskName={tasks[createViewTaskId].name}
+          onClose={() => setCreateViewTaskId(null)}
+          onConfirm={() => {
+            dispatchCreateView(createViewTaskId)
+            setCreateViewTaskId(null)
+          }}
+        />
+      ) : null}
     </aside>
   )
 }
