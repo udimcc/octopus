@@ -184,6 +184,36 @@ describe('useKeyboardShortcuts (§5.4 — Shift-gated)', () => {
     expect(useStore.getState().activeTaskId).toBe('t1')
   })
 
+  it('fast task cycling never flickers back through the echoes of earlier switches', async () => {
+    // Bug: A→B→C fast showed A→C→B→C — the broadcast `activeTaskChanged(B)` (echo of
+    // the first switch) landed after the local pick had already moved on to C.
+    seed([task('t1'), task('t2', { position: 1 }), task('t3', { position: 2 })], 't1')
+    useStore.setState((s) => ({ settings: { ...s.settings, groupTasksByRepo: false } }))
+    const acks: Array<() => void> = []
+    vi.mocked(window.octopusAPI.tasks.switch).mockImplementation(
+      () => new Promise((resolve) => acks.push(() => resolve({ ok: true })))
+    )
+    const seen: Array<string | undefined> = []
+    const unsubscribe = useStore.subscribe((s, prev) => {
+      if (s.activeTaskId !== prev.activeTaskId) seen.push(s.activeTaskId)
+    })
+    render(<Host onNewTask={vi.fn()} />)
+    chord('ArrowDown') // t1 → t2
+    chord('ArrowDown') // t2 → t3
+    // The backend serves the switches in order: each one's event precedes its reply.
+    useStore.getState().applyEvent({ type: 'activeTaskChanged', taskId: 't2' })
+    acks[0]!()
+    await Promise.resolve()
+    useStore.getState().applyEvent({ type: 'activeTaskChanged', taskId: 't3' })
+    acks[1]!()
+    await waitFor(() => expect(useStore.getState().inFlightTaskSwitches).toBe(0))
+    unsubscribe()
+    expect(seen).toEqual(['t2', 't3'])
+    // Settled: a later backend-driven switch applies again.
+    useStore.getState().applyEvent({ type: 'activeTaskChanged', taskId: 't1' })
+    expect(useStore.getState().activeTaskId).toBe('t1')
+  })
+
   it('cycles tasks in the FLAT (creation) order when grouping is off', () => {
     const tasks = [
       task('t1', { worktree: worktree('/repo/a') }),

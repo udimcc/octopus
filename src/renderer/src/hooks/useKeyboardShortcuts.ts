@@ -157,7 +157,9 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
         const next = order[(cur + delta + order.length) % order.length]
         if (!next) return
         store.setActiveTask(next)
-        void window.octopusAPI.tasks.switch({ taskId: next })
+        void window.octopusAPI.tasks
+          .switch({ taskId: next })
+          .finally(() => useStore.getState().taskSwitchSettled())
       }
 
       // Cycle the active session of the active task by `delta`, wrapping. Cycling spans

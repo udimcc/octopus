@@ -85,6 +85,15 @@ export interface StoreData {
   readonly taskOrder: readonly string[]
   readonly activeTaskId?: string
   /**
+   * How many of THIS window's optimistic task switches ({@link StoreActions.setActiveTask})
+   * are still awaiting their `tasks.switch` reply. While non-zero, `activeTaskChanged` is
+   * ignored: those events are echoes of our own earlier switches, and applying them under
+   * the newer local pick flickers back through each intermediate task (A→C→B→C when
+   * cycling A→B→C fast). Each request's event is sent before its reply, so when the
+   * count drops to 0 every echo has arrived, and the backend pointer equals the local pick.
+   */
+  readonly inFlightTaskSwitches: number
+  /**
    * task id → THIS window's marked session tab: the one this window displays when that
    * task is active (DESIGN §3.7, §5.4). PER-WINDOW, not replicated: each renderer keeps
    * its own mark, so switching to a session hosted in another window leaves this window
@@ -250,6 +259,8 @@ export interface StoreActions {
   hydrate(state: WindowedWorkspaceStateDTO): void
   applyEvent(event: EventDTO): void
   setActiveTask(taskId: string): void
+  /** The `tasks.switch` request paired with a {@link setActiveTask} has settled. */
+  taskSwitchSettled(): void
   setActiveSession(taskId: string, sessionId: string): void
   /**
    * Optimistically flip the group-by-repo view preference in place (§5.1). The
@@ -382,6 +393,7 @@ export function initialData(): StoreData {
     sessions: {},
     taskOrder: [],
     activeTaskId: undefined,
+    inFlightTaskSwitches: 0,
     activeSessionByTask: {},
     groupsByTask: {},
     sessionTypes: [],
@@ -1139,6 +1151,9 @@ export function reduceEvent(
       // defensively: main's `WindowRegistry` already never sends `activeTaskChanged`
       // to a view window, so this never actually fires there in practice.
       if (data.viewTaskId !== undefined) return data
+      // A newer local pick is in flight: this is an echo of an earlier switch (see
+      // `inFlightTaskSwitches`) and would flicker the window back through it.
+      if (data.inFlightTaskSwitches > 0) return data
       // Pure visibility (I9). NO ready-for-review clear here (§9.5): a task switch makes
       // each window show ITS OWN mark for the task, and only the focused window's mark is
       // actually looked at — which window that is, only that window knows. Its
@@ -1573,6 +1588,8 @@ export const useStore = create<Store>((set, get) => ({
         // on the wire) — a re-hydration triggered BY the SettingsModal's own save must not
         // close the modal that's still showing its own success/pending UI.
         settingsOpen: data.settingsOpen,
+        // Renderer-local too: the in-flight replies still arrive after a re-hydration.
+        inFlightTaskSwitches: data.inFlightTaskSwitches,
         selectedIssueId,
         issueDraft: data.issueDraft,
         // Dropping a stale selection discards any dirty edit tied to it too,
@@ -1593,8 +1610,18 @@ export const useStore = create<Store>((set, get) => ({
   //
   // A view window is pinned to its task (window-view feature) — no-op there, so no local
   // "switch task" path (keyboard task-cycle, a stray call) can move it off `viewTaskId`.
+  //
+  // Every call MUST be paired with a `tasks.switch` whose settlement calls
+  // `taskSwitchSettled` (see `inFlightTaskSwitches`).
   setActiveTask: (taskId) =>
-    set((data) => (data.viewTaskId !== undefined ? data : { activeTaskId: taskId })),
+    set((data) =>
+      data.viewTaskId !== undefined
+        ? data
+        : { activeTaskId: taskId, inFlightTaskSwitches: data.inFlightTaskSwitches + 1 }
+    ),
+
+  taskSwitchSettled: () =>
+    set((data) => ({ inFlightTaskSwitches: Math.max(0, data.inFlightTaskSwitches - 1) })),
 
   setActiveSession: (taskId, sessionId) =>
     set((data) => {

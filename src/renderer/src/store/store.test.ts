@@ -689,6 +689,18 @@ describe('useStore hydrate + actions', () => {
     expect(useStore.getState().tasks.t1.name).toBe('Renamed')
   })
 
+  it('activeTaskChanged is ignored while a local task switch is in flight', () => {
+    useStore.getState().setActiveTask('t3')
+    expect(useStore.getState().inFlightTaskSwitches).toBe(1)
+    useStore.getState().applyEvent({ type: 'activeTaskChanged', taskId: 't2' }) // stale echo
+    expect(useStore.getState().activeTaskId).toBe('t3')
+    useStore.getState().taskSwitchSettled()
+    useStore.getState().taskSwitchSettled() // never goes negative
+    expect(useStore.getState().inFlightTaskSwitches).toBe(0)
+    useStore.getState().applyEvent({ type: 'activeTaskChanged', taskId: 't2' })
+    expect(useStore.getState().activeTaskId).toBe('t2')
+  })
+
   it('setActiveTask / setActiveSession update pointers', () => {
     useStore.getState().hydrate(state)
     useStore.getState().setActiveTask('t2')

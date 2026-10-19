@@ -64,6 +64,7 @@ export function ProgressPanel({
   const tasks = useStore((s) => s.tasks)
   const activeTaskId = useStore((s) => s.activeTaskId)
   const setActiveTask = useStore((s) => s.setActiveTask)
+  const taskSwitchSettled = useStore((s) => s.taskSwitchSettled)
   const grouped = useStore((s) => s.settings.groupTasksByRepo)
   const setGroupTasksByRepo = useStore((s) => s.setGroupTasksByRepo)
   const issuesDrawerOpen = useStore((s) => s.issuesDrawerOpen)
@@ -101,7 +102,7 @@ export function ProgressPanel({
 
   const switchTask = (taskId: string): void => {
     setActiveTask(taskId)
-    void window.octopusAPI.tasks.switch({ taskId })
+    void window.octopusAPI.tasks.switch({ taskId }).finally(taskSwitchSettled)
   }
 
   // Window-view feature (Task 2/3): pending confirmation for "+ New Window From Task"
