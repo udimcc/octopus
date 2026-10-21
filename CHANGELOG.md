@@ -4,7 +4,11 @@ All notable changes to Octopus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0]
+
+Adds Issues (a list and a Kanban board, with read-only Jira import), split panes, window
+views pinned to one task, and defined projects in the New-Task modal. Claude status is
+now decided by Octopus from a hook event log, which fixes many status edge cases.
 
 ### Added
 
@@ -78,6 +82,12 @@ All notable changes to Octopus are documented here. The format is based on
   directory alongside the database — never in the database or `settings.json`. Stored locally via a new
   `source`/`jira_key` pair of columns on `issues` (schema v10) — upgrading writes an `octopus.db.bak-v9`
   backup first, and an older build refuses to open the upgraded database rather than risk corrupting it.
+- **Window views.** Right-click a task → "+ New Window From Task" opens a window pinned to that task
+  (one per task). The task's sessions move into it, and session walk, moves and drag-and-drop stay
+  inside that window and its secondary windows. Main shows a "Viewing in window" badge for the task.
+  Closing the view returns its sessions to main and switches main to the task. Views are restored on
+  relaunch. Schema v11 rebuilds the `windows` table — upgrading writes an `octopus.db.bak-v10`
+  backup first. Relaunching Octopus now raises the main window instead of starting a second instance.
 
 ### Changed
 
@@ -155,6 +165,8 @@ All notable changes to Octopus are documented here. The format is based on
   `settings.json`; there's no Settings-pane toggle for it) now likewise takes effect
   when set to `false`: Octopus's hook config is no longer merged into Claude's own
   settings at boot, and the Claude-state watcher doesn't start.
+- **Cycling tasks quickly flickered.** Switching A→B→C in quick succession briefly showed C, then B,
+  then C again. Late echoes of this window's own earlier switches are now ignored.
 
 ### Changed
 
