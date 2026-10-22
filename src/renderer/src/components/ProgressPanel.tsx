@@ -202,6 +202,7 @@ export function ProgressPanel({
             className="icon-button"
             aria-label="settings"
             onClick={openSettings}
+            style={{ fontSize: 20 }}
           >
             ⚙
           </button>
