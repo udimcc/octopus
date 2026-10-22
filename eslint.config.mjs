@@ -47,6 +47,11 @@ export default tseslint.config(
     files: ['src/**/*.{ts,tsx}'],
     plugins: { boundaries },
     settings: {
+      // `resources/` (the packaged app icon) sits outside src/ entirely, so it
+      // matches none of the layer elements below; `main`'s electron-vite `?asset`
+      // import of it is a build-asset reference, not a layering dependency, so it's
+      // excluded from the boundaries analysis rather than modeled as a fake element.
+      'boundaries/ignore': ['resources/**'],
       'boundaries/elements': [
         { type: 'domain', pattern: 'src/domain/**' },
         { type: 'ports', pattern: 'src/ports/**' },

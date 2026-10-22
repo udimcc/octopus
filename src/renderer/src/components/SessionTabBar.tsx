@@ -30,7 +30,11 @@
  *    OFFERING a cross-group target in the first place (`moveTargets` below). Detaching onto
  *    bare desktop is unaffected — `createWindowWithSession` always parents the new secondary
  *    to the dragged session's OWN group (`window-groups.ts`), so that path can never cross a
- *    group boundary and needs no guard here.
+ *    group boundary and needs no guard here. `insideBar` hit-tests against the OUTER
+ *    `.session-tabs` element (`barRef`), not the scrollable tab list — the "+" button (and,
+ *    in a secondary window, the task-name label) sit outside the scroller as siblings, so a
+ *    drop in the empty strip to their right/below must still read as "inside the bar"
+ *    (reorder), not a detach.
  *  - Split groups (§5.7, split-groups design): color each grouped tab's bottom-edge line
  *    from `GROUP_COLOR_PALETTE[group.colorIndex]` (`style/tokens.ts`), bridging the gap to
  *    the next tab when it's a fellow member so a group's whole span reads as one
@@ -141,6 +145,9 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
   useStore((s) => s.windowFocused)
   useStore((s) => s.activeTaskId)
 
+  // The outer `.session-tabs` bar (tab list + "+" button + task-name label), used by
+  // `insideBar` below so the hit-test covers the whole strip, not just the scroller.
+  const barRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const [overflowing, setOverflowing] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -202,9 +209,11 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
     }
   }
 
-  /** Is `(screenX, screenY)` inside this tab bar's own client rectangle (±margin)? */
+  /** Is `(screenX, screenY)` inside this tab bar's own client rectangle (±margin)? Measures
+   * the OUTER bar (`barRef`), not the scrollable tab list, so the empty strip right of the
+   * last tab (where the "+" button now lives) still counts as inside. */
   const insideBar = (screenX: number, screenY: number): boolean => {
-    const bar = scrollRef.current
+    const bar = barRef.current
     if (!bar) return true
     const r = bar.getBoundingClientRect()
     // Client coords: screen minus the window's screen origin (window.screenX/Y).
@@ -546,6 +555,7 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
 
   return (
     <div
+      ref={barRef}
       className="session-tabs"
       style={{
         display: 'flex',
@@ -574,7 +584,7 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
           display: 'flex',
           gap: 4,
           overflowX: 'auto',
-          flex: 1,
+          flex: '0 1 auto',
           minWidth: 0,
           scrollbarWidth: 'none'
         }}
@@ -758,15 +768,20 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
         </div>
       ) : null}
 
+      <NewSessionDropdown taskId={taskId} disabled={!canAddSession} />
+
       {/* A secondary has no progress panel, so name the task it shows: fixed in a
           view's secondary (pinned), follows main's active task in main's secondaries
-          (this bar is per task, so switching tasks swaps it). */}
+          (this bar is per task, so switching tasks swaps it). Rendered AFTER the "+"
+          button so the button stays right after the last tab; `marginLeft: 'auto'`
+          still pushes this label itself to the far right of the bar. */}
       {windowRole === 'secondary' && task ? (
         <span
           title={task.name}
           style={{
             alignSelf: 'center',
             flexShrink: 0,
+            marginLeft: 'auto',
             maxWidth: 220,
             padding: '0 4px 6px 8px',
             overflow: 'hidden',
@@ -780,8 +795,6 @@ export function SessionTabBar({ taskId }: SessionTabBarProps): React.JSX.Element
           {task.name}
         </span>
       ) : null}
-
-      <NewSessionDropdown taskId={taskId} disabled={!canAddSession} />
 
       {lineMenu ? (
         <div

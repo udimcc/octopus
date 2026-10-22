@@ -9,7 +9,14 @@ import {
   _resetPaneMetrics
 } from '../terminal/terminal-metrics'
 import { GROUP_COLOR_PALETTE } from '../style/tokens'
-import type { SessionDTO, SessionTypeDTO, TaskDTO, GroupDTO, SplitNode } from '../../../shared/dto'
+import type {
+  SessionDTO,
+  SessionTypeDTO,
+  TaskDTO,
+  GroupDTO,
+  SplitNode,
+  WindowDTO
+} from '../../../shared/dto'
 
 function leaf(sessionId: string): SplitNode {
   return { kind: 'leaf', sessionId }
@@ -84,6 +91,7 @@ function seed(opts: {
   sessions?: SessionDTO[]
   sessionTypes?: SessionTypeDTO[]
   groups?: GroupDTO[]
+  windows?: WindowDTO[]
 }): void {
   const sessions = opts.sessions ?? []
   const t: TaskDTO = {
@@ -111,7 +119,7 @@ function seed(opts: {
     version: 1,
     thisWindowId: 'main',
     thisWindowRole: 'main',
-    windows: []
+    windows: opts.windows ?? []
   })
 }
 
@@ -179,6 +187,97 @@ describe('<SessionTabBar>', () => {
     seed({ lifecycle: 'provisioning', sessions: [] })
     render(<SessionTabBar taskId="t1" />)
     expect(screen.getByRole('button', { name: 'new session' })).toBeDisabled()
+  })
+
+  it('reads "+ Session" with 0 sessions in this window, shrinks to the ghost "+" once it has one, and reverts to "+ Session" once back to 0 — same accessible name throughout', () => {
+    seed({ lifecycle: 'ready', sessions: [] })
+    // Zustand's `hydrate()` drives a store update, which re-renders every subscribed
+    // component on its own — no manual `rerender()` is needed between phases.
+    render(<SessionTabBar taskId="t1" />)
+    const fullButton = screen.getByRole('button', { name: 'new session' })
+    expect(fullButton.textContent).toBe('+ Session')
+    expect(fullButton).toHaveClass('btn-primary')
+    expect(fullButton).not.toHaveClass('new-session-ghost')
+
+    act(() => seed({ lifecycle: 'ready', sessions: [session('s1')] }))
+    const ghostButton = screen.getByRole('button', { name: 'new session' })
+    expect(ghostButton.textContent).toBe('+')
+    expect(ghostButton).toHaveClass('new-session-ghost')
+    expect(ghostButton).not.toHaveClass('btn-primary')
+
+    // Back to 0 (the last session in this window closed/moved away): the button must
+    // revert to the full "+ Session" label, not stay stuck as the ghost "+".
+    act(() => seed({ lifecycle: 'ready', sessions: [] }))
+    const revertedButton = screen.getByRole('button', { name: 'new session' })
+    expect(revertedButton.textContent).toBe('+ Session')
+    expect(revertedButton).toHaveClass('btn-primary')
+    expect(revertedButton).not.toHaveClass('new-session-ghost')
+  })
+
+  it("counts only sessions hosted in THIS window for the label, not the task's full session count", () => {
+    // s1 is a tab of t1 hosted in a different window — this window still has none of
+    // its own, so the full "+ Session" label must show here regardless.
+    seed({ lifecycle: 'ready', sessions: [session('s1', { windowId: 'win-2' })] })
+    render(<SessionTabBar taskId="t1" />)
+    expect(screen.getByRole('button', { name: 'new session' }).textContent).toBe('+ Session')
+  })
+
+  it('disables the ghost "+" (≥1 session already in this window) while the task is not ready', () => {
+    seed({ lifecycle: 'provisioning', sessions: [session('s1')] })
+    render(<SessionTabBar taskId="t1" />)
+    const ghostButton = screen.getByRole('button', { name: 'new session' })
+    expect(ghostButton.textContent).toBe('+')
+    expect(ghostButton).toBeDisabled()
+  })
+
+  it('disables the ghost "+" (≥1 session already in this window) when the task is viewed elsewhere', () => {
+    seed({
+      lifecycle: 'ready',
+      sessions: [session('s1')],
+      // A dedicated view window for t1, owned by a window other than `thisWindowId`
+      // ('main', per seed()) — isViewedElsewhere(data, 't1') is true from main's
+      // perspective, since main's window-group root ('main') isn't the view's id.
+      windows: [
+        {
+          id: 'view-1',
+          role: 'view',
+          taskId: 't1',
+          bounds: { x: 0, y: 0, width: 800, height: 600 },
+          createdAt: 0
+        }
+      ]
+    })
+    render(<SessionTabBar taskId="t1" />)
+    const ghostButton = screen.getByRole('button', { name: 'new session' })
+    expect(ghostButton.textContent).toBe('+')
+    expect(ghostButton).toBeDisabled()
+  })
+
+  it('places the "+" button as the element right after the tablist, ahead of a secondary window\'s task-name label', () => {
+    seed({ lifecycle: 'ready', sessions: [session('s1')] })
+    const { rerender } = render(<SessionTabBar taskId="t1" />)
+    const tablist = screen.getByRole('tablist')
+    // `flex: 0 1 auto` is what lets the tablist shrink/scroll instead of pushing the
+    // "+" button (and, in a secondary, the task-name label) out past the bar's edge.
+    expect(tablist).toHaveStyle({ flex: '0 1 auto' })
+    // `NewSessionDropdown` renders its button inside its own `position: relative`
+    // wrapper div (its `rootRef`) — that wrapper, not the button itself, is the
+    // tablist's actual DOM sibling.
+    const newSessionWrapper = tablist.nextElementSibling
+    expect(newSessionWrapper?.contains(screen.getByRole('button', { name: 'new session' }))).toBe(
+      true
+    )
+
+    // Same DOM-order guarantee in a secondary/view window, which additionally renders
+    // the task-name label — it must come AFTER the wrapper, not before it.
+    act(() => useStore.setState({ windowRole: 'secondary' }))
+    rerender(<SessionTabBar taskId="t1" />)
+    expect(tablist.nextElementSibling).toBe(newSessionWrapper)
+    const taskNameLabel = screen.getByTitle('Alpha')
+    expect(newSessionWrapper?.nextElementSibling).toBe(taskNameLabel)
+    // `margin-left: auto` is what pushes the label itself to the bar's far right,
+    // independent of DOM order (it's rendered right after the "+" button, not last).
+    expect(taskNameLabel).toHaveStyle({ marginLeft: 'auto' })
   })
 
   it('a working session with a stale review flag shows the Working icon, not review (§9.5)', () => {
@@ -347,6 +446,12 @@ describe('<SessionTabBar> split groups (§5.7)', () => {
   // manual group-line drag (`startGroupDrag`/`finishGroupDrag`, modeled on
   // `SplitDividers`'s gutter drag) see predictable, deterministic tab positions.
   let tabRects: Record<string, RectLike>
+  // Set only by the `insideBar`-targeted test below (`setBarRects`); every other test
+  // leaves these `undefined` so the outer bar (`.session-tabs`) and the inner scroller
+  // (`role="tablist"`) both keep falling through to FALLBACK_RECT exactly as before —
+  // i.e. this is additive and changes no existing test's rects.
+  let barRect: RectLike | undefined
+  let scrollerRect: RectLike | undefined
   let originalGetBoundingClientRect: PropertyDescriptor | undefined
   let originalSetPointerCapture: PropertyDescriptor | undefined
   let originalHasPointerCapture: PropertyDescriptor | undefined
@@ -356,10 +461,20 @@ describe('<SessionTabBar> split groups (§5.7)', () => {
     tabRects = rects
   }
 
+  /** Give the outer bar (`barRef`, `.session-tabs`) and/or the inner scroller
+   * (`scrollRef`, `role="tablist"`) their own rect, so a test can make them differ in
+   * width — the only way to tell `insideBar` apart from checking one vs. the other. */
+  function setBarRects(rects: { bar?: RectLike; scroller?: RectLike }): void {
+    barRect = rects.bar
+    scrollerRect = rects.scroller
+  }
+
   beforeEach(() => {
     useStore.setState(initialData())
     installStubBridge()
     tabRects = {}
+    barRect = undefined
+    scrollerRect = undefined
 
     originalGetBoundingClientRect = Object.getOwnPropertyDescriptor(
       HTMLElement.prototype,
@@ -382,7 +497,10 @@ describe('<SessionTabBar> split groups (§5.7)', () => {
       configurable: true,
       value(this: HTMLElement) {
         const sid = this.dataset.sessionId
-        return (sid && tabRects[sid]) || FALLBACK_RECT
+        if (sid && tabRects[sid]) return tabRects[sid]
+        if (scrollerRect && this.getAttribute('role') === 'tablist') return scrollerRect
+        if (barRect && this.classList.contains('session-tabs')) return barRect
+        return FALLBACK_RECT
       }
     })
     Object.defineProperty(HTMLElement.prototype, 'setPointerCapture', {
@@ -1057,6 +1175,55 @@ describe('<SessionTabBar> split groups (§5.7)', () => {
       taskId: 't1',
       sessionId: 's1',
       toIndex: 2
+    })
+  })
+
+  it('a drop past the tab list but still inside the wider bar reorders — insideBar gates on barRef, not scrollRef', () => {
+    // The scroller (role="tablist") only spans the two 100px-wide tabs (right edge 200);
+    // the outer bar (barRef) is wider — it also holds the "+" button (and, in a
+    // secondary window, the task-name label) as siblings outside the scroller, so its
+    // right edge is 320. A drop at x=250 lands in that empty strip: outside the
+    // scroller+margin (220) but inside the bar+margin (340). If `insideBar` still read
+    // `scrollRef` (the pre-fix behavior), this would wrongly read as "outside" and
+    // detach via `detach()` instead of reordering. Asserting `windowAtPoint` (detach's
+    // first, synchronous action) was never called is what makes the "not a detach" claim
+    // actually load-bearing — a bare `createWithSession`/`move` `not.toHaveBeenCalled()`
+    // can't fail on its own, since those only fire later inside `windowAtPoint().then()`.
+    // Confirmed by temporarily reverting `insideBar` to read `scrollRef`: this test then
+    // fails on the `reorder` assertion below (0 calls — the reinstated bug detaches
+    // instead of reordering, and `windowAtPoint` WAS called).
+    //
+    // No `act(async () => ...)` wrapper here (unlike the manual group-line-drag detach
+    // tests below): this is a dnd-kit `DndContext`/`PointerSensor` drag, not the manual
+    // pointer-capture drag `finishGroupDrag` uses, and wrapping its pointer-event
+    // sequence in an async `act` callback was found (empirically) to swallow dnd-kit's
+    // own `onDragEnd` entirely — each `fireEvent` call already auto-wraps in `act` on its
+    // own, which is all this synchronous path needs.
+    seed({ sessions: [session('s1'), session('s2', { order: 1 })] })
+    setTabRects({ s1: rectAt(0), s2: rectAt(1) })
+    setBarRects({
+      scroller: { left: 0, top: 0, width: 200, height: 30, right: 200, bottom: 30, x: 0, y: 0 },
+      bar: { left: 0, top: 0, width: 320, height: 40, right: 320, bottom: 40, x: 0, y: 0 }
+    })
+    render(<SessionTabBar taskId="t1" />)
+
+    const s1Tab = getTab('s1')
+    firePointer('pointerdown', s1Tab, { pointerId: 1, clientX: 50, clientY: 15 })
+    // First move clears the dnd-kit PointerSensor's activation distance.
+    firePointer('pointermove', document, { pointerId: 1, clientX: 60, clientY: 15 })
+    // In the empty strip right of the tabs, still inside the bar.
+    firePointer('pointermove', document, { pointerId: 1, clientX: 250, clientY: 15 })
+    firePointer('pointerup', document, { pointerId: 1, clientX: 250, clientY: 15 })
+
+    expect(window.octopusAPI.windows.windowAtPoint).not.toHaveBeenCalled()
+    expect(window.octopusAPI.windows.createWithSession).not.toHaveBeenCalled()
+    expect(window.octopusAPI.sessions.move).not.toHaveBeenCalled()
+    // closestCenter still resolves `over` to s2 (the only other tab) — a reorder, not a
+    // no-op: fullOrder = [s1, s2]; arrayMove(0, 1) = [s2, s1]; indexOf(s1) = 1.
+    expect(window.octopusAPI.sessions.reorder).toHaveBeenCalledWith({
+      taskId: 't1',
+      sessionId: 's1',
+      toIndex: 1
     })
   })
 })

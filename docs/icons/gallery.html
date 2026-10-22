@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Octopus icon options</title>
+    <style>
+      :root {
+        --bg-app: #0e1116;
+        --bg-surface: #1a1f29;
+        --bg-surface-raised: #222834;
+        --border: #2a3140;
+        --text-primary: #e6e9ef;
+        --text-secondary: #b3bac6;
+        --accent: #2dd4bf;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 40px;
+        background: var(--bg-app);
+        color: var(--text-primary);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      }
+      h1 {
+        font-size: 22px;
+        margin: 0 0 4px;
+      }
+      p.sub {
+        color: var(--text-secondary);
+        margin: 0 0 32px;
+        font-size: 13px;
+      }
+      h2 {
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--accent);
+        margin: 40px 0 16px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow: hidden;
+      }
+      table.light {
+        background: #f4f5f7;
+        border-color: #d8dadf;
+      }
+      th,
+      td {
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--border);
+        text-align: left;
+        vertical-align: middle;
+      }
+      table.light th,
+      table.light td {
+        border-bottom: 1px solid #d8dadf;
+      }
+      tr:last-child td {
+        border-bottom: none;
+      }
+      th {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-secondary);
+        font-weight: 600;
+      }
+      table.light th {
+        color: #666;
+      }
+      td.name {
+        font-size: 14px;
+      }
+      td.name .style {
+        display: block;
+        color: var(--text-secondary);
+        font-size: 12px;
+        margin-top: 2px;
+      }
+      table.light td.name .style {
+        color: #777;
+      }
+      td.size {
+        text-align: center;
+      }
+      img {
+        display: block;
+        margin: 0 auto;
+        image-rendering: -webkit-optimize-contrast;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Octopus app icon — options</h1>
+    <p class="sub">
+      Subject 3a gallery: cyan octopus mascots with black eyes, newest round first.
+      <strong>Chosen: octopus-mascot-19</strong> (darker mascot-10), the source of
+      src/renderer/src/assets/octopus.svg. Rendered at 16/32/64/256px on the app's dark theme and on
+      a light background for contrast.
+    </p>
+
+    <h2>Dark background (app theme)</h2>
+    <table>
+      <tr>
+        <th>Option</th>
+        <th class="size">16px</th>
+        <th class="size">32px</th>
+        <th class="size">64px</th>
+        <th class="size">256px</th>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-19<span class="style"
+            >chosen — darker mascot-10 (body #0cb4cf), juggling a terminal, a tab and a git
+            branch</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-19.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-19.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-19.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-19.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-15<span class="style"
+            >round 7 — darker mascot-12 with two terminals, same arms</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-15.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-15.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-15.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-15.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-16<span class="style"
+            >round 7 — darker, arms wrapped around the terminals, curled side arms</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-16.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-16.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-16.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-16.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-17<span class="style"
+            >round 7 — darker, arms flowing wide and below the laptop</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-17.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-17.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-17.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-17.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-18<span class="style">round 7 — darker, arms hugging the laptop</span>
+        </td>
+        <td class="size"><img src="./octopus-mascot-18.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-18.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-18.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-18.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-10<span class="style"
+            >round 6 — mascot-9 juggling a terminal, a tab and a git branch</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-10.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-10.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-10.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-10.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-11<span class="style"
+            >round 6 — mascot-9 peeking over a terminal window</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-11.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-11.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-11.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-11.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-12<span class="style">round 6 — mascot-9 at a laptop</span>
+        </td>
+        <td class="size"><img src="./octopus-mascot-12.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-12.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-12.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-12.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-13<span class="style">round 6 — mascot-9 waving, holding a terminal</span>
+        </td>
+        <td class="size"><img src="./octopus-mascot-13.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-13.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-13.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-13.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-14<span class="style"
+            >round 6 — mascot-9 holding two terminals, glancing left</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-14.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-14.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-14.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-14.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-7<span class="style">round 5 — mascot-3, no mouth, heavy lids</span>
+        </td>
+        <td class="size"><img src="./octopus-mascot-7.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-7.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-7.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-7.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-8<span class="style">round 5 — mascot-3, no mouth, lids raised</span>
+        </td>
+        <td class="size"><img src="./octopus-mascot-8.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-8.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-8.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-8.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-9<span class="style">round 5 — mascot-3, no mouth, open eyes</span>
+        </td>
+        <td class="size"><img src="./octopus-mascot-9.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-9.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-9.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-9.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-5<span class="style"
+            >round 3 — mascot-4 laptop pose, mascot-1 round shaded head</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-5.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-5.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-5.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-5.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-6<span class="style"
+            >round 3 — mascot-1 props (terminal, laptop, git), mascot-4 octopus arms</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-6.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-6.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-6.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-6.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-3<span class="style"
+            >round 2 — cyan octopus, black eyes, holds a terminal &amp; git branch</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-3.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-3.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-3.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-3.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-4<span class="style"
+            >round 2 — cyan octopus at a laptop, holds a terminal &amp; git branch</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-4.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-4.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-4.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-4.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-1<span class="style"
+            >multitasking mascot — teal, holds a terminal, laptop &amp; git branch</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-1.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-1.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-1.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-1.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-2<span class="style"
+            >multitasking mascot — purple, juggles three parallel terminals</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-2.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-2.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-2.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-2.svg" width="256" height="256" /></td>
+      </tr>
+    </table>
+
+    <h2>Light background (contrast check)</h2>
+    <table class="light">
+      <tr>
+        <th>Option</th>
+        <th class="size">16px</th>
+        <th class="size">32px</th>
+        <th class="size">64px</th>
+        <th class="size">256px</th>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-19<span class="style"
+            >chosen — darker mascot-10 (body #0cb4cf), juggling a terminal, a tab and a git
+            branch</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-19.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-19.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-19.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-19.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-15<span class="style"
+            >round 7 — darker mascot-12 with two terminals, same arms</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-15.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-15.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-15.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-15.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-16<span class="style"
+            >round 7 — darker, arms wrapped around the terminals, curled side arms</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-16.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-16.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-16.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-16.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-17<span class="style"
+            >round 7 — darker, arms flowing wide and below the laptop</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-17.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-17.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-17.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-17.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-18<span class="style">round 7 — darker, arms hugging the laptop</span>
+        </td>
+        <td class="size"><img src="./octopus-mascot-18.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-18.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-18.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-18.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-10<span class="style"
+            >round 6 — mascot-9 juggling a terminal, a tab and a git branch</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-10.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-10.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-10.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-10.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-11<span class="style"
+            >round 6 — mascot-9 peeking over a terminal window</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-11.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-11.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-11.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-11.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-12<span class="style">round 6 — mascot-9 at a laptop</span>
+        </td>
+        <td class="size"><img src="./octopus-mascot-12.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-12.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-12.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-12.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-13<span class="style">round 6 — mascot-9 waving, holding a terminal</span>
+        </td>
+        <td class="size"><img src="./octopus-mascot-13.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-13.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-13.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-13.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-14<span class="style"
+            >round 6 — mascot-9 holding two terminals, glancing left</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-14.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-14.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-14.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-14.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">octopus-mascot-7</td>
+        <td class="size"><img src="./octopus-mascot-7.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-7.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-7.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-7.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">octopus-mascot-8</td>
+        <td class="size"><img src="./octopus-mascot-8.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-8.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-8.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-8.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">octopus-mascot-9</td>
+        <td class="size"><img src="./octopus-mascot-9.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-9.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-9.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-9.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-5<span class="style"
+            >round 3 — mascot-4 laptop pose, mascot-1 round shaded head</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-5.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-5.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-5.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-5.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-6<span class="style"
+            >round 3 — mascot-1 props (terminal, laptop, git), mascot-4 octopus arms</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-6.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-6.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-6.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-6.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-3<span class="style"
+            >round 2 — cyan octopus, black eyes, holds a terminal &amp; git branch</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-3.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-3.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-3.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-3.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">
+          octopus-mascot-4<span class="style"
+            >round 2 — cyan octopus at a laptop, holds a terminal &amp; git branch</span
+          >
+        </td>
+        <td class="size"><img src="./octopus-mascot-4.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-4.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-4.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-4.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">octopus-mascot-1</td>
+        <td class="size"><img src="./octopus-mascot-1.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-1.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-1.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-1.svg" width="256" height="256" /></td>
+      </tr>
+      <tr>
+        <td class="name">octopus-mascot-2</td>
+        <td class="size"><img src="./octopus-mascot-2.svg" width="16" height="16" /></td>
+        <td class="size"><img src="./octopus-mascot-2.svg" width="32" height="32" /></td>
+        <td class="size"><img src="./octopus-mascot-2.svg" width="64" height="64" /></td>
+        <td class="size"><img src="./octopus-mascot-2.svg" width="256" height="256" /></td>
+      </tr>
+    </table>
+  </body>
+</html>

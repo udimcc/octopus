@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>Octopus mascot 2 — purple multitasker juggling terminals on dark tile</title>
+  <defs>
+    <linearGradient id="m2-tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#201a30"/>
+      <stop offset="1" stop-color="#141020"/>
+    </linearGradient>
+    <radialGradient id="m2-body" cx="0.38" cy="0.32" r="0.8">
+      <stop offset="0" stop-color="#d9c9ff"/>
+      <stop offset="0.55" stop-color="#a78bfa"/>
+      <stop offset="1" stop-color="#7a5cd6"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="12" y="12" width="488" height="488" rx="96" fill="url(#m2-tile)" stroke="#3a2c4a" stroke-width="4"/>
+
+  <!-- free-curling tentacles -->
+  <g fill="none" stroke="#8a6fe0" stroke-width="28" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M195,305 C175,340 155,365 168,388 C174,400 190,402 200,392"/>
+    <path d="M317,305 C337,340 357,365 344,388 C338,400 322,402 312,392"/>
+  </g>
+
+  <!-- tentacle reaching up-left to terminal A -->
+  <path d="M160,262 C120,250 82,240 72,222" fill="none" stroke="#8a6fe0" stroke-width="28" stroke-linecap="round"/>
+  <!-- tentacle reaching up-right to terminal B -->
+  <path d="M352,262 C392,250 430,240 440,222" fill="none" stroke="#8a6fe0" stroke-width="28" stroke-linecap="round"/>
+  <!-- tentacle reaching straight down to terminal C -->
+  <path d="M256,325 C254,360 252,388 256,408" fill="none" stroke="#8a6fe0" stroke-width="28" stroke-linecap="round"/>
+
+  <!-- head -->
+  <circle cx="256" cy="220" r="105" fill="url(#m2-body)" stroke="#6a4dc4" stroke-width="5"/>
+
+  <!-- eyes -->
+  <circle cx="222" cy="210" r="16" fill="#2a1030"/>
+  <circle cx="290" cy="210" r="16" fill="#2a1030"/>
+  <circle cx="227" cy="204" r="5" fill="#ffffff"/>
+  <circle cx="295" cy="204" r="5" fill="#ffffff"/>
+
+  <!-- small smile -->
+  <path d="M238,240 Q256,250 274,240" fill="none" stroke="#4a2466" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- terminal A -->
+  <rect x="38" y="190" width="66" height="48" rx="8" fill="#0e1116" stroke="#ff8aa0" stroke-width="3"/>
+  <path d="M52,206 L68,214 L52,222" fill="none" stroke="#ff8aa0" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="72" y="219" width="16" height="5" rx="2" fill="#ff8aa0"/>
+
+  <!-- terminal B -->
+  <rect x="408" y="190" width="66" height="48" rx="8" fill="#0e1116" stroke="#ff8aa0" stroke-width="3"/>
+  <path d="M422,206 L438,214 L422,222" fill="none" stroke="#ff8aa0" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="442" y="219" width="16" height="5" rx="2" fill="#ff8aa0"/>
+
+  <!-- terminal C -->
+  <rect x="223" y="412" width="66" height="48" rx="8" fill="#0e1116" stroke="#ff8aa0" stroke-width="3"/>
+  <path d="M237,428 L253,436 L237,444" fill="none" stroke="#ff8aa0" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="257" y="441" width="16" height="5" rx="2" fill="#ff8aa0"/>
+</svg>

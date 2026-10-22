@@ -20,7 +20,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, cpSync, mkdirSync, rmSync, copyFileSync, chmodSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
-import { dirname, resolve, join } from 'node:path'
+import { basename, dirname, resolve, join } from 'node:path'
 
 const require = createRequire(import.meta.url)
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -72,6 +72,20 @@ function assertNativesPresent() {
   }
 }
 
+// The launcher icon is rendered ahead of time by scripts/render-icon.mjs and
+// committed at build/icon.png (used by install.sh's hicolor icon theme entry and
+// .desktop file) and resources/icon.png (the packaged app's window/taskbar icon,
+// loaded via electron-vite's `?asset` import in src/main/window.ts) — assert both
+// exist rather than shipping a launcher entry or window with a broken/missing icon.
+function assertIconPresent() {
+  const icons = ['build/icon.png', 'resources/icon.png']
+  for (const icon of icons) {
+    if (!existsSync(resolve(repoRoot, icon))) {
+      throw new Error(`missing ${icon} — run \`npm run render:icon\` first`)
+    }
+  }
+}
+
 function build() {
   // typecheck + electron-vite build + electron-builder --dir → release/<version>/linux-unpacked
   run('build:unpack (typecheck + bundle + electron-builder --dir)', 'npm', ['run', 'build:unpack'])
@@ -92,6 +106,9 @@ function stage() {
     copyFileSync(join(repoRoot, f), dest)
     chmodSync(dest, 0o755)
   }
+  // Ship the launcher icon next to install.sh — it installs it into the current
+  // user's hicolor icon theme (per-user, not system-wide).
+  copyFileSync(join(repoRoot, 'build', 'icon.png'), join(stageDir, 'icon.png'))
   if (existsSync(join(repoRoot, 'CHANGELOG.md'))) {
     copyFileSync(join(repoRoot, 'CHANGELOG.md'), join(stageDir, 'CHANGELOG.md'))
   }
@@ -104,11 +121,12 @@ function pack() {
 try {
   assertCleanTaggedTree()
   assertNativesPresent()
+  assertIconPresent()
   build()
   stage()
   pack()
   process.stdout.write(`\nRelease ready: ${tarball}\n`)
-  process.stdout.write(`Install: tar xzf ${stageName}.tar.gz && cd ${stageName} && ./install.sh\n`)
+  process.stdout.write(`Install: tar xzf ${basename(tarball)} && cd ${stageName} && ./install.sh\n`)
 } catch (err) {
   process.stderr.write(`\nRelease FAILED: ${err.message}\n`)
   process.exit(1)

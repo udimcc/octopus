@@ -1,6 +1,6 @@
 /**
- * The "+ New Session" control (DESIGN §5.4, §8). Its menu is populated from
- * `store.sessionTypes`, which the backend already filters by `availableFromVersion`
+ * The "+ New Session" control (DESIGN §5.4, §8). Its menu is populated
+ * from `store.sessionTypes`, which the backend already filters by `availableFromVersion`
  * — so V1 shows exactly one entry (Terminal) and V3's Jenkins type appears with no
  * change here. Choosing a type dispatches `sessions.create({ taskId, typeId })`;
  * the resulting `sessionCreated` event adds and activates the tab.
@@ -8,10 +8,21 @@
  * With a single type the button creates immediately (no menu to disambiguate);
  * with several it toggles a small dropdown. Disabled unless the task is `ready`
  * (a worktree must exist before a session can spawn in it, §6.4).
+ *
+ * Label: a task with no tabs yet shows the full "+ Session" label
+ * (`.btn-primary`, teal fill) so the control reads clearly on its own; once the task has
+ * at least one tab, it shrinks to a compact ghost "+" at tab height (`.new-session-ghost`,
+ * no fill) so it reads as "the next tab slot" rather than competing with the real tabs.
+ * The session count here goes through the `sessionIdsInWindow` selector; `SessionTabBar`
+ * computes its own tab list with an equivalent inline filter rather than this selector
+ * (its result must stay a referentially-stable value across renders for zustand's
+ * `useSyncExternalStore`-backed `useStore`, which a selector returning a freshly
+ * `.filter()`-ed array on every call cannot give it — see the `EMPTY_GROUPS` comment
+ * there) — the two are kept logically equivalent so both still agree on "has tabs".
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { useStore } from '../store/store'
+import { useStore, sessionIdsInWindow } from '../store/store'
 import { color, radius, shadow } from '../style/tokens'
 
 export interface NewSessionDropdownProps {
@@ -25,6 +36,7 @@ export function NewSessionDropdown({
 }: NewSessionDropdownProps): React.JSX.Element {
   const sessionTypes = useStore((s) => s.sessionTypes)
   const pushToast = useStore((s) => s.pushToast)
+  const hasSessions = useStore((s) => sessionIdsInWindow(s, taskId, s.windowId).length > 0)
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
 
@@ -71,15 +83,15 @@ export function NewSessionDropdown({
     <div ref={rootRef} style={{ position: 'relative', display: 'inline-block' }}>
       <button
         type="button"
-        className="btn-primary"
+        className={hasSessions ? 'new-session-ghost' : 'btn-primary'}
         aria-label="new session"
         aria-haspopup={types.length > 1}
         aria-expanded={types.length > 1 ? open : undefined}
         disabled={disabled}
         onClick={onClick}
-        style={{ padding: '4px 10px', whiteSpace: 'nowrap' }}
+        style={hasSessions ? undefined : { padding: '4px 10px', whiteSpace: 'nowrap' }}
       >
-        + Session
+        {hasSessions ? '+' : '+ Session'}
       </button>
       {open && types.length > 1 ? (
         <ul

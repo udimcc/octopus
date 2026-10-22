@@ -4,6 +4,21 @@ All notable changes to Octopus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **App icon and Linux launcher entry.** Octopus now ships its own icon (rendered from
+  `src/renderer/src/assets/octopus.svg` by `npm run render:icon`) for the window/taskbar and
+  for `install.sh`'s desktop integration: a `~/.local/share/applications/octopus.desktop`
+  entry plus a `~/.local/share/icons/hicolor/512x512/apps/octopus.png` icon, so Octopus shows
+  up in the desktop environment's app launcher after install. `uninstall.sh` removes both.
+- **"+" new-session button after the last tab.** The tab bar's "+ Session" button now sits
+  right after the last session tab, so a new tab opens where the button was. Once a task has
+  tabs it shrinks to a compact "+", and it stays visible at the right edge when tabs overflow.
+- **Issues drawer close button.** A "✕" at the left of the drawer header closes it, like
+  Escape (unsaved edits still prompt first).
+
 ## [1.0.0]
 
 Adds Issues (a list and a Kanban board, with read-only Jira import), split panes, window

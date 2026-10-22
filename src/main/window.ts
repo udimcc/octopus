@@ -25,6 +25,11 @@
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { app, BrowserWindow, dialog, shell } from 'electron'
+// electron-vite asset import for the app's window/taskbar icon: compiles to
+// `path.join(__dirname, '../../resources/icon.png')`, so `resources/` must be
+// packaged at the same relative depth below `out/main` as in the repo —
+// electron-builder.yml packs `resources/**` alongside `out/**` for exactly this.
+import icon from '../../resources/icon.png?asset'
 import type { WindowId, TaskId } from '../domain/ids'
 import { asWindowId, MAIN_WINDOW_ID } from '../domain/ids'
 import type { WindowRecord } from '../ports/workspace-persistence'
@@ -99,6 +104,8 @@ export function createWindow(ctx: AppContext, opts: CreateWindowOptions): Browse
     x: opts.bounds?.x,
     y: opts.bounds?.y,
     show: false,
+    // Window/taskbar icon: every role (main, secondary, view) gets it.
+    icon,
     // Surface the release version (semver from package.json) in the title so users
     // can tell which build they're running — valuable after a version rollback.
     // A view window instead shows the pinned task's name (kept live by

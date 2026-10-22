@@ -260,6 +260,67 @@ describe('<IssuesDrawer>', () => {
     expect(useStore.getState().issuesDrawerOpen).toBe(true)
   })
 
+  describe('the ✕ ("close issues") button', () => {
+    it('is unreachable while the drawer is closed (inert)', () => {
+      seed()
+      render(<IssuesDrawer onCreateTaskFromIssue={vi.fn()} onDeleteBoundTask={vi.fn()} />)
+      // Unreachable via a normal accessible-tree query while closed — same effect the
+      // aria-hidden/inert test above verifies on the root directly.
+      expect(screen.queryByRole('button', { name: 'close issues' })).toBeNull()
+      // It's still in the DOM, inside the root the other test confirms is `inert`.
+      const closeButton = screen.getByRole('button', { name: 'close issues', hidden: true })
+      expect(drawerRoot().contains(closeButton)).toBe(true)
+      expect((drawerRoot() as HTMLElement & { inert: boolean }).inert).toBe(true)
+    })
+
+    it('closes the drawer, same as Escape, when the edit is clean', async () => {
+      seed()
+      render(<IssuesDrawer onCreateTaskFromIssue={vi.fn()} onDeleteBoundTask={vi.fn()} />)
+      act(() => useStore.getState().toggleIssuesDrawer())
+      expect(useStore.getState().issuesDrawerOpen).toBe(true)
+
+      fireEvent.click(screen.getByRole('button', { name: 'close issues' }))
+      expect(useStore.getState().issuesDrawerOpen).toBe(false)
+      // Flush the close-time focus-restore timer (same cleanup note as the Escape test).
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0))
+      })
+    })
+
+    it('raises the discard prompt instead of closing when the edit is dirty, keeping the drawer open', () => {
+      seed([issue('i1')])
+      render(<IssuesDrawer onCreateTaskFromIssue={vi.fn()} onDeleteBoundTask={vi.fn()} />)
+      act(() => {
+        useStore.getState().toggleIssuesDrawer()
+        useStore.getState().selectIssue('i1')
+        useStore.getState().setIssueEditDirty(true)
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: 'close issues' }))
+      expect(useStore.getState().issuesDrawerOpen).toBe(true)
+      expect(useStore.getState().discardPrompt).toEqual({ kind: 'close' })
+      expect(screen.getByRole('dialog', { name: 'Discard unsaved changes' })).toBeInTheDocument()
+    })
+
+    it('restores focus to the previously-focused element when it closes the drawer, same as Escape', async () => {
+      seed()
+      render(
+        <>
+          <button>outside</button>
+          <IssuesDrawer onCreateTaskFromIssue={vi.fn()} onDeleteBoundTask={vi.fn()} />
+        </>
+      )
+      const outside = screen.getByRole('button', { name: 'outside' })
+      outside.focus()
+
+      act(() => useStore.getState().toggleIssuesDrawer()) // open
+      expect(document.activeElement).toBe(drawerRoot())
+
+      fireEvent.click(screen.getByRole('button', { name: 'close issues' }))
+      await waitFor(() => expect(document.activeElement).toBe(outside))
+    })
+  })
+
   describe('focus contract while open: focusout to <body>', () => {
     it('moves focus back onto the drawer root when no modal is up', async () => {
       seed()

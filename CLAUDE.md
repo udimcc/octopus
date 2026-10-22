@@ -120,7 +120,11 @@ helper binaries come from GitHub — the same deferral noted in `electron-builde
 
 **Install (user side):** extract, `cd octopus-<version>`, `./install.sh` — copies the app
 to a per-user program dir and symlinks `octopus` into `~/.local/bin`. `uninstall.sh`
-reverses it. Neither touches the **data** dir (`~/.local/share/octopus`).
+reverses it. Neither touches the **data** dir (`~/.local/share/octopus`). The tarball also
+carries `icon.png` (staged by `scripts/release.mjs` from `build/icon.png`); `install.sh` adds
+a per-user `.desktop` launcher entry and icon-theme icon (both removed by `uninstall.sh`).
+`src/renderer/src/assets/octopus.svg` is the icon source — re-run `npm run render:icon` after
+editing it.
 
 **Upgrade/rollback semantics (important).** Installs are **replace-in-place** and share
 one data dir, so the DB is the compatibility surface. Migrations are **forward-only and
@@ -158,3 +162,7 @@ restores the `.bak`. See `CHANGELOG.md` and `DESIGN §6.3`.
   secondary belongs to the view named by its `parentWindowId`, else to main. Use `windowGroupRoot`/`viewForTask`
   (`src/application/use-cases/window-groups.ts`, mirrored as store selectors) — never compare `parentWindowId`
   to `MAIN_WINDOW_ID`.
+- **Runtime assets for main** live in `resources/` (today only `icon.png`), imported with electron-vite's
+  `?asset` suffix (typed in `src/main/env.d.ts`). `?asset` does not copy the file into `out/`; it resolves to
+  `resources/` at runtime, which is why `electron-builder.yml` packages `resources/**` and the lint boundaries
+  rule ignores `resources/**`.

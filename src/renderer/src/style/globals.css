@@ -263,6 +263,27 @@ button:focus-visible {
   color: var(--text-primary);
 }
 
+/* Compact "+" new-session button, shown once a task already has tabs. It sits right after
+   the last `.session-tab` with the same padding, top border and inherited line-height, so it
+   matches the tab height, with no teal fill so it reads as "next slot" rather than a competing
+   action. `button:disabled` and `:focus-visible` (above) supply the disabled look and focus ring. */
+.new-session-ghost {
+  padding: 6px 10px;
+  border-style: solid;
+  border-width: 2px 0 0 0;
+  border-color: transparent;
+  border-radius: 4px 4px 0 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.new-session-ghost:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
 /* Settings category tabs (left sidebar) — hover tint; selected state stays inline. */
 .settings-cat:hover:not([aria-selected='true']) {
   background: var(--bg-hover);

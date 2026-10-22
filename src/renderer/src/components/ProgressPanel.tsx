@@ -47,6 +47,7 @@ import { CreateViewConfirm } from './CreateViewConfirm'
 import { useStore, taskDisplayState, isViewedTask, sameWindowGroup } from '../store/store'
 import { groupTasksByRepo, repoKeyOf, NO_REPOSITORY_KEY } from '../store/group-tasks'
 import { color, fontSize } from '../style/tokens'
+import octopusMascot from '../assets/octopus.svg'
 
 export interface ProgressPanelProps {
   /** Open the New-Task modal (owned by `App` so the new-task shortcut shares it). Unused
@@ -176,6 +177,9 @@ export function ProgressPanel({
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', padding: '12px 12px 8px', gap: 8 }}>
+        {/* Decorative sidebar mascot — the title text already names the app, so
+            this is `alt=""`/`aria-hidden`, not a second announcement for screen readers. */}
+        <img src={octopusMascot} alt="" aria-hidden width={22} height={22} />
         <h1
           style={{
             fontSize: fontSize.title,

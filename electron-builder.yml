@@ -9,6 +9,15 @@ directories:
 files:
   - out/**
   - package.json
+  # electron-vite's `?asset` import (src/main/window.ts) compiles to
+  # `path.join(__dirname, '../../resources/icon.png')` — i.e. it expects
+  # `resources/` to ship at the SAME relative position to `out/main` inside the
+  # package as it has in the repo, not to be copied/rewritten. Packing it here
+  # (rather than via `extraResources`, which lands outside app.asar at a
+  # different relative depth) keeps that join resolving correctly; `nativeImage`
+  # (what the `icon` option uses under the hood) reads a path inside an asar
+  # archive natively — no fs patching involved, it understands asar paths itself.
+  - resources/**
 
 # Native modules (node-pty, better-sqlite3) are prepared for Electron's ABI by our
 # own `postinstall` (scripts/rebuild-natives.mjs), NOT by electron-builder. This

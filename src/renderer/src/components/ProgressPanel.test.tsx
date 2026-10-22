@@ -4,6 +4,7 @@ import { ProgressPanel } from './ProgressPanel'
 import { useStore, initialData } from '../store/store'
 import { installStubBridge } from '../test-support/stub-bridge'
 import type { TaskDTO, SessionDTO } from '../../../shared/dto'
+import octopusMascot from '../assets/octopus.svg'
 
 function session(id: string, taskId: string, over: Partial<SessionDTO> = {}): SessionDTO {
   return {
@@ -135,6 +136,17 @@ describe('<ProgressPanel>', () => {
     render(<ProgressPanel onNewTask={vi.fn()} />)
     // The version arrives async; findBy waits for the store-independent effect.
     await screen.findByText((_content, el) => el?.textContent === 'Octopus - 0.0.0-test')
+  })
+
+  it('renders a decorative mascot image right before the title, hidden from accessibility tooling', () => {
+    render(<ProgressPanel onNewTask={vi.fn()} />)
+    // `alt=""` keeps it out of the `img` accessibility role, but `getByAltText`
+    // matches on the raw attribute regardless of role.
+    const mascot = screen.getByAltText('')
+    expect(mascot.tagName).toBe('IMG')
+    expect(mascot).toHaveAttribute('src', octopusMascot)
+    expect(mascot).toHaveAttribute('aria-hidden', 'true')
+    expect(mascot.nextElementSibling?.tagName).toBe('H1')
   })
 
   it('opens the Settings modal from the gear', () => {

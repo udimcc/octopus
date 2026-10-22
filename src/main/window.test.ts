@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { readFileSync } from 'node:fs'
 
 // `window.ts` imports Electron's `app`/`BrowserWindow`/`dialog`/`shell` at module
 // scope, which can't load outside a real Electron runtime. `openExternalSafely` only
@@ -24,6 +25,9 @@ vi.mock('electron', () => ({
 import { shell } from 'electron'
 import type { BrowserWindow } from 'electron'
 import { openExternalSafely, isOwnRendererUrl, wireNavigationSafety } from './window'
+import type { CreateWindowOptions } from './window'
+import type { AppContext } from './composition-root'
+import { asWindowId } from '../domain/ids'
 
 const openExternal = vi.mocked(shell.openExternal)
 
@@ -207,5 +211,101 @@ describe('wireNavigationSafety (§13.4)', () => {
 
     expect(result).toEqual({ action: 'deny' })
     expect(openExternal).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * `createWindow` itself (window.ts:100) needs a full `AppContext` (`ctx.registry`,
+ * `ctx.deps.workspace`, `ctx.bus`, and everything `wireBoundsPersistence`/
+ * `wireCloseSemantics`/`wireCrashRecovery` read from it) to run to completion — building
+ * that scaffolding just to assert one constructor option is out of proportion. But
+ * `new BrowserWindow(...)` is `createWindow`'s FIRST statement and reads only `opts` and
+ * `app.getVersion()`, so a `BrowserWindow` mock that throws as soon as it's constructed
+ * captures the real constructor call (and real options object) without ever touching
+ * `ctx` — no fake `AppContext` needed, and no risk of a stale static-text check (e.g.
+ * moving `icon` into `webPreferences` would still pass a source-text match but silently
+ * break the taskbar icon).
+ *
+ * This is scoped via `vi.doMock` + `vi.resetModules()` + a dynamic `import()`, run only
+ * inside this describe block, so the file-level `electron`/`./window` mock+imports (and
+ * every other describe block's already-captured bindings) are unaffected.
+ */
+describe('createWindow wires the window/taskbar icon', () => {
+  afterEach(() => {
+    vi.doUnmock('electron')
+    vi.resetModules()
+  })
+
+  /** Constructs `createWindow(fakeCtx, opts)` against a `BrowserWindow` that throws
+   * immediately, and returns the options object the real constructor call received. */
+  async function capturedBrowserWindowOptions(
+    opts: CreateWindowOptions
+  ): Promise<Record<string, unknown>> {
+    const sentinel = new Error('stop before createWindow touches ctx')
+    vi.resetModules()
+    vi.doMock('electron', () => ({
+      app: { getVersion: () => '9.9.9' },
+      BrowserWindow: vi.fn(() => {
+        throw sentinel
+      }),
+      dialog: {},
+      shell: { openExternal: vi.fn() }
+    }))
+
+    const { createWindow } = await import('./window')
+    const { BrowserWindow: MockedBrowserWindow } = await import('electron')
+    const fakeCtx = {} as AppContext
+
+    expect(() => createWindow(fakeCtx, opts)).toThrow(sentinel)
+
+    const ctor = vi.mocked(MockedBrowserWindow)
+    expect(ctor).toHaveBeenCalledTimes(1)
+    return ctor.mock.calls[0]![0] as Record<string, unknown>
+  }
+
+  it('passes the packaged icon through to the BrowserWindow constructor for a main window', async () => {
+    const options = await capturedBrowserWindowOptions({
+      windowId: asWindowId('main'),
+      role: 'main'
+    })
+    expect(options.icon).toBeTypeOf('string')
+    expect(options.icon).toMatch(/icon\.png(\?.*)?$/)
+  })
+
+  it('passes the packaged icon through to the BrowserWindow constructor for a secondary window', async () => {
+    const options = await capturedBrowserWindowOptions({
+      windowId: asWindowId('secondary-1'),
+      role: 'secondary',
+      parentWindowId: asWindowId('main')
+    })
+    expect(options.icon).toBeTypeOf('string')
+    expect(options.icon).toMatch(/icon\.png(\?.*)?$/)
+  })
+})
+
+/** Reads just enough of a PNG's IHDR chunk (signature + length + "IHDR" + width + height,
+ * all fixed-offset per the PNG spec) to get its pixel dimensions, without a decoding
+ * dependency. */
+function pngDimensions(path: string): { width: number; height: number } {
+  const buf = readFileSync(path)
+  const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  if (!buf.subarray(0, 8).equals(pngSignature)) {
+    throw new Error(`${path} is not a PNG (bad signature)`)
+  }
+  if (buf.toString('ascii', 12, 16) !== 'IHDR') {
+    throw new Error(`${path}: expected IHDR as the first chunk`)
+  }
+  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) }
+}
+
+describe('packaged app icons (electron-builder.yml / resources/icon.png?asset)', () => {
+  it("build/icon.png (electron-builder's Linux icon source) is 512×512", () => {
+    const path = join(__dirname, '../../build/icon.png')
+    expect(pngDimensions(path)).toEqual({ width: 512, height: 512 })
+  })
+
+  it('resources/icon.png (the window/taskbar icon createWindow imports) is 256×256', () => {
+    const path = join(__dirname, '../../resources/icon.png')
+    expect(pngDimensions(path)).toEqual({ width: 256, height: 256 })
   })
 })

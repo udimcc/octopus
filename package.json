@@ -13,6 +13,7 @@
     "build": "npm run typecheck && electron-vite build",
     "build:unpack": "npm run build && NODE_OPTIONS=--experimental-require-module electron-builder --dir --config electron-builder.yml",
     "release": "node scripts/release.mjs",
+    "render:icon": "ELECTRON_RUN_AS_NODE= electron scripts/render-icon.mjs",
     "preview": "electron-vite preview",
     "typecheck:node": "tsc -p tsconfig.node.json --noEmit",
     "typecheck:web": "tsc -p tsconfig.web.json --noEmit",

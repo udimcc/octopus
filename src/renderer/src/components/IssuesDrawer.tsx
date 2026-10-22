@@ -301,7 +301,16 @@ export const IssuesDrawer = memo(function IssuesDrawer({
           borderBottom: `1px solid ${color.borderSubtle}`
         }}
       >
-        <button type="button" onClick={startNewIssue}>
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="close issues"
+          title="Close (Esc)"
+          onClick={toggleIssuesDrawer}
+        >
+          ✕
+        </button>
+        <button type="button" style={{ marginLeft: 12 }} onClick={startNewIssue}>
           + New Issue
         </button>
         <button type="button" style={{ marginLeft: 8 }} onClick={() => setJiraImportOpen(true)}>
