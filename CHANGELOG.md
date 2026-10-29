@@ -4,6 +4,18 @@ All notable changes to Octopus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1]
+
+Fixes Jira import after a LiteLLM gateway change.
+
+### Fixed
+
+- **Jira import "Tool … not found" errors.** The LiteLLM gateway stopped accepting
+  tool names with its server-alias prefix (`jira_jira_search`) and now returns HTTP 500
+  "Tool … not found" for them, which broke fetching projects and issues in the Jira import
+  window. Octopus now sends the plain tool names (`jira_search`, `jira_get_issue`,
+  `jira_get_all_projects`).
+
 ## [1.1.0]
 
 Adds an app icon with a Linux launcher entry, moves the new-session "+" button after the
