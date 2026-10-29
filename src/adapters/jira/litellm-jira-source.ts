@@ -6,11 +6,10 @@
  * credentials. The gateway's own cache refreshes every few hours — this
  * adapter never talks to Jira directly, and there is no polling.
  *
- * The wire tool name carries the gateway's server alias prefix: calling the
- * upstream tool `jira_search` means `name: "jira_jira_search"` (confirmed
- * against the gateway; see `test/fixtures/jira/README.md`). `tool` below is
- * always the upstream name (already including its own `jira_` prefix), so
- * `call()` only prepends the alias.
+ * The wire tool name is the bare upstream name (`jira_search`), as listed by
+ * `/mcp-rest/tools/list`. The gateway used to require its server alias prefix
+ * (`jira_jira_search`); it now rejects that with "Tool ... not found"
+ * (re-confirmed 2026-10-29; see `test/fixtures/jira/README.md`).
  *
  * Everything the gateway returns is **text**, not structured JSON — three
  * line-oriented formats (`jira_search`, `jira_get_issue`, `jira_get_all_projects`)
@@ -237,7 +236,7 @@ export class LiteLLMJiraSource implements JiraIssueSource {
         method: 'POST',
         headers: { Authorization: authorization, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: `jira_${tool}`,
+          name: tool,
           arguments: args,
           server_id: this.deps.serverId
         }),

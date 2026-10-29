@@ -1895,10 +1895,10 @@ shape with its own `credentialsRef`.
 **Adapters.**
 - **`LiteLLMJiraSource`** (`src/adapters/jira/litellm-jira-source.ts`) implements `JiraIssueSource` over
   `POST {baseUrl}/mcp-rest/tools/call`, which proxies to the upstream "JiraSSE" MCP server holding the real
-  Jira credentials. The wire tool name carries the gateway's server alias prefix (`jira_jira_search` for
-  the upstream `jira_search`), confirmed against the live gateway. **Every response is text, not structured
-  JSON** — three line-oriented formats, each parsed by a pure exported `parse*Text` function so adapter
-  tests can target them directly against the captured fixtures:
+  Jira credentials. The wire tool name is the bare upstream name (`jira_search`); the gateway no longer
+  accepts its server alias prefix (`jira_jira_search` → "Tool ... not found", 2026-10-29). **Every
+  response is text, not structured JSON** — three line-oriented formats, each parsed by a pure exported
+  `parse*Text` function so adapter tests can target them directly against the captured fixtures:
   - `jira_search` text: a `"Found N total issues …"` header gives the total; one `• [PROJ] KEY - Summary`
     bullet per hit gives the keys, in order. `"No issues found with filters: …"` is an empty page, not an
     error — `isError` is `false` even then.

@@ -27,13 +27,13 @@ function rig(): { loop: CommandLoop; fd: FakeDeps } {
 /**
  * A fake `fetch` that never leaves the process: it inspects the gateway
  * request body and serves `get-issue-batch.json` verbatim for any
- * `jira_jira_get_issue` call, regardless of the exact `ticket_id` requested
+ * `jira_get_issue` call, regardless of the exact `ticket_id` requested
  * (the fixture's 5 issues — TM-2608, TM-2616, TM-2614, TM-2611, TM-2609 — are
  * what `getIssues` is asked for below, so the keys always line up).
  */
 const fakeFetch: JiraFetch = async (_url, init) => {
   const body = JSON.parse(init.body) as { name: string }
-  if (body.name === 'jira_jira_get_issue') {
+  if (body.name === 'jira_get_issue') {
     return new Response(JSON.stringify(getIssueBatchFixture), { status: 200 })
   }
   throw new Error(`fakeFetch: unexpected tool ${body.name}`)

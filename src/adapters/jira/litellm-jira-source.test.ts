@@ -72,7 +72,7 @@ function makeSource(
 }
 
 describe('LiteLLMJiraSource — request shape', () => {
-  it('POSTs to {baseUrl}/mcp-rest/tools/call with the alias-prefixed tool name, arguments and server_id', async () => {
+  it('POSTs to {baseUrl}/mcp-rest/tools/call with the bare upstream tool name, arguments and server_id', async () => {
     const { fetch, calls } = queueFetch([jsonResponse(fixtureEnvelope('projects.json'))])
     const source = makeSource(fetch)
 
@@ -81,7 +81,7 @@ describe('LiteLLMJiraSource — request shape', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0].url).toBe(`${BASE_URL}/mcp-rest/tools/call`)
     expect(calls[0].body).toEqual({
-      name: 'jira_jira_get_all_projects',
+      name: 'jira_get_all_projects',
       arguments: {},
       server_id: SERVER_ID
     })
@@ -265,7 +265,7 @@ describe('LiteLLMJiraSource — search', () => {
     const page = await source.search({ issueKey: 'TM-2608' })
 
     expect(calls).toHaveLength(1)
-    expect(calls[0].body.name).toBe('jira_jira_get_issue')
+    expect(calls[0].body.name).toBe('jira_get_issue')
     expect(calls[0].body.arguments.ticket_id).toBe('TM-2608')
     expect(page.issues.map((i) => i.key)).toEqual(['TM-2608'])
     expect(page.total).toBe(1)
@@ -281,7 +281,7 @@ describe('LiteLLMJiraSource — search', () => {
 
     const page = await source.search({ project: 'TM' })
 
-    expect(calls[0].body.name).toBe('jira_jira_search')
+    expect(calls[0].body.name).toBe('jira_search')
     expect(calls[0].body.arguments).toEqual({ limit: 50, offset: 0, project: 'TM' })
     expect(page.total).toBe(820)
     // search-page1.json's bullets are TM-2617/2616/2614/2613/2612; the get-issue-batch
@@ -407,7 +407,7 @@ describe('LiteLLMJiraSource — search with a sprint filter', () => {
     expect(page.total).toBe(3)
     expect(page.nextCursor).toBeUndefined()
     // 2 search calls + 2 getIssues calls.
-    expect(calls.filter((c) => c.body.name === 'jira_jira_search')).toHaveLength(2)
+    expect(calls.filter((c) => c.body.name === 'jira_search')).toHaveLength(2)
   })
 
   it('stops at the per-call page cap, reports a cursor, and resuming it yields no gaps or duplicates', async () => {
@@ -423,7 +423,7 @@ describe('LiteLLMJiraSource — search with a sprint filter', () => {
     const fetch: JiraFetch = async (url, init) => {
       const body = JSON.parse(init.body) as RecordedCall['body']
       calls.push({ url, body, headers: init.headers })
-      if (body.name === 'jira_jira_search') {
+      if (body.name === 'jira_search') {
         const { offset, limit } = body.arguments as { offset: number; limit: number }
         const keys: string[] = []
         for (let i = offset; i < Math.min(offset + limit, total); i++) keys.push(`K${i}`)
@@ -435,7 +435,7 @@ describe('LiteLLMJiraSource — search with a sprint filter', () => {
                 .join('\n')}\n`
         return jsonResponse(textEnvelope(text))
       }
-      if (body.name === 'jira_jira_get_issue') {
+      if (body.name === 'jira_get_issue') {
         const keys = (body.arguments.ticket_id as string).split(',')
         const blocks = keys
           .map((key) => {
@@ -503,7 +503,7 @@ describe('LiteLLMJiraSource — listSprints', () => {
 
     const sprints = await source.listSprints('TM')
 
-    const searchCall = calls.find((c) => c.body.name === 'jira_jira_search')!
+    const searchCall = calls.find((c) => c.body.name === 'jira_search')!
     expect(searchCall.body.arguments).toEqual({ limit: 30, offset: 0, project: 'TM' })
     expect(searchCall.body.arguments).not.toHaveProperty('days')
     // TM-2608 contributes a closed + active sprint; orderSprints puts active before closed.

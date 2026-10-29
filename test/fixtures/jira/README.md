@@ -8,10 +8,11 @@ scrubbed of personal data. Adapter tests serve them through a fake `fetch`; noth
 ## Endpoint and wire shape
 
 - `POST https://litellm.israel.final/mcp-rest/tools/call`
-- Body: `{"name": "jira_<tool>", "arguments": {...}, "server_id": "628a8d3ece8c06bc50523679ea834304"}`
-- The wire tool name carries the server alias prefix twice: calling the upstream tool
-  `jira_search` means `name: "jira_jira_search"`. Confirmed wire names used here:
-  `jira_jira_search`, `jira_jira_get_issue`, `jira_jira_get_all_projects`.
+- Body: `{"name": "<tool>", "arguments": {...}, "server_id": "628a8d3ece8c06bc50523679ea834304"}`
+- The wire tool name is the bare upstream name, as listed by `/mcp-rest/tools/list`:
+  `jira_search`, `jira_get_issue`, `jira_get_all_projects`. (The gateway once required the
+  server alias prefix, `jira_jira_search`; since 2026-10-29 that returns HTTP 500
+  "Tool ... not found".)
 - Every response has `structuredContent: null` and text-only `content: [{type: "text", text: "..."}]`.
   `isError` was `false` even for an unknown project or an unknown issue key — only a
   genuine input-validation error set it `true` (see `is-error.json`).
