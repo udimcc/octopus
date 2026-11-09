@@ -257,6 +257,8 @@ export function TaskListItem({
               type="button"
               aria-label={`Open issue ${boundIssue.name}`}
               title={boundIssue.name}
+              // Not an outside click: it navigates the open drawer (IssuesDrawer).
+              data-issues-drawer-control
               onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation()

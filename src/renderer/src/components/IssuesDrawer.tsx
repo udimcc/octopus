@@ -52,6 +52,14 @@
  * (session cycle) steals word-selection and silently switches session/task behind the
  * drawer. `issuesKey` is let through so it can close the drawer from a field.
  *
+ * OUTSIDE CLICK: while open, a primary-button `mousedown` anywhere outside the drawer
+ * (the Progress panel's task rows and buttons, a toast, …) closes it through the same
+ * dirty-guarded `toggleIssuesDrawer` (a dirty edit raises `discardPrompt` instead).
+ * The click's own action still runs (e.g. the task row still switches task). Ignored
+ * while any `[aria-modal="true"]` dialog is open — clicks in a dialog or on its
+ * backdrop belong to it, including the drawer's own portaled dialogs, which sit
+ * outside the drawer's DOM — and on elements tagged {@link ISSUES_DRAWER_CONTROL_ATTR}.
+ *
  * FOCUS: opening moves focus onto the drawer root (its content is dynamic, so there is
  * no single stable control to target); closing restores focus to whatever had it
  * before opening, falling back to the active terminal, then the Issues button. While
@@ -101,6 +109,14 @@ function topmostModal(): HTMLElement | null {
   const modals = document.querySelectorAll<HTMLElement>('[aria-modal="true"]')
   return modals.length > 0 ? modals[modals.length - 1] : null
 }
+
+/**
+ * Marks an element OUTSIDE the drawer that itself opens/closes/navigates it (the
+ * Issues button, a task row's bound-issue icon), so a click on it is left to its own
+ * handler instead of also being treated as an outside click — otherwise the Issues
+ * button would close-then-reopen, and the issue icon would close instead of select.
+ */
+const ISSUES_DRAWER_CONTROL_ATTR = 'data-issues-drawer-control'
 
 export interface IssuesDrawerProps {
   /** Open the task-creation flow prefilled from this issue. */
@@ -210,6 +226,24 @@ export const IssuesDrawer = memo(function IssuesDrawer({
   // Deferred a tick so the newly-focused element, if any, has actually landed (a
   // focusout fires before the browser settles on its next focus target). Attached to
   // `document` because the nested dialogs are portaled to `document.body`.
+  // Outside click closes (see the header's OUTSIDE CLICK section). Capture phase on
+  // `window` so a handler that stops `mousedown` (e.g. a task row's context menu)
+  // can't hide the click from us.
+  useEffect(() => {
+    if (!open) return
+    const onMouseDown = (e: MouseEvent): void => {
+      if (e.button !== 0) return
+      const target = e.target
+      if (!(target instanceof Node)) return
+      if (rootRef.current?.contains(target)) return
+      if (topmostModal()) return
+      if (target instanceof Element && target.closest(`[${ISSUES_DRAWER_CONTROL_ATTR}]`)) return
+      useStore.getState().toggleIssuesDrawer()
+    }
+    window.addEventListener('mousedown', onMouseDown, true)
+    return () => window.removeEventListener('mousedown', onMouseDown, true)
+  }, [open])
+
   useEffect(() => {
     if (!open) return
     // Only the latest pending check matters (each reads `activeElement` when it

@@ -321,6 +321,121 @@ describe('<IssuesDrawer>', () => {
     })
   })
 
+  describe('outside click', () => {
+    // Flush the close-time focus-restore timer (same cleanup note as the Escape test).
+    async function flushRestore(): Promise<void> {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0))
+      })
+    }
+
+    function renderWithOutside(): void {
+      render(
+        <>
+          <button>outside</button>
+          <button data-issues-drawer-control>control</button>
+          <IssuesDrawer onCreateTaskFromIssue={vi.fn()} onDeleteBoundTask={vi.fn()} />
+        </>
+      )
+    }
+
+    it('closes the drawer on a mousedown outside it when the edit is clean', async () => {
+      seed()
+      renderWithOutside()
+      act(() => useStore.getState().toggleIssuesDrawer())
+
+      fireEvent.mouseDown(screen.getByRole('button', { name: 'outside', hidden: true }))
+      expect(useStore.getState().issuesDrawerOpen).toBe(false)
+      await flushRestore()
+    })
+
+    it('still closes when the outside target stops mousedown propagation (capture phase)', async () => {
+      seed()
+      render(
+        <>
+          <div onMouseDown={(e) => e.stopPropagation()}>menu item</div>
+          <IssuesDrawer onCreateTaskFromIssue={vi.fn()} onDeleteBoundTask={vi.fn()} />
+        </>
+      )
+      act(() => useStore.getState().toggleIssuesDrawer())
+
+      fireEvent.mouseDown(screen.getByText('menu item'))
+      expect(useStore.getState().issuesDrawerOpen).toBe(false)
+      await flushRestore()
+    })
+
+    it('does not close on a mousedown inside the drawer', () => {
+      seed()
+      renderWithOutside()
+      act(() => useStore.getState().toggleIssuesDrawer())
+
+      fireEvent.mouseDown(screen.getByRole('button', { name: '+ New Issue' }))
+      fireEvent.mouseDown(drawerRoot())
+      expect(useStore.getState().issuesDrawerOpen).toBe(true)
+    })
+
+    it('ignores a non-primary button', () => {
+      seed()
+      renderWithOutside()
+      act(() => useStore.getState().toggleIssuesDrawer())
+
+      fireEvent.mouseDown(screen.getByRole('button', { name: 'outside', hidden: true }), {
+        button: 2
+      })
+      expect(useStore.getState().issuesDrawerOpen).toBe(true)
+    })
+
+    it('leaves elements tagged data-issues-drawer-control to their own handler', () => {
+      seed()
+      renderWithOutside()
+      act(() => useStore.getState().toggleIssuesDrawer())
+
+      fireEvent.mouseDown(screen.getByRole('button', { name: 'control', hidden: true }))
+      expect(useStore.getState().issuesDrawerOpen).toBe(true)
+    })
+
+    it('is a no-op while a modal dialog is open (its card or its backdrop)', () => {
+      seed()
+      renderWithOutside()
+      act(() => useStore.getState().toggleIssuesDrawer())
+
+      const backdrop = document.createElement('div')
+      const modal = document.createElement('div')
+      modal.setAttribute('role', 'dialog')
+      modal.setAttribute('aria-modal', 'true')
+      backdrop.appendChild(modal)
+      document.body.appendChild(backdrop)
+      try {
+        fireEvent.mouseDown(modal)
+        fireEvent.mouseDown(backdrop)
+        expect(useStore.getState().issuesDrawerOpen).toBe(true)
+      } finally {
+        backdrop.remove()
+      }
+    })
+
+    it('raises the discard prompt instead of closing when the edit is dirty', () => {
+      seed([issue('i1')])
+      renderWithOutside()
+      act(() => {
+        useStore.getState().toggleIssuesDrawer()
+        useStore.getState().selectIssue('i1')
+        useStore.getState().setIssueEditDirty(true)
+      })
+
+      fireEvent.mouseDown(screen.getByRole('button', { name: 'outside', hidden: true }))
+      expect(useStore.getState().issuesDrawerOpen).toBe(true)
+      expect(useStore.getState().discardPrompt).toEqual({ kind: 'close' })
+    })
+
+    it('does nothing while the drawer is closed', () => {
+      seed()
+      renderWithOutside()
+      fireEvent.mouseDown(screen.getByRole('button', { name: 'outside' }))
+      expect(useStore.getState().issuesDrawerOpen).toBe(false)
+    })
+  })
+
   describe('focus contract while open: focusout to <body>', () => {
     it('moves focus back onto the drawer root when no modal is up', async () => {
       seed()

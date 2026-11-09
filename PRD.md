@@ -131,6 +131,10 @@ closes regardless of which task is active.
 - It slides in from the right and covers the whole session area, up to the Progress window, which
   stays visible.
 - **Esc**, the **Issues** button, or the shortcut closes it.
+- Clicking anywhere outside it (a task in the Progress window, a Progress window button, a
+  notification) also closes it, and the click still does its own thing (e.g. switches to that task).
+  Clicking a task's issue icon instead shows that issue in the open window. While a dialog is open,
+  clicks belong to the dialog and don't close the window.
 - It belongs to the **main window** only. Pressing the shortcut in a secondary window brings the main
   window to the front and toggles its Issues window.
 - It always starts closed after a restart.

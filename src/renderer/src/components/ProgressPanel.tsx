@@ -342,6 +342,7 @@ export function ProgressPanel({
         <div style={{ padding: 12, borderTop: `1px solid ${color.border}` }}>
           <button
             id="issues-drawer-toggle"
+            data-issues-drawer-control
             type="button"
             onClick={toggleIssuesDrawer}
             aria-pressed={issuesDrawerOpen}

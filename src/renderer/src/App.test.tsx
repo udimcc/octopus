@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { installStubBridge } from './test-support/stub-bridge'
 import { App } from './App'
@@ -165,6 +165,75 @@ describe('<App>', () => {
     // callback can fire during a LATER test instead.
     await act(async () => {
       await new Promise((r) => setTimeout(r, 0))
+    })
+  })
+
+  describe('outside click closes the Issues drawer', () => {
+    // A real click: mousedown (the drawer's outside-click listener) then click.
+    function realClick(el: HTMLElement): void {
+      fireEvent.mouseDown(el)
+      fireEvent.click(el)
+    }
+
+    async function flushRestore(): Promise<void> {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0))
+      })
+    }
+
+    it('closes when a task row in the Progress panel is clicked, and the row still activates', async () => {
+      installStubBridge({
+        state: state('t1', { tasks: [task('t1', { name: 'Alpha' }), task('t2', { name: 'Beta' })] })
+      })
+      render(<App />)
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Beta' })).toBeInTheDocument())
+      act(() => useStore.getState().toggleIssuesDrawer())
+
+      realClick(screen.getByRole('button', { name: 'Beta' }))
+      expect(useStore.getState().issuesDrawerOpen).toBe(false)
+      expect(window.octopusAPI.tasks.switch).toHaveBeenCalledWith({ taskId: 't2' })
+      await flushRestore()
+    })
+
+    it('the Issues button still toggles it closed once (no close-then-reopen)', async () => {
+      installStubBridge({ state: state(undefined) })
+      render(<App />)
+      await waitFor(() => expect(window.octopusAPI.app.getState).toHaveBeenCalled())
+      const issuesButton = screen.getByRole('button', { name: 'Issues' })
+
+      realClick(issuesButton)
+      expect(useStore.getState().issuesDrawerOpen).toBe(true)
+      realClick(issuesButton)
+      expect(useStore.getState().issuesDrawerOpen).toBe(false)
+      await flushRestore()
+    })
+
+    it("a task row's bound-issue icon navigates the open drawer instead of closing it", async () => {
+      installStubBridge({
+        state: state('t1', {
+          tasks: [task('t1', { name: 'Alpha' })],
+          issues: [issue('i1', { name: 'Fix bug', taskId: 't1' }), issue('i2')]
+        })
+      })
+      render(<App />)
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Open issue Fix bug' })).toBeInTheDocument()
+      )
+      act(() => useStore.getState().openIssuesDrawer('i2'))
+      // A close-then-reopen would end in the same state, so also prove the outside-click
+      // close never ran.
+      // `beforeEach` resets data only, so restore the real action afterwards.
+      const original = useStore.getState().toggleIssuesDrawer
+      const toggle = vi.fn()
+      useStore.setState({ toggleIssuesDrawer: toggle })
+      try {
+        realClick(screen.getByRole('button', { name: 'Open issue Fix bug' }))
+        expect(toggle).not.toHaveBeenCalled()
+        expect(useStore.getState().issuesDrawerOpen).toBe(true)
+        expect(useStore.getState().selectedIssueId).toBe('i1')
+      } finally {
+        useStore.setState({ toggleIssuesDrawer: original })
+      }
     })
   })
 
