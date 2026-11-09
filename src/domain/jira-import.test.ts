@@ -7,7 +7,7 @@ import {
   type JiraIssue,
   type JiraSprint
 } from './jira-import'
-import { Issue, IssueSource } from './issue'
+import { Issue, IssueSource, IssueStatus } from './issue'
 import { asIssueId } from './ids'
 
 function jiraIssue(over: Partial<JiraIssue> = {}): JiraIssue {
@@ -109,6 +109,19 @@ describe('classifyJiraIssue', () => {
     const result = classifyJiraIssue(composed, raw.key, [existing])
     expect(result.kind).toBe('duplicate')
     expect(result).toMatchObject({ issueId: existing.id, issueName: existing.name })
+  })
+
+  it('still classifies as duplicate when the local issue is Blocked with reasons (reasons are not compared)', () => {
+    const raw = jiraIssue()
+    const composed = composeJiraIssue(raw)
+    const existing = jiraIssueRecord({
+      name: composed.name,
+      description: composed.description,
+      blockedReasons: 'waiting on infra'
+    })
+    existing.setStatus(IssueStatus.Blocked)
+    const result = classifyJiraIssue(composed, raw.key, [existing])
+    expect(result.kind).toBe('duplicate')
   })
 
   it('classifies as conflict when only the name differs', () => {

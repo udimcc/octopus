@@ -33,6 +33,7 @@ function issue(id: string, over: Partial<IssueDTO> = {}): IssueDTO {
     name: id,
     description: '',
     status: 'todo',
+    blockedReasons: '',
     createdAt: 1000,
     updatedAt: 1000,
     source: 'local',

@@ -1,6 +1,6 @@
 /**
  * Canonical issue-status table ("Issues"). The fixed display order (Todo → In
- * progress → In review → Done) and the display label for each status are defined
+ * progress → Blocked → In review → Done) and the display label for each status are defined
  * ONCE here and sourced by every consumer that needs them: `group-issues.ts`'s
  * drawer grouping, `IssueStatusIcon`'s glyph/status `<select>` labels (re-exported
  * from there so existing imports keep working), and the New-Task modal's issue
@@ -15,10 +15,11 @@
 
 import type { IssueStatusDTO } from '../../../shared/dto'
 
-/** Fixed display order (Todo → In progress → In review → Done). */
+/** Fixed display order (Todo → In progress → Blocked → In review → Done). */
 export const ISSUE_STATUS_ORDER: readonly IssueStatusDTO[] = [
   'todo',
   'in_progress',
+  'blocked',
   'in_review',
   'done'
 ]
@@ -27,6 +28,7 @@ export const ISSUE_STATUS_ORDER: readonly IssueStatusDTO[] = [
 export const ISSUE_STATUS_LABELS: Readonly<Record<IssueStatusDTO, string>> = {
   todo: 'Todo',
   in_progress: 'In progress',
+  blocked: 'Blocked',
   in_review: 'In review',
   done: 'Done'
 }

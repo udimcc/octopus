@@ -1673,8 +1673,11 @@ as `Task`.
 - **`Issue`** — `id: IssueId`, `name` (required), `description` (markdown text, opaque to the domain),
   `projectPath?` (one of the configured Projects, §6.3; no referential constraint — removing a project
   just clears it, see below), `status: IssueStatus`, `taskId?`, timestamps.
-- **`IssueStatus`** enum — `todo | in_progress | in_review | done`, a fixed user-set set (no custom
-  statuses). `todo` is the default for a new issue.
+- **`IssueStatus`** enum — `todo | in_progress | blocked | in_review | done` (that display order), a fixed user-set set (no
+  custom statuses). `todo` is the default for a new issue. Issue status `'blocked'` is unrelated to the
+  session-state wire value `NeedsInput = 'blocked'` (§3.3).
+- **`Issue.blockedReasons`** — markdown text modeled like `description`; shown only while status is
+  `blocked`, never cleared automatically (kept while hidden).
 - **Invariant I19** (§7): the `Issue`↔`Task` binding is 1:1 and stored **only on the issue**
   (`Issue.taskId?`); the task side is a reverse lookup, never a second stored pointer. Any bind moves
   `todo → in_progress` in the same command; any other status is left unchanged; unbind never changes
@@ -1701,6 +1704,11 @@ unbinds the issue on an ordinary save.** `upsertIssue` is the same `ON CONFLICT(
 `load()` returns `issues` alongside `tasks`/`sessions`. Rolling back the binary to a pre-v8 build hits
 the same `IncompatibleDbError` fatal-dialog path as any other forward migration (§6.3); a
 `.bak-v7` backup is written before the v8 upgrade runs.
+
+**Schema v12 (blocked status).** Migration `{ toVersion: 12 }` rebuilds the `issues` table, because SQLite
+cannot alter the `status` CHECK to add `'blocked'`. It adds `blocked_reasons TEXT NOT NULL DEFAULT ''`, is
+guarded on column existence, and the `jira_key` unique index is re-created by `SqliteStore.create`. Older
+builds refuse the upgraded DB (`IncompatibleDbError`).
 
 ### 13.3 Application — commands, events, cross-cutting hooks
 
@@ -1769,11 +1777,13 @@ the same `IncompatibleDbError` fatal-dialog path as any other forward migration 
   `IssueDetail` is mounted **unconditionally**; only the left pane (`IssueList` or `KanbanBoard`) is
   swapped. A tab switch writes only `issuesDrawerTab`, never `selectedIssueId`/`issueDraft`/
   `issueEditDirty`, so the shared selection and the edit form's local state survive it and it can never
-  raise `discardPrompt`. `IssueDetail` has a fixed flex-basis `ISSUE_VIEW_WIDTH_SHARE = '61%'` (no
-  grow/shrink; floor `ISSUE_VIEW_MIN_WIDTH = 360`); the List/Board pane fills the remaining ~39%. A basis rather than a grow weight makes the share
-  identical whichever pane sits beside it; the left pane is `flex: 1; minWidth: 0` so the board's own
+  raise `discardPrompt`. `IssueDetail` has a fixed, per-tab flex-basis `ISSUE_VIEW_WIDTH_SHARE` (no
+  grow/shrink; floor `ISSUE_VIEW_MIN_WIDTH = 360`): `61%` on List, `40%` on Board, read from
+  `issuesDrawerTab`. The Board needs the extra room: five columns × `COLUMN_MIN_WIDTH` is 1100px. The
+  List/Board pane fills the rest. A basis rather than a grow weight keeps each share exact whichever
+  pane sits beside it; the left pane is `flex: 1; minWidth: 0` so the board's own
   horizontal scroll engages instead of widening the row.
-- **Board.** `KanbanBoard` builds its four columns from the same `groupIssuesByStatus` as `IssueList`,
+- **Board.** `KanbanBoard` builds its five columns from the same `groupIssuesByStatus` as `IssueList`,
   so counts and newest-first order match the List tab by construction. Each column is a
   `data-issue-status` section with its own vertical scroll and a `COLUMN_MIN_WIDTH` (220px) below which
   the board scrolls horizontally; an empty column's body still fills its height ("No issues"), so the
@@ -1795,7 +1805,7 @@ the same `IncompatibleDbError` fatal-dialog path as any other forward migration 
   no such fixed location once the card has already returned to its original column, so it surfaces
   through the same transient `pushToast('error', …)` used for other drag/reorder failures elsewhere
   (`SessionTabBar`). Same column or outside all columns → no call. A drag never touches `selectedIssueId`,
-  and `issueEditDirty` covers only name/description/project, so dragging an issue that is open with
+  and `issueEditDirty` covers only name/description/blocked reasons/project, so dragging an issue that is open with
   unsaved edits is safe by construction.
 - **Drag overlay (VDI + overlay contract).** The drawer's slide-in `transform` is a containing block for
   `position: fixed`, so the pointer-following copy is portaled to `document.body` (as

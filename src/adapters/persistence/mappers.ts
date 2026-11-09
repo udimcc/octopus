@@ -74,7 +74,7 @@ export interface SessionRow {
   last_cwd?: string | null
 }
 
-/** An `issues` row (I19, v8 schema; `source`/`jira_key` added in v10, Jira import).
+/** An `issues` row (I19, v8 schema; `source`/`jira_key` added in v10, Jira import; `blocked_reasons` in v12).
  * Nullable columns surface as `null` from better-sqlite3. */
 export interface IssueRow {
   id: string
@@ -90,6 +90,8 @@ export interface IssueRow {
   source: string
   /** UNIQUE (via `idx_issues_jira_key`), nullable — `null` means `source = 'local'`. */
   jira_key: string | null
+  /** Free-text reasons for `status = 'blocked'` (v12); `''` when none. NOT NULL. */
+  blocked_reasons: string
 }
 
 /** A `windows` row (V1.5, §3.7, §6.3). */
@@ -201,7 +203,8 @@ export function issueToRow(snap: IssueSnapshot): IssueRow {
     created_at: snap.createdAt,
     updated_at: snap.updatedAt,
     source: snap.source,
-    jira_key: snap.jiraKey ?? null
+    jira_key: snap.jiraKey ?? null,
+    blocked_reasons: snap.blockedReasons
   }
 }
 
@@ -395,7 +398,9 @@ export function rowToIssueSnapshot(row: IssueRow): IssueSnapshot {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     source: parseIssueSource(row.source) ?? IssueSource.Local,
-    jiraKey: row.jira_key ?? undefined
+    jiraKey: row.jira_key ?? undefined,
+    // v12; defensive for a null/non-string value (hand-edited row).
+    blockedReasons: typeof row.blocked_reasons === 'string' ? row.blocked_reasons : ''
   }
 }
 

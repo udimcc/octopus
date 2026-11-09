@@ -7,6 +7,7 @@ describe('<IssueStatusIcon> (Issues §13.1)', () => {
   it.each<[IssueStatusDTO, string]>([
     ['todo', 'Todo'],
     ['in_progress', 'In progress'],
+    ['blocked', 'Blocked'],
     ['in_review', 'In review'],
     ['done', 'Done']
   ])('`%s` renders its own inline SVG labelled "%s"', (status, label) => {
@@ -21,11 +22,13 @@ describe('<IssueStatusIcon> (Issues §13.1)', () => {
   })
 
   it('draws a different shape for every status', () => {
-    const shapes = (['todo', 'in_progress', 'in_review', 'done'] as const).map((status) => {
-      const { container } = render(<IssueStatusIcon status={status} />)
-      return container.querySelector('svg')!.innerHTML
-    })
-    expect(new Set(shapes).size).toBe(4)
+    const shapes = (['todo', 'in_progress', 'blocked', 'in_review', 'done'] as const).map(
+      (status) => {
+        const { container } = render(<IssueStatusIcon status={status} />)
+        return container.querySelector('svg')!.innerHTML
+      }
+    )
+    expect(new Set(shapes).size).toBe(5)
   })
 
   it('`size` sets the icon size in px; the SVG scales with it', () => {

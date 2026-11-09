@@ -11,6 +11,7 @@ function issue(id: string, over: Partial<IssueDTO> = {}): IssueDTO {
     name: id,
     description: '',
     status: 'todo',
+    blockedReasons: '',
     createdAt: 1000,
     updatedAt: 1000,
     source: 'local',
@@ -173,22 +174,25 @@ describe('<KanbanBoard>', () => {
   }
 
   describe('static rendering', () => {
-    it('always renders all 4 columns, in order, each with a count', () => {
+    it('always renders all 5 columns, in order, each with a count', () => {
       seed([
         issue('t1', { status: 'todo' }),
         issue('t2', { status: 'todo' }),
         issue('p1', { status: 'in_progress' }),
+        issue('b1', { status: 'blocked' }),
         issue('r1', { status: 'in_review' })
       ])
       render(<KanbanBoard />)
       const todo = column('Todo')
       const inProgress = column('In progress')
+      const blocked = column('Blocked')
       const inReview = column('In review')
       const done = column('Done')
       const sections = screen.getAllByRole('region')
-      expect(sections).toEqual([todo, inProgress, inReview, done])
+      expect(sections).toEqual([todo, inProgress, blocked, inReview, done])
       expect(within(todo).getByText('2')).toBeInTheDocument()
       expect(within(inProgress).getByText('1')).toBeInTheDocument()
+      expect(within(blocked).getByText('1')).toBeInTheDocument()
       expect(within(inReview).getByText('1')).toBeInTheDocument()
       expect(within(done).getByText('0')).toBeInTheDocument()
     })
@@ -252,6 +256,17 @@ describe('<KanbanBoard>', () => {
       expect(window.octopusAPI.issues.update).toHaveBeenCalledWith({
         issueId: 'i1',
         status: 'in_progress'
+      })
+    })
+
+    it('a drop on the Blocked column calls issues.update with status blocked and no reasons', () => {
+      seed([issue('i1', { name: 'Stuck', status: 'in_progress' })])
+      render(<KanbanBoard />)
+      dropOn(column('Blocked'))
+      act(() => dragAndDrop(cardButton('Stuck')))
+      expect(window.octopusAPI.issues.update).toHaveBeenCalledWith({
+        issueId: 'i1',
+        status: 'blocked'
       })
     })
 

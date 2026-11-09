@@ -388,6 +388,8 @@ export interface UpdateIssueInput {
   readonly issueId: IssueId
   readonly name?: string
   readonly description?: string
+  /** Free-text blocked reasons; omitted = unchanged (like `description`). */
+  readonly blockedReasons?: string
   readonly projectPath?: string | null
   readonly status?: IssueStatus
 }

@@ -91,6 +91,8 @@ export interface IssueSnapshot {
   readonly id: IssueId
   readonly name: string
   readonly description: string
+  /** Free-text reasons the issue is blocked; '' when none. Independent of `status`. */
+  readonly blockedReasons: string
   /** One of the configured Projects' paths, or absent ("Issues", §13.1). */
   readonly projectPath?: string
   readonly status: IssueStatus

@@ -6,10 +6,15 @@
  * - **Empty** — nothing selected and no draft in progress.
  * - **View** — an existing issue, read-only: name, then a toolbar (a status `<select>`
  *   that persists immediately via `issues.update` — Jira-style, no Edit needed — and the
- *   action buttons), then project/linked task and the markdown description.
+ *   action buttons), then project/linked task and the markdown description. While the
+ *   issue is Blocked, a divider + "Blocked reasons" section follows (markdown, or a
+ *   muted "No reason given" when empty/whitespace-only).
  * - **Edit** — the same issue, name/description/project turned into editable fields.
  *   Status is not part of this form: it's only changed from the View toolbar.
- * - **Draft** — the "+ New Issue" form (`issueDraft`); Save creates the issue then
+ *   A **Blocked reasons** textarea follows Description, shown only while the LIVE store
+ *   issue's status is `'blocked'` (a Board drag mid-edit shows/hides it); its state is
+ *   kept while hidden, still counts toward dirty, and is always sent on Save.
+ * - **Draft** — the "+ New Issue" form (`issueDraft`; no Blocked reasons field); Save creates the issue then
  *   selects it, Cancel discards directly via the new `cancelNewIssue` store action
  *   (an explicit Cancel click is not the same as the dirty-guard's discard prompt —
  *   it already means "discard", so it must not raise one).
@@ -17,7 +22,8 @@
  * Dirty tracking (`issueEditDirty`) is computed by comparing the live form fields
  * against their "original" (the current `issue`'s committed values in Edit mode,
  * blank in Draft mode) on every keystroke, and pushed to the store from the same
- * `onNameChange`/`onDescriptionChange`/`onProjectChange` handlers — not from a
+ * `onNameChange`/`onDescriptionChange`/`onBlockedReasonsChange`/`onProjectChange`
+ * handlers — not from a
  * reactive effect — so a store-driven transition into a fresh draft (started via
  * `startNewIssue`, or via `confirmDiscard`'s `'new'` branch, both of which already
  * reset `issueEditDirty` to `false` themselves) can't race with a leftover `dirty`
@@ -40,8 +46,9 @@
  * Board tabs — only `IssueList`/`KanbanBoard` swap next to it — so its local edit-form
  * state (`editing`, the field values, dirty tracking, …) survives a tab switch
  * untouched; a tab switch never resets `issueEditSession` either, so none of the
- * effects keyed on it fire. Its width is a fixed `ISSUE_VIEW_WIDTH_SHARE` of the
- * drawer, identical on both tabs (see that constant).
+ * effects keyed on it fire. Its width is a fixed share of the drawer that depends on the
+ * tab (`ISSUE_VIEW_WIDTH_SHARE`, see that constant): smaller on the Board so its five
+ * columns fit.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -76,11 +83,13 @@ const selectStyle: React.CSSProperties = { alignSelf: 'flex-start', minWidth: 22
 const CONTENT_MAX_WIDTH = 760
 
 /**
- * The issue-view pane's fixed share of the drawer width, identical on the List and Board
- * tabs (DESIGN §13.5). The List/Board pane fills the remaining ~39%. A fixed flex-basis
- * (`0 0 …`) rather than a grow weight keeps the share the same whatever sits beside it.
+ * The issue-view pane's fixed share of the drawer width, per tab (DESIGN §13.5). The
+ * List/Board pane fills the rest. The Board gets more room (60%) because its five columns
+ * need 5 × `COLUMN_MIN_WIDTH` (1100px) before it scrolls sideways; at the List's 39% the
+ * Done column sat off-screen behind the issue view. A fixed flex-basis (`0 0 …`) rather
+ * than a grow weight keeps each share exact whatever sits beside it.
  */
-const ISSUE_VIEW_WIDTH_SHARE = '61%'
+const ISSUE_VIEW_WIDTH_SHARE = { list: '61%', board: '40%' } as const
 
 /** Modest floor so the pane stays usable on a narrow window; not a content minimum. */
 const ISSUE_VIEW_MIN_WIDTH = 360
@@ -95,6 +104,7 @@ export function IssueDetail({
   const issueDraft = useStore((s) => s.issueDraft)
   const issueEditDirty = useStore((s) => s.issueEditDirty)
   const issueEditSession = useStore((s) => s.issueEditSession)
+  const drawerTab = useStore((s) => s.issuesDrawerTab)
   const setIssueEditDirty = useStore((s) => s.setIssueEditDirty)
   const cancelNewIssue = useStore((s) => s.cancelNewIssue)
 
@@ -105,6 +115,7 @@ export function IssueDetail({
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [projectPath, setProjectPath] = useState<string | undefined>(undefined)
+  const [blockedReasons, setBlockedReasons] = useState('')
 
   const [formBusy, setFormBusy] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
@@ -192,6 +203,7 @@ export function IssueDetail({
       setName('')
       setDescription('')
       setProjectPath(undefined)
+      setBlockedReasons('')
     }
   }, [cleanDraft])
 
@@ -199,20 +211,31 @@ export function IssueDetail({
   const origDescription = issueDraft ? '' : (issue?.description ?? '')
   const origProjectPath = issueDraft ? undefined : issue?.projectPath
 
-  const computeDirty = (n: string, d: string, p: string | undefined): boolean =>
-    n !== origName || d !== origDescription || (p ?? '') !== (origProjectPath ?? '')
+  const origBlockedReasons = issueDraft ? '' : (issue?.blockedReasons ?? '')
+
+  // Compared regardless of the issue's current status: a draft typed while Blocked and
+  // then hidden (status changed mid-edit) still counts as unsaved.
+  const computeDirty = (n: string, d: string, p: string | undefined, b: string): boolean =>
+    n !== origName ||
+    d !== origDescription ||
+    (p ?? '') !== (origProjectPath ?? '') ||
+    b !== origBlockedReasons
 
   const onNameChange = (value: string): void => {
     setName(value)
-    setIssueEditDirty(computeDirty(value, description, projectPath))
+    setIssueEditDirty(computeDirty(value, description, projectPath, blockedReasons))
   }
   const onDescriptionChange = (value: string): void => {
     setDescription(value)
-    setIssueEditDirty(computeDirty(name, value, projectPath))
+    setIssueEditDirty(computeDirty(name, value, projectPath, blockedReasons))
   }
   const onProjectChange = (value: string | undefined): void => {
     setProjectPath(value)
-    setIssueEditDirty(computeDirty(name, description, value))
+    setIssueEditDirty(computeDirty(name, description, value, blockedReasons))
+  }
+  const onBlockedReasonsChange = (value: string): void => {
+    setBlockedReasons(value)
+    setIssueEditDirty(computeDirty(name, description, projectPath, value))
   }
 
   const startEdit = (): void => {
@@ -220,6 +243,7 @@ export function IssueDetail({
     setName(issue.name)
     setDescription(issue.description)
     setProjectPath(issue.projectPath)
+    setBlockedReasons(issue.blockedReasons)
     setIssueEditDirty(false)
     setFormError(null)
     setEditing(true)
@@ -257,7 +281,8 @@ export function IssueDetail({
         issueId: issue.id,
         name: trimmedName,
         description,
-        projectPath: projectPath ?? null
+        projectPath: projectPath ?? null,
+        blockedReasons
       })
       .then(
         (ack) => {
@@ -421,7 +446,7 @@ export function IssueDetail({
   return (
     <div
       style={{
-        flex: `0 0 ${ISSUE_VIEW_WIDTH_SHARE}`,
+        flex: `0 0 ${ISSUE_VIEW_WIDTH_SHARE[drawerTab]}`,
         minWidth: ISSUE_VIEW_MIN_WIDTH,
         padding: 16,
         overflowY: 'auto'
@@ -469,6 +494,20 @@ export function IssueDetail({
                   onChange={(e) => onDescriptionChange(e.target.value)}
                 />
               </label>
+
+              {!issueDraft && issue?.status === 'blocked' ? (
+                <label style={labelStyle}>
+                  <span>Blocked reasons</span>
+                  <textarea
+                    aria-label="issue blocked reasons"
+                    value={blockedReasons}
+                    disabled={formBusy}
+                    rows={8}
+                    style={{ resize: 'vertical' }}
+                    onChange={(e) => onBlockedReasonsChange(e.target.value)}
+                  />
+                </label>
+              ) : null}
 
               <label style={labelStyle}>
                 <span>Project</span>
@@ -605,6 +644,34 @@ export function IssueDetail({
               </span>
 
               <IssueMarkdown source={issue!.description} />
+
+              {issue!.status === 'blocked' ? (
+                <section
+                  aria-label="blocked reasons"
+                  style={{
+                    borderTop: `1px solid ${color.border}`,
+                    paddingTop: 12,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8
+                  }}
+                >
+                  <h3
+                    style={{
+                      margin: 0,
+                      fontSize: fontSize.base,
+                      color: color.textSecondary
+                    }}
+                  >
+                    Blocked reasons
+                  </h3>
+                  {issue!.blockedReasons.trim() === '' ? (
+                    <p style={{ margin: 0, color: color.muted }}>No reason given</p>
+                  ) : (
+                    <IssueMarkdown source={issue!.blockedReasons} />
+                  )}
+                </section>
+              ) : null}
             </>
           )}
         </div>

@@ -1,6 +1,6 @@
 /**
  * Pure grouping for the Issues drawer's issue list ("Issues"). Issues are grouped by
- * status in a fixed order (Todo, In progress, In review, Done — all four always
+ * status in a fixed order (Todo, In progress, Blocked, In review, Done — all five always
  * present, even empty, so the list can render stable collapsible headers), newest
  * first within each group.
  *
@@ -19,7 +19,7 @@ export interface IssueGroup {
 
 /**
  * Group `issues` by status in the canonical {@link ISSUE_STATUS_ORDER} (Todo, In
- * progress, In review, Done). Every status appears, possibly with an empty `issues`
+ * progress, Blocked, In review, Done). Every status appears, possibly with an empty `issues`
  * array, so the UI always has a group to render a (collapsible) header for. Within a
  * group, issues sort newest first by `createdAt`; ties break on `id` (ascending) so
  * the order is deterministic even when two issues share a millisecond timestamp.

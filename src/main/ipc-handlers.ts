@@ -939,6 +939,9 @@ export function registerIpcHandlers(
     if (input.description !== undefined && typeof input.description !== 'string') {
       return ack({ ok: false, error: 'Invalid issue description' })
     }
+    if (input.blockedReasons !== undefined && typeof input.blockedReasons !== 'string') {
+      return ack({ ok: false, error: 'Invalid issue blocked reasons' })
+    }
     const status = parseIssueStatusInput(input.status)
     if (status.error) {
       return ack({ ok: false, error: status.error })
@@ -951,7 +954,8 @@ export function registerIpcHandlers(
         description: input.description,
         // `null` explicitly clears the project; `undefined`/omitted leaves it as is.
         projectPath: input.projectPath,
-        status: status.status
+        status: status.status,
+        blockedReasons: input.blockedReasons
       }
     })
     return ack(result)

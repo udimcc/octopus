@@ -8,6 +8,7 @@ function issue(id: string, over: Partial<IssueDTO> = {}): IssueDTO {
     name: id,
     description: '',
     status: 'todo',
+    blockedReasons: '',
     createdAt: 1000,
     updatedAt: 1000,
     source: 'local',
@@ -16,21 +17,29 @@ function issue(id: string, over: Partial<IssueDTO> = {}): IssueDTO {
 }
 
 describe('groupIssuesByStatus', () => {
-  it('always returns all four groups, in the fixed Todo/In progress/In review/Done order', () => {
+  it('always returns all five groups, in the fixed Todo/In progress/Blocked/In review/Done order', () => {
     const groups = groupIssuesByStatus([])
-    expect(groups.map((g) => g.status)).toEqual(['todo', 'in_progress', 'in_review', 'done'])
+    expect(groups.map((g) => g.status)).toEqual([
+      'todo',
+      'in_progress',
+      'blocked',
+      'in_review',
+      'done'
+    ])
     for (const g of groups) expect(g.issues).toEqual([])
   })
 
   it('buckets each issue into its own status group only', () => {
     const todo = issue('t1', { status: 'todo' })
     const inProgress = issue('p1', { status: 'in_progress' })
+    const blocked = issue('b1', { status: 'blocked' })
     const inReview = issue('r1', { status: 'in_review' })
     const done = issue('d1', { status: 'done' })
-    const groups = groupIssuesByStatus([todo, inProgress, inReview, done])
+    const groups = groupIssuesByStatus([todo, inProgress, blocked, inReview, done])
     const byStatus = Object.fromEntries(groups.map((g) => [g.status, g.issues]))
     expect(byStatus.todo).toEqual([todo])
     expect(byStatus.in_progress).toEqual([inProgress])
+    expect(byStatus.blocked).toEqual([blocked])
     expect(byStatus.in_review).toEqual([inReview])
     expect(byStatus.done).toEqual([done])
   })

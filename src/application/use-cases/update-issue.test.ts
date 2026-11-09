@@ -65,6 +65,61 @@ describe('updateIssue ("Issues" §13)', () => {
     })
   })
 
+  it('patches blockedReasons: persisted, published, and untouched by a status-only patch', () => {
+    const { deps, workspace, persistence, bus } = makeDeps()
+    const { issueId } = createIssue(deps, { name: 'Orig', description: 'd' })
+    const id = issueId!
+    expect(workspace.issue(id)!.blockedReasons).toBe('')
+
+    expect(
+      updateIssue(deps, {
+        issueId: id,
+        blockedReasons: 'waiting on X',
+        status: IssueStatus.Blocked
+      })
+    ).toEqual({ ok: true })
+    expect(workspace.issue(id)!.blockedReasons).toBe('waiting on X')
+    expect(persistence.issues.get(id)).toMatchObject({
+      status: IssueStatus.Blocked,
+      blockedReasons: 'waiting on X'
+    })
+    expect(bus.ofType('issueUpserted').at(-1)?.issue).toMatchObject({
+      blockedReasons: 'waiting on X'
+    })
+
+    // Status-only patch away from Blocked leaves the reasons alone.
+    updateIssue(deps, { issueId: id, status: IssueStatus.InProgress })
+    expect(workspace.issue(id)!.blockedReasons).toBe('waiting on X')
+    expect(persistence.issues.get(id)?.blockedReasons).toBe('waiting on X')
+
+    // A name-only patch also leaves them alone.
+    updateIssue(deps, { issueId: id, name: 'Renamed' })
+    expect(workspace.issue(id)!.blockedReasons).toBe('waiting on X')
+  })
+
+  it('stores whitespace-only blockedReasons as given and allows clearing to empty', () => {
+    const { deps, workspace } = makeDeps()
+    const id = createIssue(deps, { name: 'Orig', description: '' }).issueId!
+    updateIssue(deps, { issueId: id, blockedReasons: '  \n\t ' })
+    expect(workspace.issue(id)!.blockedReasons).toBe('  \n\t ')
+    updateIssue(deps, { issueId: id, blockedReasons: '' })
+    expect(workspace.issue(id)!.blockedReasons).toBe('')
+  })
+
+  it('restores blockedReasons if upsertIssue throws', () => {
+    const { deps, workspace, persistence } = makeDeps()
+    const id = createIssue(deps, { name: 'Orig', description: '' }).issueId!
+    updateIssue(deps, { issueId: id, blockedReasons: 'original reason' })
+    persistence.upsertIssue = () => {
+      throw new Error('disk full')
+    }
+    expect(() =>
+      updateIssue(deps, { issueId: id, blockedReasons: 'new reason', status: IssueStatus.Blocked })
+    ).toThrow('disk full')
+    expect(workspace.issue(id)!.blockedReasons).toBe('original reason')
+    expect(workspace.issue(id)!.status).toBe(IssueStatus.Todo)
+  })
+
   it('projectPath: null explicitly clears the project; omitted leaves it as-is', () => {
     const { deps, workspace, persistence, bus, settings } = makeDeps()
     settings.save({ projects: [{ path: '/configured' }] })

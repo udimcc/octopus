@@ -65,6 +65,7 @@ export function IssueList(): React.JSX.Element {
   const [collapsed, setCollapsed] = useState<Readonly<Record<IssueStatusDTO, boolean>>>({
     todo: false,
     in_progress: false,
+    blocked: false,
     in_review: false,
     done: true
   })

@@ -128,7 +128,7 @@ describe('issue status validation at the IPC edge ("Issues", §13.4)', () => {
     const create = (): ((event: unknown, input: unknown) => unknown) =>
       handlerFor(CHANNELS.issueCreate)
 
-    it.each(['todo', 'in_progress', 'in_review', 'done'])(
+    it.each(['todo', 'in_progress', 'blocked', 'in_review', 'done'])(
       'accepts the valid status %s and forwards it to the command loop unchanged',
       async (status) => {
         const ack = (await create()({}, { name: 'n', description: 'd', status })) as {
@@ -186,7 +186,7 @@ describe('issue status validation at the IPC edge ("Issues", §13.4)', () => {
     const update = (): ((event: unknown, input: unknown) => unknown) =>
       handlerFor(CHANNELS.issueUpdate)
 
-    it.each(['todo', 'in_progress', 'in_review', 'done'])(
+    it.each(['todo', 'in_progress', 'blocked', 'in_review', 'done'])(
       'accepts the valid status %s and forwards it to the command loop unchanged',
       async (status) => {
         const ack = (await update()({}, { issueId: 'i1', status })) as {
@@ -226,6 +226,20 @@ describe('issue status validation at the IPC edge ("Issues", §13.4)', () => {
       expect(dispatched).toHaveLength(0)
     })
 
+    it('forwards a string blockedReasons (including empty) to the command loop', async () => {
+      for (const blockedReasons of ['why', '']) {
+        dispatched.length = 0
+        const ack = (await update()({}, { issueId: 'i1', blockedReasons, status: 'blocked' })) as {
+          ok: boolean
+        }
+        expect(ack.ok).toBe(true)
+        expect(dispatched[0]).toMatchObject({
+          kind: 'updateIssue',
+          input: { issueId: 'i1', blockedReasons, status: 'blocked' }
+        })
+      }
+    })
+
     it('status is checked after name/description pass, and still blocks dispatch on its own', async () => {
       // name/description checks run before the status check in the real handler;
       // this asserts status still blocks dispatch on its own when those are fine.
@@ -249,6 +263,21 @@ describe('issue status validation at the IPC edge ("Issues", §13.4)', () => {
         'description is an object',
         { issueId: 'i1', description: { not: 'a description' } },
         'Invalid issue description'
+      ],
+      [
+        'blockedReasons is a number',
+        { issueId: 'i1', blockedReasons: 42 },
+        'Invalid issue blocked reasons'
+      ],
+      [
+        'blockedReasons is an object',
+        { issueId: 'i1', blockedReasons: { not: 'a string' } },
+        'Invalid issue blocked reasons'
+      ],
+      [
+        'blockedReasons is null',
+        { issueId: 'i1', blockedReasons: null },
+        'Invalid issue blocked reasons'
       ]
     ])('rejects when %s, never reaching the command loop', async (_label, input, expectedError) => {
       const ack = (await update()({}, input)) as { ok: boolean; error?: string }

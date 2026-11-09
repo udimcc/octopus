@@ -42,9 +42,10 @@ describe('Issue.create / rename (name validation)', () => {
 })
 
 describe('parseIssueStatus', () => {
-  it('accepts all four valid status strings', () => {
+  it('accepts all five valid status strings', () => {
     expect(parseIssueStatus('todo')).toBe(IssueStatus.Todo)
     expect(parseIssueStatus('in_progress')).toBe(IssueStatus.InProgress)
+    expect(parseIssueStatus('blocked')).toBe(IssueStatus.Blocked)
     expect(parseIssueStatus('in_review')).toBe(IssueStatus.InReview)
     expect(parseIssueStatus('done')).toBe(IssueStatus.Done)
   })
@@ -59,6 +60,42 @@ describe('parseIssueStatus', () => {
     expect(parseIssueStatus(123)).toBeUndefined()
     expect(parseIssueStatus('')).toBeUndefined()
     expect(parseIssueStatus({ status: 'todo' })).toBeUndefined()
+  })
+})
+
+describe('Issue — blocked reasons', () => {
+  it('defaults blockedReasons to empty and accepts them at create', () => {
+    expect(create().blockedReasons).toBe('')
+    expect(create({ blockedReasons: 'waiting on infra' }).blockedReasons).toBe('waiting on infra')
+  })
+
+  it('setBlockedReasons changes only blockedReasons, storing whitespace as given', () => {
+    const issue = create()
+    const before = issue.toSnapshot()
+    issue.setBlockedReasons('   \n ')
+    expect(issue.blockedReasons).toBe('   \n ')
+    expect(issue.name).toBe(before.name)
+    expect(issue.description).toBe(before.description)
+    expect(issue.status).toBe(before.status)
+    expect(issue.updatedAt).toBe(before.updatedAt)
+  })
+
+  it('setStatus away from (and to) Blocked keeps the reasons', () => {
+    const issue = create({ blockedReasons: 'need review' })
+    issue.setStatus(IssueStatus.Blocked)
+    expect(issue.blockedReasons).toBe('need review')
+    issue.setStatus(IssueStatus.InProgress)
+    expect(issue.status).toBe(IssueStatus.InProgress)
+    expect(issue.blockedReasons).toBe('need review')
+  })
+
+  it('round-trips through toSnapshot / fromSnapshot with Blocked + reasons', () => {
+    const issue = create({ blockedReasons: 'a\n- b' })
+    issue.setStatus(IssueStatus.Blocked)
+    const snap = issue.toSnapshot()
+    expect(snap.blockedReasons).toBe('a\n- b')
+    expect(snap.status).toBe(IssueStatus.Blocked)
+    expect(Issue.fromSnapshot(snap).toSnapshot()).toEqual(snap)
   })
 })
 

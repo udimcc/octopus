@@ -118,7 +118,9 @@ export class SqliteStore implements WorkspacePersistence {
       // `idx_issues_jira_key` (schema.ts) and on the v10 `Migration` entry for why
       // either of those would break on some upgrade path. By this point every DB
       // shape (fresh, v7, v8, v9, already-v10) has the `jira_key` column, so this
-      // single `IF NOT EXISTS` call is unconditionally safe.
+      // single `IF NOT EXISTS` call is unconditionally safe. v12 (Blocked status)
+      // rebuilds `issues` (DROP + RENAME), which drops this index with the old
+      // table — so on a v11 -> v12 upgrade this call is what re-creates it.
       db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_jira_key ON issues(jira_key)')
 
       // Safe to stamp: the guard above rejected `fromVersion > SCHEMA_VERSION`, so this
@@ -243,15 +245,16 @@ export class SqliteStore implements WorkspacePersistence {
     const row = issueToRow(issue)
     this.db
       .prepare(
-        `INSERT INTO issues (id, name, description, project_path, status, task_id, created_at, updated_at, source, jira_key)
-         VALUES (@id, @name, @description, @project_path, @status, @task_id, @created_at, @updated_at, @source, @jira_key)
+        `INSERT INTO issues (id, name, description, project_path, status, task_id, created_at, updated_at, source, jira_key, blocked_reasons)
+         VALUES (@id, @name, @description, @project_path, @status, @task_id, @created_at, @updated_at, @source, @jira_key, @blocked_reasons)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name,
            description = excluded.description,
            project_path = excluded.project_path,
            status = excluded.status,
            task_id = excluded.task_id,
-           updated_at = excluded.updated_at`
+           updated_at = excluded.updated_at,
+           blocked_reasons = excluded.blocked_reasons`
       )
       .run(row)
   }

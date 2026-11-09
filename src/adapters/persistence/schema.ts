@@ -58,9 +58,12 @@
  * owner (main or a view), making today's implicit "every secondary belongs to
  * main" link explicit. Both are nullable. The `role` CHECK must also admit
  * `'view'`, and SQLite cannot alter a CHECK in place, so v11 REBUILDS the table
- * (guarded like v10 — see the v11 {@link Migration} entry).
+ * (guarded like v10 — see the v11 {@link Migration} entry). 11 → 12 (Blocked
+ * issue status) to add `issues.blocked_reasons` (`TEXT NOT NULL DEFAULT ''`) and
+ * widen the `issues.status` CHECK to admit `'blocked'`; the CHECK is unalterable,
+ * so v12 REBUILDS `issues` (guarded like v10/v11 — see the v12 {@link Migration}).
  */
-export const SCHEMA_VERSION = 11
+export const SCHEMA_VERSION = 12
 
 /**
  * Connection pragmas applied on every open. `foreign_keys` is per-connection
@@ -145,12 +148,13 @@ export const SCHEMA_STATEMENTS: readonly string[] = Object.freeze([
      name TEXT NOT NULL,
      description TEXT NOT NULL DEFAULT '',
      project_path TEXT,
-     status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo','in_progress','in_review','done')),
+     status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo','in_progress','blocked','in_review','done')),
      task_id TEXT UNIQUE REFERENCES tasks(id) ON DELETE SET NULL,
      created_at INTEGER NOT NULL,
      updated_at INTEGER NOT NULL,
      source TEXT NOT NULL DEFAULT 'local' CHECK(source IN ('local','jira')),
-     jira_key TEXT CHECK((source = 'jira') = (jira_key IS NOT NULL))
+     jira_key TEXT CHECK((source = 'jira') = (jira_key IS NOT NULL)),
+     blocked_reasons TEXT NOT NULL DEFAULT ''
    )`,
   // NOTE: `idx_issues_jira_key` (the UNIQUE index on `issues.jira_key`, v10) is
   // deliberately NOT listed here, unlike every other index in this file. These
@@ -385,6 +389,39 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
          SELECT id, role, x, y, width, height, created_at FROM windows`,
       'DROP TABLE windows',
       'ALTER TABLE windows_v11 RENAME TO windows'
+    ])
+  },
+  // v12 (Blocked issue status): `issues.blocked_reasons` and a `status` CHECK that
+  // admits `'blocked'`. SQLite cannot alter a CHECK, so this rebuilds the table
+  // (create new, copy, drop, rename). Safe inside the open-time transaction with
+  // foreign_keys ON: `issues` has only an OUTGOING FK (task_id -> tasks) and nothing
+  // references `issues`, so DROP TABLE has no child rows to cascade/violate.
+  // Guarded with `unlessColumnExists` like v10/v11: a pre-Issues (v7) DB gets
+  // `issues` from the bootstrap `CREATE TABLE IF NOT EXISTS` already in its v12
+  // shape, so there is nothing to rebuild. The UNIQUE `idx_issues_jira_key` index
+  // is dropped together with the old table and re-created by `SqliteStore.create`
+  // after the migrations run (it is deliberately not part of this statement list).
+  {
+    toVersion: 12,
+    unlessColumnExists: { table: 'issues', column: 'blocked_reasons' },
+    statements: Object.freeze([
+      `CREATE TABLE issues_v12 (
+         id TEXT PRIMARY KEY,
+         name TEXT NOT NULL,
+         description TEXT NOT NULL DEFAULT '',
+         project_path TEXT,
+         status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo','in_progress','blocked','in_review','done')),
+         task_id TEXT UNIQUE REFERENCES tasks(id) ON DELETE SET NULL,
+         created_at INTEGER NOT NULL,
+         updated_at INTEGER NOT NULL,
+         source TEXT NOT NULL DEFAULT 'local' CHECK(source IN ('local','jira')),
+         jira_key TEXT CHECK((source = 'jira') = (jira_key IS NOT NULL)),
+         blocked_reasons TEXT NOT NULL DEFAULT ''
+       )`,
+      `INSERT INTO issues_v12 (id, name, description, project_path, status, task_id, created_at, updated_at, source, jira_key)
+         SELECT id, name, description, project_path, status, task_id, created_at, updated_at, source, jira_key FROM issues`,
+      'DROP TABLE issues',
+      'ALTER TABLE issues_v12 RENAME TO issues'
     ])
   }
 ])

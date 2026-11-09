@@ -16,6 +16,7 @@ function issue(id: string, over: Partial<IssueDTO> = {}): IssueDTO {
     name: id,
     description: '',
     status: 'todo',
+    blockedReasons: '',
     createdAt: 1000,
     updatedAt: 1000,
     source: 'local',
@@ -75,6 +76,8 @@ describe('<IssueList>', () => {
       issue('t1', { status: 'todo' }),
       issue('t2', { status: 'todo' }),
       issue('p1', { status: 'in_progress' }),
+      issue('b1', { status: 'blocked' }),
+      issue('b2', { status: 'blocked' }),
       issue('r1', { status: 'in_review' }),
       issue('r2', { status: 'in_review' }),
       issue('r3', { status: 'in_review' }),
@@ -83,15 +86,17 @@ describe('<IssueList>', () => {
     render(<IssueList />)
     const todo = groupHeader('Todo')
     const inProgress = groupHeader('In progress')
+    const blocked = groupHeader('Blocked')
     const inReview = groupHeader('In review')
     const done = groupHeader('Done')
     // Document order follows the fixed status order. Group headers are the only
     // buttons carrying `aria-expanded` (rows carry `aria-pressed` instead) — an
     // ARIA-attribute filter rather than a className one.
     const all = screen.getAllByRole('button').filter((b) => b.hasAttribute('aria-expanded'))
-    expect(all).toEqual([todo, inProgress, inReview, done])
+    expect(all).toEqual([todo, inProgress, blocked, inReview, done])
     expect(todo.textContent).toContain('2')
     expect(inProgress.textContent).toContain('1')
+    expect(blocked.textContent).toContain('2')
     expect(inReview.textContent).toContain('3')
     expect(done.textContent).toContain('1')
   })
@@ -144,7 +149,7 @@ describe('<IssueList>', () => {
   })
 
   it('each row shows the status icon and the issue name', () => {
-    const statuses: IssueStatusDTO[] = ['todo', 'in_progress', 'in_review', 'done']
+    const statuses: IssueStatusDTO[] = ['todo', 'in_progress', 'blocked', 'in_review', 'done']
     seed(statuses.map((status, i) => issue(`i${i}`, { status, name: `Issue ${i}` })))
     render(<IssueList />)
     // Expand Done to see its row too.

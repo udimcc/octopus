@@ -153,6 +153,7 @@ export function toIssueDTO(i: IssueSnapshot): IssueDTO {
     description: i.description,
     projectPath: i.projectPath,
     status: i.status,
+    blockedReasons: i.blockedReasons,
     taskId: i.taskId,
     createdAt: i.createdAt,
     updatedAt: i.updatedAt,

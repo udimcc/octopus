@@ -13,6 +13,7 @@ function issue(id: string, over: Partial<IssueDTO> = {}): IssueDTO {
     name: id,
     description: '',
     status: 'todo',
+    blockedReasons: '',
     createdAt: 1000,
     updatedAt: 1000,
     source: 'local',
@@ -274,7 +275,8 @@ describe('<IssueDetail>', () => {
       issueId: 'i1',
       name: 'New name',
       description: 'old',
-      projectPath: null
+      projectPath: null,
+      blockedReasons: ''
     })
     await waitFor(() => expect(screen.queryByLabelText('issue name')).not.toBeInTheDocument())
   })
@@ -321,6 +323,202 @@ describe('<IssueDetail>', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(useStore.getState().issueDraft).toBe(false)
     expect(useStore.getState().discardPrompt).toBeNull()
+  })
+
+  describe('blocked reasons', () => {
+    const REASONS = 'Waiting on **infra**'
+
+    function openBlocked(over: Partial<IssueDTO> = {}): void {
+      seed([issue('i1', { status: 'blocked', blockedReasons: REASONS, ...over })])
+      act(() => useStore.getState().selectIssue('i1'))
+      renderDetail()
+    }
+
+    it('view: a Blocked issue shows the "Blocked reasons" section rendered as markdown', () => {
+      openBlocked()
+      const section = screen.getByRole('region', { name: 'blocked reasons' })
+      expect(within(section).getByRole('heading', { name: 'Blocked reasons' })).toBeInTheDocument()
+      expect(within(section).getByText('infra').tagName).toBe('STRONG')
+      expect(within(section).queryByText('No reason given')).not.toBeInTheDocument()
+    })
+
+    it.each([
+      ['empty', ''],
+      ['whitespace-only', '  \n\t ']
+    ])('view: a Blocked issue with %s reasons shows the placeholder', (_l, reasons) => {
+      openBlocked({ blockedReasons: reasons })
+      const section = screen.getByRole('region', { name: 'blocked reasons' })
+      expect(within(section).getByText('No reason given')).toBeInTheDocument()
+    })
+
+    it.each(['todo', 'in_progress', 'in_review', 'done'] as const)(
+      'view: a %s issue hides the section even if reasons are stored',
+      (status) => {
+        openBlocked({ status })
+        expect(screen.queryByRole('region', { name: 'blocked reasons' })).not.toBeInTheDocument()
+        expect(screen.queryByText('Blocked reasons')).not.toBeInTheDocument()
+        expect(screen.queryByText('infra')).not.toBeInTheDocument()
+      }
+    )
+
+    it('view: the section comes after the description', () => {
+      openBlocked({ description: 'Body text' })
+      const desc = screen.getByText('Body text')
+      const section = screen.getByRole('region', { name: 'blocked reasons' })
+      expect(desc.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    })
+
+    it('edit: the field sits between Description and Project', () => {
+      openBlocked()
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      const desc = screen.getByLabelText('issue description')
+      const field = screen.getByLabelText('issue blocked reasons')
+      const project = screen.getByLabelText('issue project')
+      expect(desc.compareDocumentPosition(field) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(field.compareDocumentPosition(project) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    })
+
+    it('Edit-save of a non-Blocked issue retains its stored reasons in the payload', () => {
+      seed([issue('i1', { status: 'todo', blockedReasons: 'R' })])
+      act(() => useStore.getState().selectIssue('i1'))
+      renderDetail()
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      fireEvent.change(screen.getByLabelText('issue name'), { target: { value: 'Renamed' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(window.octopusAPI.issues.update).toHaveBeenCalledWith({
+        issueId: 'i1',
+        name: 'Renamed',
+        description: '',
+        projectPath: null,
+        blockedReasons: 'R'
+      })
+    })
+
+    it('edit: the field is prefilled on a Blocked issue, and absent on a non-Blocked one', () => {
+      openBlocked()
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      expect(screen.getByLabelText('issue blocked reasons')).toHaveValue(REASONS)
+    })
+
+    it('edit: the field is absent on a non-Blocked issue', () => {
+      seed([issue('i2', { status: 'todo', blockedReasons: REASONS })])
+      act(() => useStore.getState().selectIssue('i2'))
+      renderDetail()
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      expect(screen.queryByLabelText('issue blocked reasons')).not.toBeInTheDocument()
+    })
+
+    it('edit: the field appears/disappears when the live status changes mid-edit', () => {
+      seed([issue('i1', { status: 'todo' })])
+      act(() => useStore.getState().selectIssue('i1'))
+      renderDetail()
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      expect(screen.queryByLabelText('issue blocked reasons')).not.toBeInTheDocument()
+
+      // A Board drag lands while the form is open.
+      act(() =>
+        useStore
+          .getState()
+          .applyEvent({ type: 'issueUpserted', issue: issue('i1', { status: 'blocked' }) })
+      )
+      expect(screen.getByLabelText('issue blocked reasons')).toBeInTheDocument()
+
+      act(() =>
+        useStore
+          .getState()
+          .applyEvent({ type: 'issueUpserted', issue: issue('i1', { status: 'in_progress' }) })
+      )
+      expect(screen.queryByLabelText('issue blocked reasons')).not.toBeInTheDocument()
+    })
+
+    it('a typed-then-hidden draft is still dirty and is still sent on Save', () => {
+      openBlocked({ blockedReasons: '' })
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      fireEvent.change(screen.getByLabelText('issue blocked reasons'), {
+        target: { value: 'typed reason' }
+      })
+      expect(useStore.getState().issueEditDirty).toBe(true)
+
+      act(() =>
+        useStore.getState().applyEvent({
+          type: 'issueUpserted',
+          issue: issue('i1', { status: 'in_progress', blockedReasons: '' })
+        })
+      )
+      expect(screen.queryByLabelText('issue blocked reasons')).not.toBeInTheDocument()
+      // Recompute dirty via the name handler: reasons must count although hidden.
+      const name = screen.getByLabelText('issue name')
+      fireEvent.change(name, { target: { value: 'tmp' } })
+      fireEvent.change(name, { target: { value: 'i1' } })
+      expect(useStore.getState().issueEditDirty).toBe(true)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(window.octopusAPI.issues.update).toHaveBeenCalledWith({
+        issueId: 'i1',
+        name: 'i1',
+        description: '',
+        projectPath: null,
+        blockedReasons: 'typed reason'
+      })
+    })
+
+    it('typing in the field sets dirty; reverting clears it', () => {
+      openBlocked()
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      const field = screen.getByLabelText('issue blocked reasons')
+      fireEvent.change(field, { target: { value: 'x' } })
+      expect(useStore.getState().issueEditDirty).toBe(true)
+      fireEvent.change(field, { target: { value: REASONS } })
+      expect(useStore.getState().issueEditDirty).toBe(false)
+    })
+
+    it('Save sends the edited blockedReasons, whitespace untouched', () => {
+      openBlocked()
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      fireEvent.change(screen.getByLabelText('issue blocked reasons'), {
+        target: { value: '  spaced  \n' }
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(window.octopusAPI.issues.update).toHaveBeenCalledWith(
+        expect.objectContaining({ issueId: 'i1', blockedReasons: '  spaced  \n' })
+      )
+    })
+
+    it('Cancel restores the original reasons on the next Edit', () => {
+      openBlocked()
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      fireEvent.change(screen.getByLabelText('issue blocked reasons'), {
+        target: { value: 'changed' }
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      expect(useStore.getState().issueEditDirty).toBe(false)
+      expect(window.octopusAPI.issues.update).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      expect(screen.getByLabelText('issue blocked reasons')).toHaveValue(REASONS)
+    })
+
+    it('the status select offers Blocked and persists it immediately', () => {
+      seed([issue('i1', { status: 'todo' })])
+      act(() => useStore.getState().selectIssue('i1'))
+      renderDetail()
+      fireEvent.change(screen.getByLabelText('issue status'), { target: { value: 'blocked' } })
+      expect(window.octopusAPI.issues.update).toHaveBeenCalledWith({
+        issueId: 'i1',
+        status: 'blocked'
+      })
+    })
+
+    it('draft form has no Blocked reasons field and create sends no reasons', () => {
+      seed([])
+      installStubBridge({ ack: () => ({ ok: true, issueId: 'new1' }) })
+      act(() => useStore.getState().startNewIssue())
+      renderDetail()
+      expect(screen.queryByLabelText('issue blocked reasons')).not.toBeInTheDocument()
+      fireEvent.change(screen.getByLabelText('issue name'), { target: { value: 'N' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      const arg = vi.mocked(window.octopusAPI.issues.create).mock.calls[0][0]
+      expect(arg).not.toHaveProperty('blockedReasons')
+    })
   })
 
   describe('edit-flow dirty tracking', () => {
@@ -418,7 +616,8 @@ describe('<IssueDetail>', () => {
         issueId: 'i1',
         name: 'Fix the bug',
         description: '',
-        projectPath: null
+        projectPath: null,
+        blockedReasons: ''
       })
     })
   })

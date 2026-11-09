@@ -46,6 +46,21 @@ describe('importJiraIssues ("Jira import")', () => {
     expect(workspace.issues()).toHaveLength(1)
   })
 
+  it('re-import of an imported issue that is now Blocked with reasons is skipped as unchanged and keeps its data', () => {
+    const { deps, workspace } = makeDeps()
+    importJiraIssues(deps, { issues: [jiraIssue({ key: 'PROJ-1' })] })
+    const [imported] = workspace.issues()
+    imported.setBlockedReasons('waiting on infra')
+    imported.setStatus(IssueStatus.Blocked)
+
+    const result = importJiraIssues(deps, { issues: [jiraIssue({ key: 'PROJ-1' })] })
+
+    expect(result).toMatchObject({ ok: true, importedCount: 0, skippedKeys: ['PROJ-1'] })
+    expect(workspace.issues()).toHaveLength(1)
+    expect(workspace.issues()[0].status).toBe(IssueStatus.Blocked)
+    expect(workspace.issues()[0].blockedReasons).toBe('waiting on infra')
+  })
+
   it('re-classifies against the CURRENT workspace, not a stale snapshot the caller might pass stale data for', () => {
     const { deps, workspace } = makeDeps()
     importJiraIssues(deps, { issues: [jiraIssue({ key: 'PROJ-1' })] })

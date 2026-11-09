@@ -71,8 +71,11 @@ Issues are created manually and stored locally. They survive restart.
 - **Status**: one of a fixed set, each with its own icon. Users cannot add or remove statuses.
   1. **Todo** (the default for a new issue)
   2. **In progress**
-  3. **In review**
-  4. **Done**
+  3. **Blocked**
+  4. **In review**
+  5. **Done**
+- **Blocked reasons** (only while the status is **Blocked**): why the issue is blocked, written and shown
+  as markdown. See *Blocked reasons* below.
 - **Source**: **Local** or **Jira**. Read-only; the user can never change it. Every issue created by hand
   is Local. See *Importing from Jira* below.
 
@@ -148,12 +151,13 @@ right.
   - The window opens on the last-used tab for the current app run, and on **List** after a restart.
   - Both tabs share one selection. Switching tabs keeps the same issue open, including unsaved
     edits, and never asks "Discard unsaved changes?".
-- **Width:** the issue view takes a fixed share of the drawer (about 61%), the same on both tabs, with
-  a minimum width so it stays usable on a narrow window, and scales with the window. The list or the
+- **Width:** the issue view takes a fixed share of the drawer: about 61% on the List tab and about
+  40% on the Board tab, so all five columns fit. It has a minimum width so it stays usable on a
+  narrow window, and scales with the window. The list or the
   board fills the rest. With no issue selected, the issue view keeps its width and shows "Select an
   issue, or create a new one."
 - **Issue list** (List tab):
-  - Issues are grouped by status, in the order Todo, In progress, In review, Done.
+  - Issues are grouped by status, in the order Todo, In progress, Blocked, In review, Done.
   - Each group can be collapsed. **Done** starts collapsed.
   - Within a group, issues are shown newest first.
   - Each row shows the status icon, the name, a one-line preview of the description, and (when
@@ -169,12 +173,25 @@ right.
   - Below the name, a toolbar holds the **status** dropdown and the buttons: **Edit**, **Create
     task**, **Link task**, **Unlink task** (shown when bound) and **Delete**. As in Jira, the status
     is changed right there, at any time, and is not part of the Edit form.
-  - Status icons: Todo is a dashed circle, In progress a play mark, In review an eye, Done a check.
+  - Status icons: Todo is a dashed circle, In progress a play mark, Blocked a red no-entry circle, In review an eye,
+    Done a check.
+
+- **Blocked reasons** (issue view):
+  - Shown only while the status is **Blocked**, below the description behind a divider, rendered as
+    markdown like the description. When empty it shows "No reason given".
+  - Edited only via **Edit**, as a field right after Description, with the normal edit behavior
+    (Save/Cancel, "Discard unsaved changes?").
+  - Changing the status away from Blocked hides the reasons but keeps them; returning to Blocked
+    shows them again. They are never cleared automatically, only by the user editing them to empty.
+  - A status change while editing (e.g. a Board drag) hides or shows the field live. The unsaved
+    draft is kept, still counts as unsaved, and is saved on Save.
+  - Not shown in List rows or Board cards (only the status icon). Not part of the new-issue draft
+    (new issues start as Todo).
 
 **Board:** the same issues as status columns, so the user sees where all the work stands at a glance
 and moves an issue to a new status by dragging its card.
 
-- **Columns:** Todo, In progress, In review, Done, always in that order, equal width and always
+- **Columns:** Todo, In progress, Blocked, In review, Done, always in that order, equal width and always
   expanded (Done included).
   - Each header shows the status icon, the status name and a count.
   - Each column scrolls vertically on its own. Columns keep a minimum readable width; below it the

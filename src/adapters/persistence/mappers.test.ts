@@ -449,6 +449,7 @@ function issueSnapshot(over: Partial<IssueSnapshot> = {}): IssueSnapshot {
     id: asIssueId('i1'),
     name: 'issue',
     description: 'desc',
+    blockedReasons: '',
     projectPath: '/repo',
     status: IssueStatus.InProgress,
     taskId: asTaskId('t1'),
@@ -472,10 +473,24 @@ describe('issueToRow / rowToIssueSnapshot (I19, v8; source/jira_key, v10)', () =
       created_at: 10,
       updated_at: 20,
       source: 'local',
-      jira_key: null
+      jira_key: null,
+      blocked_reasons: ''
     })
     const restored = rowToIssueSnapshot(row)
     expect(restored).toEqual(issueSnapshot())
+  })
+
+  it('round-trips Blocked status with reasons', () => {
+    const original = issueSnapshot({ status: IssueStatus.Blocked, blockedReasons: 'stuck\n- on X' })
+    const row = issueToRow(original)
+    expect(row.status).toBe('blocked')
+    expect(row.blocked_reasons).toBe('stuck\n- on X')
+    expect(rowToIssueSnapshot(row)).toEqual(original)
+  })
+
+  it('maps a null/non-string blocked_reasons to empty string', () => {
+    const row = { ...issueToRow(issueSnapshot()), blocked_reasons: null } as unknown as IssueRow
+    expect(rowToIssueSnapshot(row).blockedReasons).toBe('')
   })
 
   it('round-trips a jira issue, keeping the jira_key', () => {
@@ -515,7 +530,8 @@ describe('issueToRow / rowToIssueSnapshot (I19, v8; source/jira_key, v10)', () =
       created_at: 1,
       updated_at: 1,
       source: 'local',
-      jira_key: null
+      jira_key: null,
+      blocked_reasons: ''
     }
     expect(rowToIssueSnapshot(row).status).toBe(IssueStatus.Todo)
   })
@@ -531,7 +547,8 @@ describe('issueToRow / rowToIssueSnapshot (I19, v8; source/jira_key, v10)', () =
       created_at: 1,
       updated_at: 1,
       source: 'bogus-not-a-real-source',
-      jira_key: null
+      jira_key: null,
+      blocked_reasons: ''
     }
     expect(rowToIssueSnapshot(row).source).toBe(IssueSource.Local)
   })

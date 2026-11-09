@@ -74,6 +74,7 @@ const issue: IssueSnapshot = {
   id: asIssueId('i1'),
   name: 'Fix the thing',
   description: 'Some *markdown*',
+  blockedReasons: '',
   projectPath: '/repo/a',
   status: IssueStatus.InProgress,
   taskId: asTaskId('t1'),
@@ -118,6 +119,7 @@ describe('snapshot → DTO mappers (§5.2)', () => {
       id: 'i1',
       name: 'Fix the thing',
       description: 'Some *markdown*',
+      blockedReasons: '',
       projectPath: '/repo/a',
       status: 'in_progress',
       taskId: 't1',
@@ -125,6 +127,16 @@ describe('snapshot → DTO mappers (§5.2)', () => {
       updatedAt: 400,
       source: 'local'
     })
+  })
+
+  it('maps a Blocked issue with its reasons', () => {
+    const dto = toIssueDTO({
+      ...issue,
+      status: IssueStatus.Blocked,
+      blockedReasons: 'waiting\n- X'
+    })
+    expect(dto.status).toBe('blocked')
+    expect(dto.blockedReasons).toBe('waiting\n- X')
   })
 
   it('maps an unbound, project-less issue, leaving projectPath/taskId undefined', () => {
@@ -203,6 +215,7 @@ describe('snapshot → DTO mappers (§5.2)', () => {
       id: 'i1',
       name: 'Fix the thing',
       description: 'Some *markdown*',
+      blockedReasons: '',
       projectPath: '/repo/a',
       status: 'in_progress',
       taskId: 't1',
@@ -809,6 +822,7 @@ describe('toEventDTO (§6.5) — total over the DomainEvent union', () => {
               id: 'i1',
               name: 'Fix the thing',
               description: 'Some *markdown*',
+              blockedReasons: '',
               projectPath: '/repo/a',
               status: 'in_progress',
               taskId: 't1',

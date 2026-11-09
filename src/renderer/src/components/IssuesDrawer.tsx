@@ -25,8 +25,8 @@
  * the right, mounted UNCONDITIONALLY across both tabs so its local edit-form state
  * (and any unsaved edit) survives a tab switch untouched; switching tabs only changes
  * `issuesDrawerTab`, never `selectedIssueId`/`issueDraft`/`issueEditDirty`, so it can
- * never raise `discardPrompt`. `IssueDetail` takes a fixed share of the drawer's width
- * (`ISSUE_VIEW_WIDTH_SHARE`, defined there) identical on both tabs; the tabpanel wrapper
+ * never raise `discardPrompt`. `IssueDetail` takes a fixed, per-tab share of the drawer's
+ * width (`ISSUE_VIEW_WIDTH_SHARE`, defined there; smaller on the Board); the tabpanel wrapper
  * takes the rest via `flex: 1` with `minWidth: 0` (so the Board's own horizontal
  * scroll can actually kick in instead of widening the row). `onCreateTaskFromIssue`/
  * `onDeleteBoundTask` are passed straight through to `IssueDetail` — they are wired by

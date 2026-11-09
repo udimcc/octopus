@@ -1,6 +1,6 @@
 /**
  * `updateIssue` use case (DESIGN "Issues" §13). Patches `name`/`description`/
- * `projectPath`/`status`; only fields present on the input change —
+ * `blockedReasons`/`projectPath`/`status`; only fields present on the input change —
  * `projectPath: null` explicitly clears the project, `undefined`/omitted leaves
  * it as is (mirrors `UpdateIssueInput`'s own doc comment).
  *
@@ -44,6 +44,7 @@ export function updateIssue(deps: AppDependencies, input: UpdateIssueInput): Com
   const prior = {
     name: issue.name,
     description: issue.description,
+    blockedReasons: issue.blockedReasons,
     projectPath: issue.projectPath,
     status: issue.status,
     updatedAt: issue.updatedAt
@@ -61,6 +62,9 @@ export function updateIssue(deps: AppDependencies, input: UpdateIssueInput): Com
   if (input.description !== undefined) {
     issue.setDescription(input.description)
   }
+  if (input.blockedReasons !== undefined) {
+    issue.setBlockedReasons(input.blockedReasons)
+  }
   if (input.status !== undefined) {
     issue.setStatus(input.status)
   }
@@ -76,6 +80,7 @@ export function updateIssue(deps: AppDependencies, input: UpdateIssueInput): Com
     issue.rename(prior.name)
     issue.setProject(prior.projectPath)
     issue.setDescription(prior.description)
+    issue.setBlockedReasons(prior.blockedReasons)
     issue.setStatus(prior.status)
     issue.touch(prior.updatedAt)
     throw err

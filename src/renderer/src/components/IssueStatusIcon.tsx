@@ -2,7 +2,7 @@
  * The issue status icon (DESIGN "Issues" §13.1). Purely presentational: maps one
  * {@link IssueStatusDTO} to a small inline SVG/color/label. No icon library (same
  * convention as {@link StatusIcon}), and a distinct icon set: issue status is a fixed
- * 4-value workflow the user sets directly (via the status `<select>` or a link), not a
+ * 5-value workflow the user sets directly (via the status `<select>` or a link), not a
  * live signal, so none of these animate. Inline SVG is plain paint, so it's
  * SwiftShader-safe on the VDI.
  */
@@ -31,6 +31,19 @@ const SHAPES: Readonly<Record<IssueStatusDTO, React.JSX.Element>> = {
     <>
       <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
       <path d="M6.5 5.25 L11 8 L6.5 10.75 Z" fill="currentColor" />
+    </>
+  ),
+  // Stuck: a "no entry" sign (circle with a horizontal bar).
+  blocked: (
+    <>
+      <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <path
+        d="M4.5 8 H11.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
     </>
   ),
   // Being looked at: an eye.
@@ -62,6 +75,7 @@ const SHAPES: Readonly<Record<IssueStatusDTO, React.JSX.Element>> = {
 const COLORS: Readonly<Record<IssueStatusDTO, string>> = {
   todo: color.muted,
   in_progress: color.statusWorking,
+  blocked: color.errorText,
   in_review: color.accent,
   done: color.successText
 }

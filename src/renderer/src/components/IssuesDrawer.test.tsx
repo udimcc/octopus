@@ -14,6 +14,7 @@ function issue(id: string, over: Partial<IssueDTO> = {}): IssueDTO {
     name: id,
     description: '',
     status: 'todo',
+    blockedReasons: '',
     createdAt: 1000,
     updatedAt: 1000,
     source: 'local',
@@ -943,7 +944,7 @@ describe('<IssuesDrawer>', () => {
       expect(screen.getByText('Select an issue, or create a new one.')).toBeInTheDocument()
     })
 
-    it('the issue view keeps the same width style on both tabs', () => {
+    it('the issue view is 61% wide on List and 40% on Board, with the same floor', () => {
       seed([issue('i1')])
       render(<IssuesDrawer onCreateTaskFromIssue={vi.fn()} onDeleteBoundTask={vi.fn()} />)
       act(() => {
@@ -957,7 +958,12 @@ describe('<IssuesDrawer>', () => {
       fireEvent.click(screen.getByRole('tab', { name: 'Board' }))
       const wrapperOnBoard = document.querySelector<HTMLElement>('div[style*="360px"]')
       expect(wrapperOnBoard).not.toBeNull()
-      expect(wrapperOnBoard).toHaveStyle({ flex: '0 0 61%', minWidth: '360px' })
+      expect(wrapperOnBoard).toHaveStyle({ flex: '0 0 40%', minWidth: '360px' })
+
+      fireEvent.click(screen.getByRole('tab', { name: 'List' }))
+      expect(document.querySelector<HTMLElement>('div[style*="360px"]')).toHaveStyle({
+        flex: '0 0 61%'
+      })
     })
 
     it('openIssuesDrawer(id) opens on the last-used tab', () => {

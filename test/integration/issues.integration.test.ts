@@ -317,4 +317,42 @@ describe('Issues end to end over the real CommandLoop (I19, "Issues" §13.3)', (
     expect(taskAfter.name).toBe(fd.workspace.task(taskId)!.name)
     expect(taskAfter.position).toBe(fd.workspace.task(taskId)!.position)
   })
+  it('Blocked + reasons round-trip through the loop, survive a status change, and a restart', async () => {
+    const { loop, fd } = rig()
+    const issueId = (
+      await loop.dispatch({ kind: 'createIssue', input: { name: 'Stuck', description: 'd' } })
+    ).issueId!
+
+    const blocked = await loop.dispatch({
+      kind: 'updateIssue',
+      input: { issueId, status: IssueStatus.Blocked, blockedReasons: 'waiting on **infra**' }
+    })
+    expect(blocked.ok).toBe(true)
+    expect(fd.workspace.issue(issueId)).toMatchObject({
+      status: IssueStatus.Blocked,
+      blockedReasons: 'waiting on **infra**'
+    })
+
+    // A status-only change away from Blocked keeps the reasons.
+    await loop.dispatch({
+      kind: 'updateIssue',
+      input: { issueId, status: IssueStatus.InProgress }
+    })
+    expect(fd.persistence.issues.get(issueId)).toMatchObject({
+      status: IssueStatus.InProgress,
+      blockedReasons: 'waiting on **infra**'
+    })
+
+    await loop.dispatch({ kind: 'updateIssue', input: { issueId, status: IssueStatus.Blocked } })
+
+    // Restart: a fresh Workspace hydrated from what persistence recorded.
+    const restored = Workspace.hydrate(
+      { tasks: [], activeTaskId: undefined, issues: fd.persistence.load().issues },
+      { defaultSessionTypeId: 'terminal' }
+    )
+    expect(restored.issue(issueId)).toMatchObject({
+      status: IssueStatus.Blocked,
+      blockedReasons: 'waiting on **infra**'
+    })
+  })
 })

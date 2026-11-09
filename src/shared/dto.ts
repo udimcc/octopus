@@ -332,7 +332,7 @@ export interface ProjectWorktreeDTO {
 // ── Issues (§13.1, §6.3, "Issues") ────────────────────────────────────────────
 
 /** An issue's workflow status on the wire (mirror of the domain `IssueStatus` enum). */
-export type IssueStatusDTO = 'todo' | 'in_progress' | 'in_review' | 'done'
+export type IssueStatusDTO = 'todo' | 'in_progress' | 'blocked' | 'in_review' | 'done'
 
 /** An issue's provenance on the wire (mirror of the domain `IssueSource` enum). */
 export type IssueSourceDTO = 'local' | 'jira'
@@ -350,6 +350,11 @@ export interface IssueDTO {
   readonly id: string
   readonly name: string
   readonly description: string
+  /**
+   * Free-text markdown explaining why the issue is blocked. Independent of `status`
+   * (kept when the status changes); the renderer shows it only when status is 'blocked'.
+   */
+  readonly blockedReasons: string
   readonly projectPath?: string
   readonly status: IssueStatusDTO
   readonly taskId?: string
@@ -491,6 +496,8 @@ export interface UpdateIssueInput {
   readonly issueId: string
   readonly name?: string
   readonly description?: string
+  /** Markdown blocked reasons; omitted leaves it unchanged. */
+  readonly blockedReasons?: string
   readonly projectPath?: string | null
   readonly status?: IssueStatusDTO
 }

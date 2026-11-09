@@ -12,10 +12,11 @@ import type { IssueId, TaskId } from './ids'
 import type { IssueSnapshot } from './snapshots'
 import { InvariantViolationError } from './errors'
 
-/** Fixed status set ("Issues", §13.1). Users cannot add or remove statuses. */
+/** Fixed status set ("Issues", §13.1), in board-column order. Users cannot add or remove statuses. */
 export enum IssueStatus {
   Todo = 'todo',
   InProgress = 'in_progress',
+  Blocked = 'blocked',
   InReview = 'in_review',
   Done = 'done'
 }
@@ -33,6 +34,8 @@ export function parseIssueStatus(value: unknown): IssueStatus | undefined {
       return IssueStatus.Todo
     case IssueStatus.InProgress:
       return IssueStatus.InProgress
+    case IssueStatus.Blocked:
+      return IssueStatus.Blocked
     case IssueStatus.InReview:
       return IssueStatus.InReview
     case IssueStatus.Done:
@@ -86,6 +89,8 @@ export interface IssueCreateProps {
   id: IssueId
   name: string
   description: string
+  /** Free-text reasons the issue is blocked. Defaults to '' when omitted. */
+  blockedReasons?: string
   projectPath?: string
   createdAt: number
   /** Defaults to {@link IssueSource.Local} when omitted. */
@@ -100,6 +105,7 @@ export class Issue {
 
   private _name: string
   private _description: string
+  private _blockedReasons: string
   private _projectPath?: string
   private _status: IssueStatus
   private _taskId?: TaskId
@@ -114,6 +120,7 @@ export class Issue {
     this.createdAt = props.createdAt
     this._name = props.name
     this._description = props.description
+    this._blockedReasons = props.blockedReasons ?? ''
     this._projectPath = props.projectPath
     this._status = IssueStatus.Todo
     this._updatedAt = props.createdAt
@@ -144,6 +151,7 @@ export class Issue {
       id: snap.id,
       name: snap.name,
       description: snap.description,
+      blockedReasons: snap.blockedReasons,
       projectPath: snap.projectPath,
       createdAt: snap.createdAt,
       source: snap.source,
@@ -160,6 +168,10 @@ export class Issue {
   }
   get description(): string {
     return this._description
+  }
+  /** Why the issue is blocked. Independent of `status` — never cleared by `setStatus`. */
+  get blockedReasons(): string {
+    return this._blockedReasons
   }
   get projectPath(): string | undefined {
     return this._projectPath
@@ -191,6 +203,10 @@ export class Issue {
 
   setDescription(description: string): void {
     this._description = description
+  }
+
+  setBlockedReasons(reasons: string): void {
+    this._blockedReasons = reasons
   }
 
   /** Set or clear (`undefined`) the configured project this issue tracks against. */
@@ -232,6 +248,7 @@ export class Issue {
       id: this.id,
       name: this._name,
       description: this._description,
+      blockedReasons: this._blockedReasons,
       projectPath: this._projectPath,
       status: this._status,
       taskId: this._taskId,

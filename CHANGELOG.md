@@ -4,6 +4,25 @@ All notable changes to Octopus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Adds a **Blocked** issue status with a "Blocked reasons" field.
+
+### Added
+
+- **Blocked issue status.** Statuses are now Todo, In progress, Blocked, In review, Done, with a red
+  no-entry icon and a fifth Board column. While an issue is Blocked, the issue view shows a markdown
+  "Blocked reasons" section below the description, editable via Edit. Reasons are kept (hidden) when
+  the status changes and never cleared automatically.
+
+### Changed
+
+- **DB schema v12.** The `issues` table is rebuilt to allow the new status and gains a
+  `blocked_reasons` column. Upgrading auto-migrates (after a `.bak-v11` backup); older builds refuse
+  the upgraded DB.
+- **Narrower issue view on the Board tab.** The issue view takes about 40% of the Issues window on
+  the Board tab (still about 61% on List), so all five columns fit without scrolling.
+
 ## [1.1.1]
 
 Fixes Jira import after a LiteLLM gateway change.
