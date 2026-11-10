@@ -4,6 +4,18 @@ All notable changes to Octopus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1]
+
+Moves the Issues button to the top of the Progress panel and restyles the panel's header buttons.
+
+### Changed
+
+- **Progress panel header redesign.** The Issues button now sits at the top, next to New Window
+  (both sized to their labels; Issues is accent-tinted while the drawer is open). + New Task stays
+  the primary action, with a quiet trash icon for Delete Task (muted at rest, red on hover). The
+  Grouped/Flat toggle moves into a "Tasks" label row above the list. Tooltips show the (rebindable)
+  shortcuts for New Task and Issues.
+
 ## [1.2.0]
 
 Adds a **Blocked** issue status with a "Blocked reasons" field, `octopus-cli` so Claude Code can
