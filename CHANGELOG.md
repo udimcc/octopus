@@ -4,10 +4,10 @@ All notable changes to Octopus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.0]
 
 Adds a **Blocked** issue status with a "Blocked reasons" field, `octopus-cli` so Claude Code can
-drive a running Octopus, and in-app self-update. `install.sh` is now runnable while Octopus is
+drive a running Octopus, and in-app self-update. Clicking outside the Issues drawer now closes it. `install.sh` is now runnable while Octopus is
 running (the app keeps its open files and is relaunched promptly).
 
 ### Added
@@ -37,6 +37,9 @@ running (the app keeps its open files and is relaunched promptly).
   the upgraded DB.
 - **Narrower issue view on the Board tab.** The issue view takes about 40% of the Issues window on
   the Board tab (still about 61% on List), so all five columns fit without scrolling.
+- **Clicking outside the Issues drawer closes it.** A click elsewhere in the window (a task row,
+  a toast, …) closes the drawer, with the usual unsaved-edits prompt, and the click still does its
+  own action. The Issues button and a task's issue icon keep their toggle/open behavior.
 - **`install.sh` swaps atomically.** The payload is staged into `octopus-app.new` and swapped
   in by rename, so installing while Octopus runs is safe and a failed install leaves the
   previous version intact.
