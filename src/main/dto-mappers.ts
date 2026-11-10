@@ -355,7 +355,12 @@ export function toEventDTO(e: DomainEvent): EventDTO {
     case 'ptyData':
       return { type: 'ptyData', sessionId: e.sessionId, data: e.data }
     case 'sessionCreated':
-      return { type: 'sessionCreated', taskId: e.taskId, session: toSessionDTO(e.session) }
+      return {
+        type: 'sessionCreated',
+        taskId: e.taskId,
+        session: toSessionDTO(e.session),
+        ...(e.background ? { background: true } : {})
+      }
     case 'sessionExited':
       return {
         type: 'sessionExited',
@@ -381,7 +386,11 @@ export function toEventDTO(e: DomainEvent): EventDTO {
     case 'groupsChanged':
       return { type: 'groupsChanged', taskId: e.taskId, groups: e.groups.map(toGroupDTO) }
     case 'taskCreated':
-      return { type: 'taskCreated', task: toTaskDTO(e.task) }
+      return {
+        type: 'taskCreated',
+        task: toTaskDTO(e.task),
+        ...(e.background ? { background: true } : {})
+      }
     case 'taskDeleted':
       return { type: 'taskDeleted', taskId: e.taskId }
     case 'taskRenamed':
@@ -400,17 +409,29 @@ export function toEventDTO(e: DomainEvent): EventDTO {
         windowId: e.windowId
       }
     case 'scriptProgress':
-      return { type: 'scriptProgress', taskId: e.taskId, line: e.line }
+      return {
+        type: 'scriptProgress',
+        taskId: e.taskId,
+        line: e.line,
+        ...(e.background ? { background: true } : {})
+      }
     case 'scriptError':
       return {
         type: 'scriptError',
         taskId: e.taskId,
         script: e.script,
         exitCode: e.exitCode,
-        stderr: e.stderr
+        stderr: e.stderr,
+        ...(e.background ? { background: true } : {})
       }
     case 'error':
-      return { type: 'error', message: e.message, taskId: e.taskId, sessionId: e.sessionId }
+      return {
+        type: 'error',
+        message: e.message,
+        taskId: e.taskId,
+        sessionId: e.sessionId,
+        ...(e.background ? { background: true } : {})
+      }
     case 'windowCreated':
       return {
         type: 'windowCreated',

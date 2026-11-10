@@ -153,6 +153,13 @@ export interface StoreData {
    */
   readonly hasUnseenFinishedTurn: Readonly<Record<string, boolean>>
   /**
+   * Session ids created in the background (octopus-cli `sessionCreated` with
+   * `background: true`) whose pane must NOT call `term.focus()` on its first mount
+   * ("background: no focus steal" decision). One-shot: {@link StoreActions.consumeNoFocusOnMount}
+   * removes the id on mount; `removeSession` drops it if the pane never mounted.
+   */
+  readonly noFocusOnMount: Readonly<Record<string, true>>
+  /**
    * Whether THIS window currently has OS focus (§9.5). A session in a blurred window
    * counts as not-on-screen, so at display time its finished-unseen turn shows the
    * review dot even if it is the active tab. Patched by `App`'s focus/blur listeners;
@@ -300,6 +307,12 @@ export interface StoreActions {
    * with per-window marks only the focused window knows which session is on screen.
    */
   markVisibleSessionSeen(): string | undefined
+  /**
+   * One-shot read of {@link StoreData.noFocusOnMount}: returns whether `sessionId`'s pane
+   * must skip its mount-time `term.focus()`, and clears the hint so later focus
+   * transitions behave normally.
+   */
+  consumeNoFocusOnMount(sessionId: string): boolean
   /** Toggle the keyboard-triggered debug overlay for this window (§11). */
   toggleDebugOverlay(): void
   /** End focus flash `seq` (§5.4); ignored if a newer flash has started since. */
@@ -407,6 +420,7 @@ export function initialData(): StoreData {
     windowRole: 'main',
     windows: [],
     hasUnseenFinishedTurn: {},
+    noFocusOnMount: {},
     windowFocused: true,
     windowFocusedOnce: false,
     debugTransitions: [],
@@ -860,7 +874,8 @@ function removeSession(data: StoreData, taskId: string, sessionId: string): Stor
   let next: StoreData = {
     ...data,
     sessions,
-    hasUnseenFinishedTurn: clearReady(data.hasUnseenFinishedTurn, sessionId)
+    hasUnseenFinishedTurn: clearReady(data.hasUnseenFinishedTurn, sessionId),
+    noFocusOnMount: omit(data.noFocusOnMount, sessionId)
   }
   if (task) {
     const sessionIds = task.sessionIds.filter((id) => id !== sessionId)
@@ -1207,7 +1222,22 @@ export function reduceEvent(
       // split-chord creation (`CreateSessionInput.split`, DESIGN §5.7) joins it into the
       // anchor's group on the backend in the SAME command; that result arrives separately
       // as `groupsChanged`, so there is nothing group-shaped to do here.
-      return s.windowId === data.windowId ? withMark(added, event.taskId, s.id) : added
+      if (s.windowId !== data.windowId) return added
+      if (event.background) {
+        // Opened via the octopus-cli control socket: never move the visible mark, the
+        // active task or focus. Only seed a mark where the task has none yet (keeps the
+        // active-task-has-a-mark invariant); an existing mark is never moved.
+        // The pane may still mount focused (it is the task's only/marked tab), so hint
+        // it not to focus on mount (background: no focus steal).
+        const hinted: StoreData = {
+          ...added,
+          noFocusOnMount: { ...added.noFocusOnMount, [s.id]: true }
+        }
+        return data.activeSessionByTask[event.taskId] === undefined
+          ? withMark(hinted, event.taskId, s.id)
+          : hinted
+      }
+      return withMark(added, event.taskId, s.id)
     }
 
     case 'groupsChanged':
@@ -1266,11 +1296,19 @@ export function reduceEvent(
     }
 
     case 'scriptError': {
+      // A failed provision leaves the task in `provision_failed` (create-task.ts); apply it
+      // for every origin so a CLI-created task does not sit at "(provisioning)" forever.
+      const failed =
+        event.script === 'create_worktree' || event.script === 'adopt'
+          ? patchTask(data, event.taskId, { lifecycle: 'provision_failed' })
+          : data
+      if (event.background) return failed // CLI caller gets the error; no toast
       const message = event.stderr.trim() || `${event.script} failed (exit ${event.exitCode})`
-      return pushToastData(data, 'error', message)
+      return pushToastData(failed, 'error', message)
     }
 
     case 'error':
+      if (event.background) return data
       return pushToastData(data, 'error', event.message)
 
     case 'scriptProgress':
@@ -1663,6 +1701,12 @@ export const useStore = create<Store>((set, get) => ({
       if (!data.windowFocusedOnce || data.windowFocused || next.focusFlashOn) return next
       return armFlash(next)
     }),
+
+  consumeNoFocusOnMount: (sessionId) => {
+    if (!get().noFocusOnMount[sessionId]) return false
+    set((data) => ({ noFocusOnMount: omit(data.noFocusOnMount, sessionId) }))
+    return true
+  },
 
   markVisibleSessionSeen: () => {
     // The session on screen in THIS window right now: its task's active tab, in this

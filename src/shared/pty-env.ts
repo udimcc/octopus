@@ -18,6 +18,8 @@
  * or node types, so it compiles under `tsconfig.web` too).
  */
 
+import { OCTOPUS_CONTROL_SOCKET_ENV } from './data-paths'
+
 /** Multiplexer/terminal identity vars that must not leak into a fresh PTY (§6.1). */
 const STRIPPED_VARS = ['TMUX', 'TMUX_PANE', 'STY', 'WINDOWID'] as const
 
@@ -77,6 +79,8 @@ export interface PtyEnvContext {
   readonly taskId: string
   readonly sessionId: string
   readonly worktreePath: string
+  /** Control socket path for `octopus-cli`; absent → `OCTOPUS_CONTROL_SOCKET` is not set. */
+  readonly controlSocketPath?: string
 }
 
 /**
@@ -104,6 +108,9 @@ export function buildPtyEnv(
   env.OCTOPUS_TASK_ID = ctx.taskId
   env.OCTOPUS_SESSION_ID = ctx.sessionId
   env.OCTOPUS_WORKTREE = ctx.worktreePath
+  if (ctx.controlSocketPath !== undefined && ctx.controlSocketPath.length > 0) {
+    env[OCTOPUS_CONTROL_SOCKET_ENV] = ctx.controlSocketPath
+  }
   return env
 }
 

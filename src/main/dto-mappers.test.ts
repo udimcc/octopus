@@ -850,3 +850,63 @@ describe('toEventDTO (§6.5) — total over the DomainEvent union', () => {
     expect(distinct.size).toBe(21)
   })
 })
+
+describe('toEventDTO background flag (control-socket originated events)', () => {
+  const bgEvents: Array<{ name: string; make: (background?: boolean) => DomainEvent }> = [
+    {
+      name: 'taskCreated',
+      make: (background) => ({
+        type: 'taskCreated',
+        task,
+        ...(background === undefined ? {} : { background })
+      })
+    },
+    {
+      name: 'sessionCreated',
+      make: (background) => ({
+        type: 'sessionCreated',
+        taskId: asTaskId('t1'),
+        session,
+        ...(background === undefined ? {} : { background })
+      })
+    },
+    {
+      name: 'scriptProgress',
+      make: (background) => ({
+        type: 'scriptProgress',
+        taskId: asTaskId('t1'),
+        line: 'l',
+        ...(background === undefined ? {} : { background })
+      })
+    },
+    {
+      name: 'scriptError',
+      make: (background) => ({
+        type: 'scriptError',
+        taskId: asTaskId('t1'),
+        script: '/c',
+        exitCode: 1,
+        stderr: 'boom',
+        ...(background === undefined ? {} : { background })
+      })
+    },
+    {
+      name: 'error',
+      make: (background) => ({
+        type: 'error',
+        message: 'oops',
+        taskId: asTaskId('t1'),
+        ...(background === undefined ? {} : { background })
+      })
+    }
+  ]
+
+  it.each(bgEvents)('$name passes background: true through to the DTO', ({ make }) => {
+    expect(toEventDTO(make(true))).toHaveProperty('background', true)
+  })
+
+  it.each(bgEvents)('$name omits the background key when unset or false', ({ make }) => {
+    expect(toEventDTO(make())).not.toHaveProperty('background')
+    expect(toEventDTO(make(false))).not.toHaveProperty('background')
+  })
+})

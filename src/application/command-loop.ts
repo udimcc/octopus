@@ -126,8 +126,7 @@ export class CommandLoop {
         reorderTask(this.deps, command.input)
         return OK
       case 'createSession':
-        await openSession(this.deps, command.input)
-        return OK
+        return { ok: true, sessionId: await openSession(this.deps, command.input) }
       case 'closeSession':
         await closeSession(this.deps, command.input)
         return OK

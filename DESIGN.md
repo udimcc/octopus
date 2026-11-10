@@ -2050,3 +2050,79 @@ so the Jira modal's error states ("No key"/"key rejected") can close themselves 
 Settings. The `IssuesDrawer` header (§13.5) gets a "Fetch from Jira" button after **+ New Issue**, on
 both tabs, and `IssueList` a small "Jira" badge (plain paint, no filter) on `source==='jira'` rows; `IssueDetail` gets a read-only "Source: Jira (KEY)" / "Source: Local"
 line, never editable and absent from the edit form.
+
+---
+
+## 14. Control socket & `octopus-cli`
+
+**Purpose.** Let Claude Code drive a running Octopus: open worktree tasks, open sessions (optionally with a
+Claude prompt) and read/add Issues. Launch-only: no status polling, no I/O into sub-sessions.
+
+**Rejected.** *MCP server* — its tool schemas load into every Claude session and it adds an SDK dependency.
+*CLI writes SQLite directly* — breaks the single-writer invariant (§6.5).
+
+**Transport.** The main process listens on a Unix socket `<dataDir>/control.sock` (dir `0700`, socket `0600`;
+same uid capability gate as `octopusd`). Keyed to the data dir: a dev build with its own `XDG_DATA_HOME` gets its own socket, one sharing
+the installed app's data dir shares (and, per the single-instance lock, yields to) it. Framing is NDJSON request/reply (`{id, version, method, params}` → `{id, ok, result|error}`),
+contract in `src/shared/control-protocol.ts` (transport-agnostic, like `ipc.ts`), versioned by
+`CONTROL_PROTOCOL_VERSION` (mismatch → `version_mismatch`; bump on any incompatible change). Line cap
+`MAX_CONTROL_LINE_BYTES` (1 MiB). Socket paths are limited to ~107 bytes, so a very deep `XDG_DATA_HOME`
+fails `listen` with ENAMETOOLONG (logged). The pure path resolver is in `src/shared/data-paths.ts`, used by
+both `adapters/env/paths.ts` and the CLI.
+
+**Layers.** `src/adapters/control/` owns socket, framing and lifecycle only (adapters may not import
+`application`). Method routing is `src/main/control-handlers.ts`. The server starts after the single-instance
+lock, a listen failure is logged and **not fatal**, and it is closed on quit before the loop shuts down.
+`OCTOPUS_CONTROL_SOCKET` is exported into every session's PTY env; the CLI uses it, else the data-dir default.
+
+**Methods.** `projects.list`, `task.create` (project name, branch, optional sourceBranch/name),
+`task.list`, `session.open` (taskId, optional command, optional `name` = tab title, ≤ `MAX_SESSION_NAME_CHARS` (30) characters, no
+control characters, else `bad_request`), `issues.list` (status/project filters),
+`issues.get` (the CLI's `issues get --markdown` renders it client-side as readable markdown, e.g. for a session prompt), `issues.add` (project by name or path; status defaults `todo`; `blocked` included, `issues.get` adds `blockedReasons` when set).
+
+**Strict params.** A param a method does not declare → `bad_request` (`unknown param "x"`), so a CLI
+newer than the running app fails loudly instead of having a new flag silently dropped.
+
+**Errors.** Codes: `bad_json`, `bad_request`, `unknown_method`, `version_mismatch`, `not_found`, `not_ready`,
+`command_failed` (app rejected/failed it; message has the reason), `shutting_down`, `internal`. CLI output is
+JSON on stdout, except the opt-in `issues get --markdown` (command errors JSON on stderr, usage errors plain text); exit codes: `0` ok, `1` command error (any reply error), `2` usage, `3` Octopus not running
+(never auto-launched).
+
+**Dispatch.** `issues.add` shares the validators extracted into `src/main/command-validation.ts` with the Electron IPC
+handlers; other methods are validated by `control-protocol` parsing plus the same CommandLoop/use-case
+invariants. Everything then goes through the **CommandLoop** — the single writer (§6.5). The UI
+updates live via the normal event bus.
+
+**Background semantics.** Created tasks/sessions do not steal focus: no activation, the active task and tab
+mark don't move, no toast. `CreateTaskInput.background` skips activation; `CreateSessionInput.background` rides
+`sessionCreated` so the renderer leaves the mark alone (it only seeds a mark for a task that has none, and
+then a one-shot `noFocusOnMount` hint stops that pane's mount-time `term.focus()`). `CommandResult` returns
+`taskId`/`sessionId`.
+
+**`task.create` blocks until Ready.** `createTask` provisions the worktree inside the loop, so the reply
+arrives once the task is Ready or failed; no polling. Parallel creates therefore serialize (seconds each),
+exactly like UI-created tasks. `session.open` on a non-Ready task → `not_ready`. `task.create` → `bad_request` if the project has no default branch and no `sourceBranch` is given; an ambiguous project name (shared basename) → `bad_request` listing the paths.
+
+**One-shot command.** `session.open` takes an optional `command`, typed once into the new session's shell as its
+`launchCommand`. The caller owns quoting and builds any `claude` invocation itself (the skill writes the prompt to a
+temp file and passes `claude -- "$(cat 'F'; rm -f 'F')"`, so quotes, newlines, `$()` and backticks reach Claude verbatim).
+It is typed into an interactive `$SHELL`, so it must be one line: empty/blank, `\n`, `\r`, NUL or more than
+`MAX_COMMAND_BYTES` (4000 UTF-8 bytes, under the 4096-byte tty canonical line buffer that applies before the shell's
+line editor starts) → `bad_request`. Without a command the session is a plain shell. The command is **never persisted**
+in `SessionConfig`.
+Gotcha: a persisted `initialCommand` re-runs on every fresh spawn (`start-session-runtime.ts`), e.g. after an
+app restart on the in-process backend, which would relaunch Claude with a stale prompt. After a restart the
+session is a plain shell; with the daemon backend the live Claude simply re-attaches. `claude --continue` was
+rejected (resumes the latest conversation in the cwd — ambiguous when several Claudes share a worktree).
+
+**Stale socket.** On start, if the path exists, the server probes it: something accepting connections means a
+live instance (the single-instance lock normally prevents this) and it does not steal it; only ECONNREFUSED/ENOENT
+means a crashed run's leftover, which is unlinked before `listen`; any other probe error fails closed. Mirrors the `octopusd` logic.
+
+**CLI & distribution.** `src/cli/` is a layer that may import only `shared`; third electron-vite Node entry
+(`out/main/cli.js`) run by the bundled Electron with `ELECTRON_RUN_AS_NODE=1` (no host Node). The
+`resources/octopus-cli` launcher can't be exec'd from inside `app.asar`, so `scripts/release.mjs` stages it next
+to the `octopus` binary and `install.sh` symlinks it into `~/.local/bin`. `install.sh` also copies
+`resources/claude-skill/octopus/` to `~/.claude/skills/octopus` (thin skill: when to use Octopus, the two
+workflows, defer syntax to `octopus-cli --help`); `uninstall.sh` removes both. The skill is for Claude only,
+so task refs are ids only.

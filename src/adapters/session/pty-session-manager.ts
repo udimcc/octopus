@@ -34,6 +34,11 @@ export interface PtySessionManagerDeps {
    * plain login shells (no injection).
    */
   readonly shellIntegration?: ShellIntegrationFiles
+  /**
+   * Control-socket path exported to every session as `OCTOPUS_CONTROL_SOCKET` so
+   * `octopus-cli` inside a terminal finds this instance (control socket design).
+   */
+  readonly controlSocketPath?: string
 }
 
 /** node-pty's spawn narrowed to the runtime's contract (structural match). */
@@ -43,11 +48,13 @@ export class PtySessionManager implements SessionManager {
   private readonly getSettings: () => Settings
   private readonly graceMs?: number
   private readonly shellIntegration?: ShellIntegrationFiles
+  private readonly controlSocketPath?: string
 
   constructor(deps: PtySessionManagerDeps) {
     this.getSettings = deps.getSettings
     this.graceMs = deps.graceMs
     this.shellIntegration = deps.shellIntegration
+    this.controlSocketPath = deps.controlSocketPath
   }
 
   createRuntime(ctx: SessionRuntimeContext): SessionRuntime {
@@ -67,6 +74,7 @@ export class PtySessionManager implements SessionManager {
       shell,
       args: plan?.args,
       envPatch: plan?.envPatch,
+      controlSocketPath: this.controlSocketPath,
       graceMs: this.graceMs
     })
   }

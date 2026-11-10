@@ -33,6 +33,12 @@ export interface CreateTaskFromNewInput {
    * Left unbound (with a toast) if the issue was deleted or bound elsewhere by then.
    */
   readonly issueId?: IssueId
+  /**
+   * Created by the octopus-cli control socket: do NOT make the new task active
+   * (no `setActiveTask`, no persisted active-task write, no `activeTaskChanged`),
+   * so the user's current view is undisturbed. Omitted/false → unchanged behavior.
+   */
+  readonly background?: boolean
 }
 
 /** Adopt an existing worktree directory (New-Task modal "From Existing Worktree"). */
@@ -43,6 +49,12 @@ export interface CreateTaskFromExistingInput {
   readonly worktreeDir: string
   /** Bind this task to an existing issue once it reaches Ready ("Issues", §13.3). */
   readonly issueId?: IssueId
+  /**
+   * Created by the octopus-cli control socket: do NOT make the new task active
+   * (no `setActiveTask`, no persisted active-task write, no `activeTaskChanged`),
+   * so the user's current view is undisturbed. Omitted/false → unchanged behavior.
+   */
+  readonly background?: boolean
 }
 
 /**
@@ -54,6 +66,12 @@ export interface CreateTaskFromNoneInput {
   readonly name: string
   /** Bind this task to an existing issue once it reaches Ready ("Issues", §13.3). */
   readonly issueId?: IssueId
+  /**
+   * Created by the octopus-cli control socket: do NOT make the new task active
+   * (no `setActiveTask`, no persisted active-task write, no `activeTaskChanged`),
+   * so the user's current view is undisturbed. Omitted/false → unchanged behavior.
+   */
+  readonly background?: boolean
 }
 
 /** Discriminated on `mode`: new worktree, adopted repo, or no repo at all. */
@@ -99,6 +117,20 @@ export interface StartTaskSessionsInput {
 
 export interface CreateSessionInput {
   readonly taskId: TaskId
+  /**
+   * Created by the octopus-cli control socket: the renderer must not steal the
+   * tab mark / active task for this session (carried on `sessionCreated`).
+   * Omitted/false → unchanged behavior.
+   */
+  readonly background?: boolean
+  /**
+   * ONE-SHOT command written to the PTY only on the first fresh spawn performed by
+   * this `openSession` call (not on resume/re-attach, not on later lazy restores).
+   * Never stored in `SessionConfig` or persisted. If the config also has a persisted
+   * `initialCommand`, that is written first, then this. Set only by the control
+   * socket (never the renderer IPC path).
+   */
+  readonly launchCommand?: string
   readonly typeId?: TypeId
   readonly title?: string
   readonly config?: SessionConfig
@@ -487,6 +519,10 @@ export interface CommandResult {
   readonly project?: ProjectSettings
   /** The id of an issue just created by `createIssue` ("Issues", §13.3). */
   readonly issueId?: IssueId
+  /** The id of a task just created and Ready, returned by `createTask` (octopus-cli control socket). */
+  readonly taskId?: TaskId
+  /** The id of a session just created by `createSession` (octopus-cli control socket). */
+  readonly sessionId?: SessionId
   /** How many issues `importJiraIssues` actually created (DESIGN "Jira import"). */
   readonly importedCount?: number
   /**

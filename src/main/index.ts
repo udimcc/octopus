@@ -160,6 +160,15 @@ void app.whenReady().then(async () => {
   // in-process path or if the daemon is unavailable (degrade-to-in-process).
   await ctx.warmupSessions()
 
+  // `octopus-cli` control socket (control socket design). Listens only after the
+  // single-instance lock (top of file) so a losing second instance never touches
+  // the winner's socket. A bind failure is non-fatal: the app runs, the CLI just
+  // reports "Octopus is not running".
+  ctx.controlServer.listen().then(
+    () => console.log(`[octopus] control socket listening at ${ctx.paths.controlSocketPath}`),
+    (err: unknown) => console.error('[octopus] control socket unavailable; CLI disabled:', err)
+  )
+
   const records = ctx.deps.persistence.loadWindows()
 
   // Main window first (it owns the progress panel). Fall back to a default record

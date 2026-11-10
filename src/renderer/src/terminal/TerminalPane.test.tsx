@@ -386,6 +386,22 @@ describe('<TerminalPane> wiring (§5.3/§6.1)', () => {
     expect(h.instances[0].focus).toHaveBeenCalled()
   })
 
+  it('does not focus a focused-on-mount pane whose session carries the no-focus hint, and consumes it', async () => {
+    cleanup()
+    useStore.setState({ noFocusOnMount: { s1: true } })
+    render(<TerminalPane sessionId="s1" visible={true} focused={true} />)
+    expect(h.instances[0].focus).not.toHaveBeenCalled()
+    await new Promise((r) => setTimeout(r, 5))
+    expect(useStore.getState().noFocusOnMount).toEqual({})
+  })
+
+  it('still focuses on mount when the hint belongs to another session', () => {
+    cleanup()
+    useStore.setState({ noFocusOnMount: { other: true } })
+    render(<TerminalPane sessionId="s1" visible={true} focused={true} />)
+    expect(h.instances[0].focus).toHaveBeenCalled()
+  })
+
   it('does not focus a pane that mounts hidden (inactive tab of another task)', () => {
     cleanup()
     render(<TerminalPane sessionId="s1" visible={false} focused={false} />)

@@ -1,0 +1,21 @@
+#!/bin/sh
+# octopus-cli: command-line client for a running Octopus app (talks to its control socket).
+#
+# Runs the bundled Electron binary as plain Node (ELECTRON_RUN_AS_NODE=1, the same trick
+# the app uses to launch octopusd) on the CLI bundle `out/main/cli.js`, which lives inside
+# app.asar (electron-builder.yml packs out/** into it; Electron's patched fs reads asar).
+#
+# Packaging: this script cannot be exec'd from inside app.asar, so scripts/release.mjs
+# stages a copy NEXT TO the `octopus` binary (linux-unpacked/octopus-cli), and install.sh
+# copies that into the program dir and symlinks ~/.local/bin/octopus-cli to it.
+#
+# Dev (no install): ELECTRON_RUN_AS_NODE=1 npx electron out/main/cli.js "$@"
+# (after `npm run build`).
+
+set -eu
+
+# Follow the ~/.local/bin symlink to the real file (Linux: GNU readlink -f).
+SELF=$(readlink -f -- "$0")
+PROGRAM_DIR=$(dirname -- "$SELF")
+
+ELECTRON_RUN_AS_NODE=1 exec "$PROGRAM_DIR/octopus" "$PROGRAM_DIR/resources/app.asar/out/main/cli.js" "$@"

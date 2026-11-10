@@ -4,7 +4,9 @@
 #
 # What it does:
 #   - copies the app payload to a per-user PROGRAM dir (replace-in-place), and
-#   - symlinks a launcher into ~/.local/bin so `octopus` runs from anywhere.
+#   - symlinks a launcher into ~/.local/bin so `octopus` runs from anywhere,
+#   - symlinks the `octopus-cli` launcher (shipped next to the binary) into ~/.local/bin, and
+#   - copies the Claude Code skill to ~/.claude/skills/octopus (replace-in-place).
 #
 # It deliberately does NOT touch your DATA dir (~/.local/share/octopus): your tasks,
 # sessions and settings survive install, upgrade, and uninstall. Version compatibility
@@ -19,12 +21,18 @@ set -eu
 SRC_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PAYLOAD="$SRC_DIR/linux-unpacked"
 ICON_SRC="$SRC_DIR/icon.png"
+SKILL_SRC="$SRC_DIR/claude-skill/octopus"
 
 # Program dir: where the app files live. Distinct from the DATA dir on purpose.
 PROGRAM_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/octopus-app"
 BIN_DIR="$HOME/.local/bin"
 LAUNCHER="$PROGRAM_DIR/octopus"
 SYMLINK="$BIN_DIR/octopus"
+# octopus-cli sits next to the binary (it cannot live inside app.asar and be exec'd).
+CLI_LAUNCHER="$PROGRAM_DIR/octopus-cli"
+CLI_SYMLINK="$BIN_DIR/octopus-cli"
+# Claude Code user-level skill dir.
+SKILL_DEST="$HOME/.claude/skills/octopus"
 
 # Desktop integration: launcher icon theme entry + .desktop file.
 # StartupWMClass="octopus" matches the WM_CLASS Electron sets for this app
@@ -39,6 +47,11 @@ WM_CLASS="octopus"
 
 if [ ! -x "$PAYLOAD/octopus" ]; then
   echo "error: $PAYLOAD/octopus not found — run this script from inside the extracted release dir." >&2
+  exit 1
+fi
+
+if [ ! -x "$PAYLOAD/octopus-cli" ] || [ ! -f "$SKILL_SRC/SKILL.md" ]; then
+  echo "error: octopus-cli or claude-skill/octopus missing in $SRC_DIR — incomplete release dir." >&2
   exit 1
 fi
 
@@ -58,6 +71,19 @@ mkdir -p "$BIN_DIR"
 ln -sf "$LAUNCHER" "$SYMLINK"
 
 echo "Installed. Launcher symlinked at $SYMLINK -> $LAUNCHER"
+
+ln -sf "$CLI_LAUNCHER" "$CLI_SYMLINK"
+echo "CLI symlinked at $CLI_SYMLINK -> $CLI_LAUNCHER"
+
+# --- Claude Code skill (replace in place) -------------------------------------
+if [ ! -e "$SKILL_DEST" ] || [ -f "$SKILL_DEST/.octopus-managed" ]; then
+  rm -rf "$SKILL_DEST"
+  mkdir -p "$SKILL_DEST"
+  cp -a "$SKILL_SRC/." "$SKILL_DEST/"
+  echo "Claude skill installed at $SKILL_DEST"
+else
+  echo "warning: $SKILL_DEST exists and is not Octopus-managed — skill not installed." >&2
+fi
 
 # --- desktop integration (icon + launcher entry) ------------------------------
 mkdir -p "$ICON_DIR"

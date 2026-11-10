@@ -11,6 +11,8 @@ import react from '@vitejs/plugin-react'
 //     config), emitted as `out/main/daemon.js`. It is the `octopusd` durable-session
 //     host, launched detached via `ELECTRON_RUN_AS_NODE=1`; node-pty stays external
 //     so its .node binary is required at runtime from the shipped node_modules.
+//   - cli: a THIRD Node entry (`out/main/cli.js`), the `octopus-cli` control-socket client,
+//     run under `ELECTRON_RUN_AS_NODE=1`. Imports only `shared`.
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
@@ -18,7 +20,8 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve(__dirname, 'src/main/index.ts'),
-          daemon: resolve(__dirname, 'src/daemon/index.ts')
+          daemon: resolve(__dirname, 'src/daemon/index.ts'),
+          cli: resolve(__dirname, 'src/cli/index.ts')
         }
       }
     }

@@ -6,7 +6,8 @@ All notable changes to Octopus are documented here. The format is based on
 
 ## [Unreleased]
 
-Adds a **Blocked** issue status with a "Blocked reasons" field.
+Adds a **Blocked** issue status with a "Blocked reasons" field, and `octopus-cli` so Claude Code can
+drive a running Octopus.
 
 ### Added
 
@@ -14,6 +15,13 @@ Adds a **Blocked** issue status with a "Blocked reasons" field.
   no-entry icon and a fifth Board column. While an issue is Blocked, the issue view shows a markdown
   "Blocked reasons" section below the description, editable via Edit. Reasons are kept (hidden) when
   the status changes and never cleared automatically.
+- **`octopus-cli` and a Claude Code skill.** The running app now serves a control socket
+  (`<dataDir>/control.sock`, 0600 in a 0700 dir) and ships `octopus-cli` so Claude Code can open
+  worktree tasks, open sessions (named, optionally running a shell command, e.g. `claude` with a prompt), and list/get/add Issues
+  (`issues get --markdown` prints an issue readably). Tasks and sessions
+  open in the background (no focus steal). `install.sh` symlinks `octopus-cli` into `~/.local/bin`
+  and installs the skill to `~/.claude/skills/octopus`; `uninstall.sh` removes both. The socket path
+  is exported to session terminals as `OCTOPUS_CONTROL_SOCKET`. See `DESIGN §14`.
 
 ### Changed
 

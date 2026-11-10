@@ -31,6 +31,7 @@ describe('resolveAppPaths', () => {
     expect(paths.shellIntegrationDir).toBe('/custom/data/octopus/shell-integration')
     expect(paths.claudeStateDir).toBe('/custom/data/octopus/claude-state')
     expect(paths.credentialsDir).toBe('/custom/data/octopus/credentials')
+    expect(paths.controlSocketPath).toBe('/custom/data/octopus/control.sock')
   })
 
   it('falls back to ~/.local/share on Linux when XDG_DATA_HOME is unset', () => {

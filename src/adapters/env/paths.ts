@@ -1,6 +1,7 @@
 import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { mkdirSync, chmodSync } from 'node:fs'
+import { controlSocketPath, resolveDataDir } from '../../shared/data-paths'
 
 /**
  * Resolves Octopus's on-disk data locations (DESIGN §6.3).
@@ -17,8 +18,6 @@ import { mkdirSync, chmodSync } from 'node:fs'
  * V0 note: nothing consumes these paths yet (the DB and log writers land in V1/V2).
  * We resolve and create the directories now so the runtime environment is ready.
  */
-
-const APP_DIR = 'octopus'
 
 export interface AppPaths {
   /** Root data directory for this app. */
@@ -46,6 +45,8 @@ export interface AppPaths {
    * secrets; never readable by the DB/settings.json (I16).
    */
   credentialsDir: string
+  /** Control socket for `octopus-cli` (`<dataDir>/control.sock`); ~107-byte path limit applies. */
+  controlSocketPath: string
 }
 
 export interface ResolveContext {
@@ -58,7 +59,7 @@ export interface ResolveContext {
  * Compute app paths for a given environment. Pure — no filesystem access.
  */
 export function resolveAppPaths({ env, platform, home }: ResolveContext): AppPaths {
-  const dataDir = join(baseDataDir(env, platform, home), APP_DIR)
+  const dataDir = resolveDataDir({ env, platform, home })
   return {
     dataDir,
     dbPath: join(dataDir, 'octopus.db'),
@@ -67,7 +68,8 @@ export function resolveAppPaths({ env, platform, home }: ResolveContext): AppPat
     stateLogPath: join(dataDir, 'logs', 'state.log'),
     shellIntegrationDir: join(dataDir, 'shell-integration'),
     claudeStateDir: join(dataDir, 'claude-state'),
-    credentialsDir: join(dataDir, 'credentials')
+    credentialsDir: join(dataDir, 'credentials'),
+    controlSocketPath: controlSocketPath(dataDir, platform)
   }
 }
 
@@ -131,17 +133,4 @@ export function resolveDefaultWorktreeBase(home: string = homedir()): string {
 export function ensureWorktreeBase(base: string): string {
   mkdirSync(base, { recursive: true })
   return base
-}
-
-/** Platform base data dir per the XDG Base Directory spec / Windows convention. */
-function baseDataDir(env: NodeJS.ProcessEnv, platform: NodeJS.Platform, home: string): string {
-  if (platform === 'win32') {
-    return env.APPDATA && env.APPDATA.length > 0 ? env.APPDATA : join(home, 'AppData', 'Roaming')
-  }
-  // Linux/macOS: honour XDG_DATA_HOME when set to an absolute path, else the spec default.
-  const xdg = env.XDG_DATA_HOME
-  if (xdg && xdg.startsWith('/')) {
-    return xdg
-  }
-  return join(home, '.local', 'share')
 }

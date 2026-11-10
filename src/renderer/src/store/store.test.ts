@@ -2541,3 +2541,126 @@ describe('split groups (DESIGN §5.7, split-groups design)', () => {
     })
   })
 })
+
+describe('background (octopus-cli) events', () => {
+  function withTwoTasks(): StoreData {
+    let d = reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') })
+    d = reduceEvent(d, { type: 'taskCreated', task: task('t2') })
+    d = reduceEvent(d, { type: 'sessionCreated', taskId: 't1', session: session('s1', 't1') })
+    return d
+  }
+
+  it('background sessionCreated leaves an existing mark unchanged but adds the tab', () => {
+    const d0 = reduceEvent(withTwoTasks(), { type: 'activeTaskChanged', taskId: 't1' })
+    expect(d0.activeTaskId).toBe('t1')
+    const d = reduceEvent(d0, {
+      type: 'sessionCreated',
+      taskId: 't1',
+      session: session('s2', 't1', { order: 1 }),
+      background: true
+    })
+    expect(d.tasks.t1.sessionIds).toEqual(['s1', 's2'])
+    expect(d.activeSessionByTask.t1).toBe('s1')
+    expect(d.activeTaskId).toBe('t1')
+  })
+
+  it('background sessionCreated seeds a mark only where the task has none', () => {
+    const d0 = reduceEvent(withTwoTasks(), { type: 'activeTaskChanged', taskId: 't1' })
+    expect(d0.activeTaskId).toBe('t1')
+    const d = reduceEvent(d0, {
+      type: 'sessionCreated',
+      taskId: 't2',
+      session: session('s9', 't2'),
+      background: true
+    })
+    expect(d.activeSessionByTask.t2).toBe('s9')
+    expect(d.activeTaskId).toBe('t1')
+  })
+
+  describe('noFocusOnMount hint (background: no focus steal)', () => {
+    const created = (id: string, background?: boolean) =>
+      ({
+        type: 'sessionCreated',
+        taskId: 't1',
+        session: session(id, 't1', { order: 1 }),
+        ...(background ? { background: true } : {})
+      }) as const
+
+    it('background sessionCreated sets the hint for that session', () => {
+      const d = reduceEvent(withTwoTasks(), created('s2', true))
+      expect(d.noFocusOnMount).toEqual({ s2: true })
+    })
+
+    it('non-background sessionCreated sets no hint', () => {
+      const d = reduceEvent(withTwoTasks(), created('s2'))
+      expect(d.noFocusOnMount).toEqual({})
+    })
+
+    it('sessionClosed drops the hint', () => {
+      let d = reduceEvent(withTwoTasks(), created('s2', true))
+      expect(d.noFocusOnMount.s2).toBe(true)
+      d = reduceEvent(d, { type: 'sessionClosed', taskId: 't1', sessionId: 's2' })
+      expect(d.noFocusOnMount).toEqual({})
+    })
+
+    it('consumeNoFocusOnMount returns true once, then false', () => {
+      useStore.setState(reduceEvent(withTwoTasks(), created('s2', true)))
+      expect(useStore.getState().consumeNoFocusOnMount('s2')).toBe(true)
+      expect(useStore.getState().noFocusOnMount).toEqual({})
+      expect(useStore.getState().consumeNoFocusOnMount('s2')).toBe(false)
+    })
+  })
+
+  it('non-background sessionCreated still moves the mark', () => {
+    const d = reduceEvent(withTwoTasks(), {
+      type: 'sessionCreated',
+      taskId: 't1',
+      session: session('s2', 't1', { order: 1 })
+    })
+    expect(d.activeSessionByTask.t1).toBe('s2')
+  })
+
+  it('scriptError for create_worktree sets provision_failed and toasts', () => {
+    const d = reduceEvent(
+      reduceEvent(initialData(), {
+        type: 'taskCreated',
+        task: task('t1', { lifecycle: 'provisioning' })
+      }),
+      { type: 'scriptError', taskId: 't1', script: 'create_worktree', exitCode: 1, stderr: 'bad' }
+    )
+    expect(d.tasks.t1.lifecycle).toBe('provision_failed')
+    expect(d.toasts.map((t) => t.message)).toEqual(['bad'])
+  })
+
+  it('background scriptError for create_worktree/adopt sets provision_failed with no toast', () => {
+    for (const script of ['create_worktree', 'adopt']) {
+      const d = reduceEvent(
+        reduceEvent(initialData(), {
+          type: 'taskCreated',
+          task: task('t1', { lifecycle: 'provisioning' })
+        }),
+        { type: 'scriptError', taskId: 't1', script, exitCode: 1, stderr: 'bad', background: true }
+      )
+      expect(d.tasks.t1.lifecycle).toBe('provision_failed')
+      expect(d.toasts).toHaveLength(0)
+    }
+  })
+
+  it('scriptError for another script does not change the lifecycle', () => {
+    const d = reduceEvent(reduceEvent(initialData(), { type: 'taskCreated', task: task('t1') }), {
+      type: 'scriptError',
+      taskId: 't1',
+      script: 'delete_worktree',
+      exitCode: 1,
+      stderr: 'x'
+    })
+    expect(d.tasks.t1.lifecycle).toBe('ready')
+  })
+
+  it('background error event produces no toast; foreground does', () => {
+    const bg = reduceEvent(initialData(), { type: 'error', message: 'm', background: true })
+    expect(bg.toasts).toHaveLength(0)
+    const fg = reduceEvent(initialData(), { type: 'error', message: 'm' })
+    expect(fg.toasts).toHaveLength(1)
+  })
+})

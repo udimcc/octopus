@@ -24,6 +24,8 @@ export interface SessionCreatedEventDTO {
   readonly type: 'sessionCreated'
   readonly taskId: string
   readonly session: SessionDTO
+  /** Created via the octopus-cli control socket: do not move the tab mark / active task. */
+  readonly background?: boolean
 }
 export interface SessionExitedEventDTO {
   readonly type: 'sessionExited'
@@ -72,6 +74,8 @@ export interface GroupsChangedEventDTO {
 export interface TaskCreatedEventDTO {
   readonly type: 'taskCreated'
   readonly task: TaskDTO
+  /** Originated from the octopus-cli control socket: the New-Task modal and toaster ignore it. */
+  readonly background?: boolean
 }
 export interface TaskDeletedEventDTO {
   readonly type: 'taskDeleted'
@@ -124,6 +128,8 @@ export interface ScriptProgressEventDTO {
   readonly type: 'scriptProgress'
   readonly taskId: string
   readonly line: string
+  /** Originated from the octopus-cli control socket: the New-Task modal and toaster ignore it. */
+  readonly background?: boolean
 }
 export interface ScriptErrorEventDTO {
   readonly type: 'scriptError'
@@ -131,6 +137,8 @@ export interface ScriptErrorEventDTO {
   readonly script: string
   readonly exitCode: number | null
   readonly stderr: string
+  /** Originated from the octopus-cli control socket: the New-Task modal and toaster ignore it. */
+  readonly background?: boolean
 }
 
 export interface ErrorEventDTO {
@@ -138,6 +146,8 @@ export interface ErrorEventDTO {
   readonly message: string
   readonly taskId?: string
   readonly sessionId?: string
+  /** Originated from the octopus-cli control socket: the New-Task modal and toaster ignore it. */
+  readonly background?: boolean
 }
 
 // ── Window lifecycle events (V1.5, §6.7) ─────────────────────────────────────

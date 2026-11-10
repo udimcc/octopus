@@ -44,8 +44,6 @@ import type {
   UngroupInput,
   ReorderGroupInput,
   ResizeGroupInput,
-  SplitDirection,
-  SplitPath,
   CreateWindowInput,
   CloseWindowInput,
   CreateViewInput,
@@ -67,7 +65,6 @@ import type {
   BindIssueInput,
   UnbindIssueInput,
   OpenExternalInput,
-  IssueStatusDTO,
   JiraProjectDTO,
   JiraSprintDTO,
   JiraSearchPageDTO,
@@ -98,7 +95,6 @@ import {
   type TaskId,
   type SessionId
 } from '../domain/ids'
-import { parseIssueStatus, type IssueStatus } from '../domain/issue'
 import type { JiraSprintFilter } from '../domain/jira-import'
 import type { JiraIssueSource, JiraSearchFilters } from '../ports/jira-issue-source'
 import { JIRA_API_KEY_REF, type CredentialsProvider } from '../ports/credentials-provider'
@@ -113,27 +109,14 @@ import {
   toJiraErrorDTO
 } from './dto-mappers'
 import { openExternalSafely } from './window'
+import {
+  isNonEmptyString,
+  isSplitDirection,
+  isSplitPath,
+  parseCreateIssueInput,
+  parseIssueStatusInput
+} from './command-validation'
 
-/**
- * Validate a wire issue-status string against the domain enum (§13.4), shared with
- * `mappers.ts`'s defense of a corrupt DB row (`domain/issue.ts`). Returns the parsed
- * status, or `{ error }` if `status` was present but didn't match one of
- * `IssueStatusDTO`'s values — a malformed/stale-client payload, rejected here rather
- * than silently treated as absent (the command's own default, `todo`).
- */
-function parseIssueStatusInput(status: IssueStatusDTO | undefined): {
-  readonly status?: IssueStatus
-  readonly error?: string
-} {
-  if (status === undefined) {
-    return {}
-  }
-  const parsed = parseIssueStatus(status)
-  if (parsed === undefined) {
-    return { error: `Invalid issue status: ${String(status)}` }
-  }
-  return { status: parsed }
-}
 import { locateSession } from '../application/use-cases/locate-session'
 
 function ack(result: CommandResult): CommandAck {
@@ -157,19 +140,6 @@ function ack(result: CommandResult): CommandAck {
 /** A rejected `CommandAck` for malformed input, never reaching the command loop. */
 function invalidAck(error: string): CommandAck {
   return { ok: false, error }
-}
-
-function isNonEmptyString(v: unknown): v is string {
-  return typeof v === 'string' && v.length > 0
-}
-
-function isSplitDirection(v: unknown): v is SplitDirection {
-  return v === 'row' || v === 'col'
-}
-
-/** A {@link SplitPath}: an array of only `'a'`/`'b'` steps (possibly empty). */
-function isSplitPath(v: unknown): v is SplitPath {
-  return Array.isArray(v) && v.every((step) => step === 'a' || step === 'b')
 }
 
 // ── Jira import validators (DESIGN "Jira import") ───────────────────────────────
@@ -498,6 +468,8 @@ export function registerIpcHandlers(
       kind: 'createTask',
       input: {
         ...input,
+        // `background` is control-socket-only; never accept it from the renderer.
+        background: undefined,
         issueId: input.issueId !== undefined ? asIssueId(input.issueId) : undefined
       }
     })
@@ -913,21 +885,13 @@ export function registerIpcHandlers(
 
   // ── Issue commands ("Issues", §13.4) ────────────────────────────────────────
   ipcMain.handle(CHANNELS.issueCreate, async (_e, input: CreateIssueInput): Promise<CommandAck> => {
-    if (typeof input.name !== 'string' || typeof input.description !== 'string') {
-      return ack({ ok: false, error: 'Invalid issue name or description' })
-    }
-    const status = parseIssueStatusInput(input.status)
-    if (status.error) {
-      return ack({ ok: false, error: status.error })
+    const parsed = parseCreateIssueInput(input)
+    if (parsed.error !== undefined) {
+      return ack({ ok: false, error: parsed.error })
     }
     const result = await loop.dispatch({
       kind: 'createIssue',
-      input: {
-        name: input.name,
-        description: input.description,
-        projectPath: input.projectPath,
-        status: status.status
-      }
+      input: parsed.input
     })
     return ack(result)
   })

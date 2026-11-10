@@ -86,6 +86,16 @@ function assertIconPresent() {
   }
 }
 
+function assertCliAssetsPresent() {
+  for (const rel of [
+    'resources/octopus-cli',
+    'resources/claude-skill/octopus/SKILL.md',
+    'resources/claude-skill/octopus/.octopus-managed'
+  ]) {
+    if (!existsSync(resolve(repoRoot, rel))) throw new Error(`missing ${rel}`)
+  }
+}
+
 function build() {
   // typecheck + electron-vite build + electron-builder --dir → release/<version>/linux-unpacked
   run('build:unpack (typecheck + bundle + electron-builder --dir)', 'npm', ['run', 'build:unpack'])
@@ -106,6 +116,16 @@ function stage() {
     copyFileSync(join(repoRoot, f), dest)
     chmodSync(dest, 0o755)
   }
+  // octopus-cli launcher goes NEXT TO the `octopus` binary (inside the payload): it must be
+  // exec'able, so it cannot live in app.asar (where resources/** is packed). It finds the
+  // binary and resources/app.asar relative to its own real path. install.sh symlinks it.
+  const cliDest = join(stageDir, 'linux-unpacked', 'octopus-cli')
+  copyFileSync(join(repoRoot, 'resources', 'octopus-cli'), cliDest)
+  chmodSync(cliDest, 0o755)
+  // Claude Code skill; install.sh copies it to ~/.claude/skills/octopus.
+  cpSync(join(repoRoot, 'resources', 'claude-skill'), join(stageDir, 'claude-skill'), {
+    recursive: true
+  })
   // Ship the launcher icon next to install.sh — it installs it into the current
   // user's hicolor icon theme (per-user, not system-wide).
   copyFileSync(join(repoRoot, 'build', 'icon.png'), join(stageDir, 'icon.png'))
@@ -122,6 +142,7 @@ try {
   assertCleanTaggedTree()
   assertNativesPresent()
   assertIconPresent()
+  assertCliAssetsPresent()
   build()
   stage()
   pack()

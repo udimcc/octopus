@@ -193,6 +193,8 @@ export function NewTaskModal({ onClose, fromIssueId }: NewTaskModalProps): React
   useEffect(() => {
     const unsubscribe = window.octopusAPI.onEvent((event) => {
       if (!busyRef.current) return
+      // CLI-originated (background) creates can run ahead of ours in the serial loop.
+      if ('background' in event && event.background) return
       if (event.type === 'scriptProgress') {
         setProgress(event.line)
       } else if (event.type === 'scriptError') {

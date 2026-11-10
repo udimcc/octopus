@@ -367,16 +367,16 @@ describe('openSession window-view group refusal (window-view feature)', () => {
     const viewResult = createView(fd.deps, { taskId: fd.taskId })
     const viewId = viewResult.ok ? viewResult.windowId! : (undefined as never)
 
-    await expect(
-      openSession(fd.deps, { taskId: fd.taskId, windowId: viewId })
-    ).resolves.toBeUndefined()
+    await expect(openSession(fd.deps, { taskId: fd.taskId, windowId: viewId })).resolves.toEqual(
+      expect.any(String)
+    )
     const task = fd.workspace.task(fd.taskId)!
     expect(task.sessions().some((s) => s.windowId === viewId)).toBe(true)
 
     const secondaryId = createWindow(fd.deps, { role: 'secondary', parentWindowId: viewId })
     await expect(
       openSession(fd.deps, { taskId: fd.taskId, windowId: secondaryId })
-    ).resolves.toBeUndefined()
+    ).resolves.toEqual(expect.any(String))
     expect(task.sessions().some((s) => s.windowId === secondaryId)).toBe(true)
   })
 
@@ -410,5 +410,57 @@ describe('openSession guards', () => {
     await expect(
       openSession(fd.deps, { taskId: fd.taskId, typeId: asSessionId('nope') as never })
     ).rejects.toThrow(/unknown session type/)
+  })
+})
+
+describe('openSession background / launchCommand (octopus-cli control socket)', () => {
+  it('returns the new session id', async () => {
+    const fd = await seedReadyTask()
+    const id = await openSession(fd.deps, { taskId: fd.taskId })
+    expect(id).toBe(fd.workspace.task(fd.taskId)!.sessions()[0].id)
+  })
+
+  it('writes launchCommand once on the fresh spawn and never persists it', async () => {
+    const fd = await seedReadyTask()
+    await openSession(fd.deps, {
+      taskId: fd.taskId,
+      launchCommand: 'claude -- "p"',
+      background: true
+    })
+    expect(fd.sessions.last()!.writes).toEqual(['claude -- "p"\n'])
+    expect(JSON.stringify(fd.persistence.upsertedSessions)).not.toContain('claude')
+    const cfg = fd.workspace.task(fd.taskId)!.sessions()[0].config
+    expect(JSON.stringify(cfg)).not.toContain('claude')
+  })
+
+  it('flags sessionCreated as background only when requested', async () => {
+    const fd = await seedReadyTask()
+    await openSession(fd.deps, { taskId: fd.taskId, background: true })
+    await openSession(fd.deps, { taskId: fd.taskId })
+    expect(fd.bus.ofType('sessionCreated').map((e) => e.background)).toEqual([true, undefined])
+  })
+
+  it('background with no windowId lands in main when the task has no view', async () => {
+    const fd = await seedReadyTask()
+    await openSession(fd.deps, { taskId: fd.taskId, background: true })
+    expect(fd.workspace.task(fd.taskId)!.sessions()[0].windowId).toBe(MAIN_WINDOW_ID)
+  })
+
+  it("background with no windowId lands in the task's view window when one exists", async () => {
+    const fd = await seedReadyTask()
+    const v = createView(fd.deps, { taskId: fd.taskId })
+    const viewId = v.ok ? v.windowId! : (undefined as never)
+
+    await openSession(fd.deps, { taskId: fd.taskId, background: true })
+
+    expect(fd.workspace.task(fd.taskId)!.sessions()[0].windowId).toBe(viewId)
+  })
+
+  it('a non-background open without windowId still targets main (and is refused when a view exists)', async () => {
+    const fd = await seedReadyTask()
+    createView(fd.deps, { taskId: fd.taskId })
+    await expect(openSession(fd.deps, { taskId: fd.taskId })).rejects.toThrow(
+      /dedicated view window/
+    )
   })
 })

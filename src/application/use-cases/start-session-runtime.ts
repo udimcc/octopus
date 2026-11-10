@@ -38,6 +38,17 @@ import type { WorktreeRef } from '../../domain/worktree-ref'
 import { InvariantViolationError } from '../../domain/errors'
 import { configCwd, configShell, configInitialCommand } from './session-config-access'
 
+/** Per-call, non-persisted options for {@link startSessionRuntime}. */
+export interface StartSessionRuntimeOptions {
+  /** Control-socket open: a start failure's `error` event is flagged so the UI does not toast it. */
+  readonly background?: boolean
+  /**
+   * One-shot command (octopus-cli control socket) written after the persisted
+   * `initialCommand`, on a fresh spawn only. Never stored in `SessionConfig`.
+   */
+  readonly launchCommand?: string
+}
+
 /** Default terminal size before the renderer's first fit/resize (§6.1). */
 const DEFAULT_COLS = 80
 const DEFAULT_ROWS = 24
@@ -46,7 +57,8 @@ export async function startSessionRuntime(
   deps: AppDependencies,
   task: Task,
   session: Session,
-  worktree: WorktreeRef | undefined
+  worktree: WorktreeRef | undefined,
+  options: StartSessionRuntimeOptions = {}
 ): Promise<void> {
   const provider = deps.registry.get(session.typeId)
   if (!provider) {
@@ -102,7 +114,13 @@ export async function startSessionRuntime(
     session.markStartFailed()
     runtime.dispose()
     const message = err instanceof Error ? err.message : String(err)
-    deps.bus.publish({ type: 'error', taskId: task.id, sessionId: id, message })
+    deps.bus.publish({
+      type: 'error',
+      taskId: task.id,
+      sessionId: id,
+      message,
+      ...(options?.background ? { background: true } : {})
+    })
     throw err
   }
 
@@ -120,5 +138,10 @@ export async function startSessionRuntime(
   const initial = configInitialCommand(session.config)
   if (initial && !resume) {
     runtime.write(initial.endsWith('\n') ? initial : initial + '\n')
+  }
+  // One-shot launch command: after `initialCommand`, fresh spawn only, never persisted.
+  const launch = options.launchCommand
+  if (launch && !resume) {
+    runtime.write(launch.endsWith('\n') ? launch : launch + '\n')
   }
 }

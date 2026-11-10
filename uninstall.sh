@@ -14,6 +14,9 @@ ICON_DEST="$DATA_HOME/icons/hicolor/512x512/apps/octopus.png"
 APPS_DIR="$DATA_HOME/applications"
 DESKTOP_FILE="$APPS_DIR/octopus.desktop"
 
+CLI_SYMLINK="$HOME/.local/bin/octopus-cli"
+SKILL_DEST="$HOME/.claude/skills/octopus"
+
 # Only remove the symlink if it points into our program dir (don't clobber a
 # same-named binary the user put there themselves).
 if [ -L "$SYMLINK" ]; then
@@ -22,6 +25,20 @@ if [ -L "$SYMLINK" ]; then
     "$PROGRAM_DIR"/*) rm -f "$SYMLINK"; echo "Removed launcher $SYMLINK" ;;
     *) echo "note: $SYMLINK does not point into $PROGRAM_DIR — left as-is." ;;
   esac
+fi
+
+if [ -L "$CLI_SYMLINK" ]; then
+  TARGET=$(readlink "$CLI_SYMLINK")
+  case "$TARGET" in
+    "$PROGRAM_DIR"/*) rm -f "$CLI_SYMLINK"; echo "Removed CLI $CLI_SYMLINK" ;;
+    *) echo "note: $CLI_SYMLINK does not point into $PROGRAM_DIR — left as-is." ;;
+  esac
+fi
+
+# Only remove the skill dir if it is ours (carries the install.sh marker file).
+if [ -f "$SKILL_DEST/.octopus-managed" ]; then
+  rm -rf "$SKILL_DEST"
+  echo "Removed Claude skill $SKILL_DEST"
 fi
 
 if [ -d "$PROGRAM_DIR" ]; then

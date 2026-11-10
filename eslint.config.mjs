@@ -64,6 +64,8 @@ export default tseslint.config(
         // PTYs. It may import ONLY `shared` (wire types + pure node helpers) — never
         // application/domain/adapters — so the two processes share contracts, not code.
         { type: 'daemon', pattern: 'src/daemon/**' },
+        // `octopus-cli` (control-socket client): its own process; imports only `shared`.
+        { type: 'cli', pattern: 'src/cli/**' },
         { type: 'shared', pattern: 'src/shared/**' }
       ],
       'import/resolver': {
@@ -91,6 +93,7 @@ export default tseslint.config(
             layerPolicy('renderer', ['renderer', 'application', 'shared']),
             // Daemon is its own process; it shares only the transport-agnostic `shared` layer.
             layerPolicy('daemon', ['daemon', 'shared']),
+            layerPolicy('cli', ['cli', 'shared']),
             layerPolicy('shared', ['shared'])
           ]
         }

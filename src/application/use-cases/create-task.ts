@@ -145,7 +145,8 @@ function persistReadyTask(
   deps: AppDependencies,
   task: Task,
   id: TaskId,
-  issueId: IssueId | undefined
+  issueId: IssueId | undefined,
+  background: boolean
 ): PersistReadyOutcome {
   const priorActiveTaskId = deps.workspace.activeTaskId
   const requestedIssue = issueId ? deps.workspace.issue(issueId) : undefined
@@ -161,13 +162,16 @@ function persistReadyTask(
   try {
     deps.persistence.transaction(() => {
       deps.persistence.upsertTask(task.toSnapshot(deps.aggregator))
-      deps.workspace.setActiveTask(id)
-      deps.persistence.setActiveTask(id)
+      // Background (octopus-cli control socket): leave the user's active task alone.
+      if (!background) {
+        deps.workspace.setActiveTask(id)
+        deps.persistence.setActiveTask(id)
+      }
       bindOutcome = bindRequestedIssue(deps, issueId, id)
     })
   } catch (err) {
     deps.workspace.removeTask(id)
-    deps.workspace.setActiveTask(priorActiveTaskId)
+    if (!background) deps.workspace.setActiveTask(priorActiveTaskId)
     if (issueRollback) {
       deps.workspace.restoreIssueBinding(
         issueRollback.issueId,
@@ -201,23 +205,31 @@ export async function createTask(
     task.markReadyNoRepo()
     deps.workspace.addTask(task)
 
-    const result = persistReadyTask(deps, task, id, input.issueId)
+    const result = persistReadyTask(deps, task, id, input.issueId, input.background === true)
     if (!result.ok) {
       // Nothing was ever announced for this task (no `taskCreated` yet in this
       // mode), so there is no stuck spinner to undo — just report the failure.
       return { ok: false, error: result.error }
     }
 
-    deps.bus.publish({ type: 'taskCreated', task: task.toSnapshot(deps.aggregator) })
+    deps.bus.publish({
+      type: 'taskCreated',
+      task: task.toSnapshot(deps.aggregator),
+      ...(input.background ? { background: true } : {})
+    })
     announceBindOutcome(deps, id, result.bindOutcome)
-    deps.bus.publish({ type: 'activeTaskChanged', taskId: id })
-    return { ok: true }
+    if (!input.background) deps.bus.publish({ type: 'activeTaskChanged', taskId: id })
+    return { ok: true, taskId: id }
   }
 
   task.markProvisioning()
   deps.workspace.addTask(task)
   // Announce the provisioning task so the UI shows a spinner while the script runs.
-  deps.bus.publish({ type: 'taskCreated', task: task.toSnapshot(deps.aggregator) })
+  deps.bus.publish({
+    type: 'taskCreated',
+    task: task.toSnapshot(deps.aggregator),
+    ...(input.background ? { background: true } : {})
+  })
 
   let worktree: WorktreeRef
   try {
@@ -241,7 +253,8 @@ export async function createTask(
       taskId: id,
       script: input.mode === 'new' ? 'create_worktree' : 'adopt',
       exitCode: null,
-      stderr: message
+      stderr: message,
+      ...(input.background ? { background: true } : {})
     })
     return { ok: false, error: message }
   }
@@ -250,7 +263,7 @@ export async function createTask(
 
   // Persist the now-Ready task, bind the requested issue (if any), and make it
   // active, atomically (§6.6, §13.3).
-  const result = persistReadyTask(deps, task, id, input.issueId)
+  const result = persistReadyTask(deps, task, id, input.issueId, input.background === true)
   if (!result.ok) {
     // A PERSIST failure, distinct from the provisioning `catch` above: the task
     // already left `Provisioning` for `Ready`, so `markProvisionFailed` would be
@@ -259,14 +272,23 @@ export async function createTask(
     // (Provisioning) the UI already received instead of leaving its spinner
     // stuck, and surface the real error as a toast too.
     deps.bus.publish({ type: 'taskDeleted', taskId: id })
-    deps.bus.publish({ type: 'error', taskId: id, message: result.error })
+    deps.bus.publish({
+      type: 'error',
+      taskId: id,
+      message: result.error,
+      ...(input.background ? { background: true } : {})
+    })
     return { ok: false, error: result.error }
   }
 
-  deps.bus.publish({ type: 'taskCreated', task: task.toSnapshot(deps.aggregator) })
+  deps.bus.publish({
+    type: 'taskCreated',
+    task: task.toSnapshot(deps.aggregator),
+    ...(input.background ? { background: true } : {})
+  })
   announceBindOutcome(deps, id, result.bindOutcome)
-  deps.bus.publish({ type: 'activeTaskChanged', taskId: id })
-  return { ok: true }
+  if (!input.background) deps.bus.publish({ type: 'activeTaskChanged', taskId: id })
+  return { ok: true, taskId: id }
 }
 
 /** Provision a brand-new worktree (repo-local script or native git, §6.4). */
@@ -283,7 +305,13 @@ async function provisionNew(
       sourceBranch: input.sourceBranch,
       newBranch: input.newBranch
     },
-    (line) => deps.bus.publish({ type: 'scriptProgress', taskId: id, line })
+    (line) =>
+      deps.bus.publish({
+        type: 'scriptProgress',
+        taskId: id,
+        line,
+        ...(input.background ? { background: true } : {})
+      })
   )
 
   return WorktreeRef.create({

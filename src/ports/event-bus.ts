@@ -37,6 +37,8 @@ export interface SessionCreatedEvent {
   readonly type: 'sessionCreated'
   readonly taskId: TaskId
   readonly session: SessionSnapshot
+  /** Created via the octopus-cli control socket: the renderer must not move the mark/active task. */
+  readonly background?: boolean
 }
 export interface SessionExitedEvent {
   readonly type: 'sessionExited'
@@ -86,6 +88,8 @@ export interface GroupsChangedEvent {
 export interface TaskCreatedEvent {
   readonly type: 'taskCreated'
   readonly task: TaskSnapshot
+  /** Originated from the octopus-cli control socket: the New-Task modal and toaster ignore it. */
+  readonly background?: boolean
 }
 export interface TaskDeletedEvent {
   readonly type: 'taskDeleted'
@@ -130,6 +134,8 @@ export interface ScriptProgressEvent {
   readonly type: 'scriptProgress'
   readonly taskId: TaskId
   readonly line: string
+  /** Originated from the octopus-cli control socket: the New-Task modal and toaster ignore it. */
+  readonly background?: boolean
 }
 export interface ScriptErrorEvent {
   readonly type: 'scriptError'
@@ -137,6 +143,8 @@ export interface ScriptErrorEvent {
   readonly script: string
   readonly exitCode: number | null
   readonly stderr: string
+  /** Originated from the octopus-cli control socket: the New-Task modal and toaster ignore it. */
+  readonly background?: boolean
 }
 
 /** Generic non-fatal error surfaced to the UI as a toast (§5.4). */
@@ -145,6 +153,8 @@ export interface ErrorEvent {
   readonly message: string
   readonly taskId?: TaskId
   readonly sessionId?: SessionId
+  /** Originated from the octopus-cli control socket: the New-Task modal and toaster ignore it. */
+  readonly background?: boolean
 }
 
 // ── Window lifecycle events (V1.5, §6.7) ──────────────────────────────────────────

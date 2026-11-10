@@ -84,6 +84,8 @@ import {
   type SessionStateNotification
 } from '../application/dependencies'
 import { CommandLoop } from '../application/command-loop'
+import { createControlServer, type ControlServer } from '../adapters/control/control-server'
+import { createControlHandlers } from './control-handlers'
 import { reconcileOnStartup, reconcileStaleGroups } from '../application/reconcile'
 import { pruneStaleViews } from '../application/use-cases/prune-stale-views'
 import { shutdown } from '../application/quit'
@@ -95,6 +97,7 @@ import type { EventBus } from '../ports/event-bus'
 import type { EventDTO } from '../shared/events'
 import { MAIN_WINDOW_ID, asSessionId, type SessionId, type WindowId } from '../domain/ids'
 import { locateSession } from '../application/use-cases/locate-session'
+import { listProjects } from '../application/queries/list-projects'
 import { CURRENT_VERSION } from '../shared/version'
 import { registerIpcHandlers } from './ipc-handlers'
 import { createWindowRegistry, type WindowRegistry } from './window-registry'
@@ -102,6 +105,11 @@ import { createWindowRegistry, type WindowRegistry } from './window-registry'
 export interface AppContext {
   readonly paths: AppPaths
   readonly commandLoop: CommandLoop
+  /**
+   * `octopus-cli` control socket (control socket design). Built here, but `index.ts`
+   * calls `listen()` after the single-instance lock; `shutdown()` closes it first.
+   */
+  readonly controlServer: ControlServer
   readonly deps: AppDependencies
   readonly bus: EventBus
   /** Routes backend events to the right window(s) (§6.7); replaces the forwarder. */
@@ -291,7 +299,8 @@ export function bootstrap(): AppContext {
   // client here (not connecting) keeps `bootstrap()` synchronous.
   const inProcessSessions = new PtySessionManager({
     getSettings,
-    shellIntegration
+    shellIntegration,
+    controlSocketPath: paths.controlSocketPath
   })
   const sessions = new SwitchableSessionManager(inProcessSessions)
   const daemonClient = new DaemonClient({
@@ -302,7 +311,9 @@ export function bootstrap(): AppContext {
   const daemonSessions = new DaemonSessionManager({
     client: daemonClient,
     getSettings,
-    shellIntegration
+    shellIntegration,
+    // Rides in the spawn `envPatch` (no daemon protocol change).
+    controlSocketPath: paths.controlSocketPath
   })
   // Filled by `warmupSessions()` from the daemon's live roster; empty on the
   // in-process path (→ every restored session spawns fresh, V1 behavior).
@@ -689,9 +700,25 @@ export function bootstrap(): AppContext {
     }
   }
 
+  // Control socket (design: control socket). Handlers dispatch through the SAME
+  // single-writer CommandLoop as IPC; reads use the live deps. Not listening yet.
+  const controlServer = createControlServer({
+    socketPath: paths.controlSocketPath,
+    handle: createControlHandlers({
+      dispatch: (command) => commandLoop.dispatch(command),
+      listProjects: () => listProjects(deps),
+      getSnapshot: () => deps.workspace.toSnapshot(deps.aggregator)
+    }),
+    logger: {
+      warn: (m, ...a) => console.warn(`[octopus] control: ${m}`, ...a),
+      error: (m, ...a) => console.error(`[octopus] control: ${m}`, ...a)
+    }
+  })
+
   return {
     paths,
     commandLoop,
+    controlServer,
     deps,
     bus,
     registry: windowRegistry,
@@ -701,6 +728,8 @@ export function bootstrap(): AppContext {
     daemonActive: () => daemonActive,
     persistDaemonCwds,
     shutdown: () => {
+      // Stop accepting CLI requests BEFORE the loop's runtimes/store go away.
+      void controlServer.close().catch(() => undefined)
       windowRegistry.dispose()
       claudeStateWatcher?.dispose()
       shutdown(deps, {

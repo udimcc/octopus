@@ -225,7 +225,7 @@ describe('Issues end to end over the real CommandLoop (I19, "Issues" §13.3)', (
     const [bindResult, createResult] = await Promise.all([bindPromise, createPromise])
 
     expect(bindResult).toEqual({ ok: true })
-    expect(createResult).toEqual({ ok: true })
+    expect(createResult).toEqual({ ok: true, taskId: expect.any(String) })
 
     // The new task exists but was NOT bound — by the time it ran, the issue was
     // already (stale-view) bound to taskA (create-task.ts's module doc).

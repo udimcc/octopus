@@ -64,6 +64,11 @@ export interface PtyTerminalRuntimeOptions {
    * `OCTOPUS_USER_BASHRC` for shell integration. Applied last so it wins.
    */
   readonly envPatch?: Readonly<Record<string, string>>
+  /**
+   * Control-socket path exported to every session as `OCTOPUS_CONTROL_SOCKET` so
+   * `octopus-cli` inside a terminal finds this instance (control socket design).
+   */
+  readonly controlSocketPath?: string
   /** Grace period between SIGHUP and SIGKILL on close (default 2000 ms, §6.1). */
   readonly graceMs?: number
   readonly timers?: BatcherTimers
@@ -81,6 +86,7 @@ export class PtyTerminalRuntime implements SessionRuntime {
   private readonly shell: string
   private readonly args: readonly string[]
   private readonly envPatch: Readonly<Record<string, string>>
+  private readonly controlSocketPath?: string
   private readonly graceMs: number
   private readonly timers: BatcherTimers
   private readonly batcher: OutputBatcher
@@ -98,6 +104,7 @@ export class PtyTerminalRuntime implements SessionRuntime {
     this.shell = opts.shell
     this.args = opts.args ?? ['-l']
     this.envPatch = opts.envPatch ?? {}
+    this.controlSocketPath = opts.controlSocketPath
     this.graceMs = opts.graceMs ?? 2000
     this.timers = opts.timers ?? DEFAULT_TIMERS
     this.batcher = new OutputBatcher((data) => this.ctx.onData(data), {
@@ -117,7 +124,8 @@ export class PtyTerminalRuntime implements SessionRuntime {
         ...buildPtyEnv(this.ctx.env, {
           taskId: this.ctx.taskId,
           sessionId: this.ctx.sessionId,
-          worktreePath: this.ctx.worktreePath
+          worktreePath: this.ctx.worktreePath,
+          controlSocketPath: this.controlSocketPath
         }),
         ...this.envPatch
       }

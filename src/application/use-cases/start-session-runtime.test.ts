@@ -7,7 +7,10 @@
 
 import { describe, it, expect } from 'vitest'
 import { startSessionRuntime } from './start-session-runtime'
-import { makeDeps } from './test-fakes'
+import { makeDeps, taskInput } from './test-fakes'
+import { createTask } from './create-task'
+import { openSession } from './open-session'
+import { startTaskSessions } from './start-task-sessions'
 import { asTaskId, asSessionId, asTypeId, type SessionId } from '../../domain/ids'
 import { SessionLifecycle, TaskLifecycle } from '../../domain/lifecycle'
 import { SessionState, TaskState } from '../../domain/state'
@@ -185,5 +188,78 @@ describe('startSessionRuntime spawn-vs-attach seam (§6.2)', () => {
     expect(f.workspace.task(TASK)!.session(SESSION)!.lifecycle).toBe(SessionLifecycle.StartFailed)
     expect(f.sessions.last()!.disposed).toBe(true)
     expect(f.bus.ofType('error')).toHaveLength(1)
+  })
+})
+
+describe('startSessionRuntime launchCommand (octopus-cli one-shot)', () => {
+  const runWith = async (
+    f: ReturnType<typeof makeDeps>,
+    options: Parameters<typeof startSessionRuntime>[4]
+  ): Promise<void> => {
+    const task = f.workspace.task(TASK)!
+    await startSessionRuntime(f.deps, task, task.session(SESSION)!, task.worktree, options)
+  }
+
+  it('writes the launch command once, newline-terminated, on a fresh spawn', async () => {
+    const f = makeDeps({ snapshot: snapshot('/wt/task') })
+    await runWith(f, { launchCommand: 'claude -- "x"' })
+    expect(f.sessions.last()!.writes).toEqual(['claude -- "x"\n'])
+  })
+
+  it('writes it after the persisted initialCommand', async () => {
+    const f = makeDeps({
+      snapshot: snapshot('/wt/task', { kind: 'terminal', initialCommand: 'npm run dev' })
+    })
+    await runWith(f, { launchCommand: 'claude\n' })
+    expect(f.sessions.last()!.writes).toEqual(['npm run dev\n', 'claude\n'])
+  })
+
+  it('is NOT written on a re-attach (live daemon session)', async () => {
+    const f = makeDeps({
+      snapshot: snapshot('/wt/task'),
+      liveDaemonSessions: new Set<SessionId>([SESSION])
+    })
+    await runWith(f, { launchCommand: 'claude' })
+    expect(f.sessions.last()!.writes).toHaveLength(0)
+  })
+
+  it('is absent from the persisted/live SessionConfig and not re-run on a later restore', async () => {
+    // 1. Open a session with a launch command: it is written once to the fresh PTY.
+    const first = makeDeps()
+    await createTask(first.deps, taskInput('T'))
+    const taskId = asTaskId('task-1')
+    await openSession(first.deps, { taskId, launchCommand: 'claude -- "x"' })
+    expect(first.sessions.last()!.writes).toEqual(['claude -- "x"\n'])
+
+    // 2. What was persisted carries no launch command.
+    const persisted = first.persistence.upsertedSessions.at(-1)!
+    expect(JSON.stringify(persisted)).not.toContain('claude')
+
+    // 3. Restore from that persisted row in a fresh app (session back in Created).
+    const base = snapshot('/wt/task')
+    const restored = makeDeps({
+      snapshot: {
+        ...base,
+        tasks: [
+          {
+            ...base.tasks[0],
+            sessions: [{ ...persisted, lifecycle: SessionLifecycle.Created }],
+            activeSessionId: persisted.id
+          }
+        ]
+      }
+    })
+    await startTaskSessions(restored.deps, base.tasks[0].id)
+
+    // 4. The new PTY was spawned and received no writes at all.
+    expect(restored.sessions.last()).toBeDefined()
+    expect(restored.sessions.last()!.writes).toHaveLength(0)
+  })
+
+  it('flags the start-failure error event as background', async () => {
+    const f = makeDeps({ snapshot: snapshot('/wt/task') })
+    f.sessions.failNextStartWith = new Error('boom')
+    await expect(runWith(f, { background: true })).rejects.toThrow('boom')
+    expect(f.bus.ofType('error').map((e) => e.background)).toEqual([true])
   })
 })

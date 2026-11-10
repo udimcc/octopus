@@ -399,7 +399,15 @@ export function TerminalPane({
     // on the FIRST render: it runs in the commit phase BEFORE this passive mount
     // effect, when `termRef` is still null, so it returns early. It handles focus
     // only for LATER focus transitions of an already-mounted pane.
-    if (focused) term.focus()
+    // A background-created session (octopus-cli) never steals focus on mount, e.g. from an
+    // open modal input. Peek now, consume on the next tick: StrictMode re-runs this
+    // effect synchronously, and both runs must see the hint. Later transitions focus
+    // normally once it is consumed.
+    const skipMountFocus = useStore.getState().noFocusOnMount[sessionId] === true
+    if (skipMountFocus) {
+      setTimeout(() => useStore.getState().consumeNoFocusOnMount(sessionId), 0)
+    }
+    if (focused && !skipMountFocus) term.focus()
 
     // Refit on container resize, debounced so a drag doesn't spam pty:resize.
     let debounce: ReturnType<typeof setTimeout> | undefined

@@ -25,6 +25,7 @@ import type { Settings } from '../../ports/settings-store'
 import { resolveShell, sessionScopedEnv } from '../../shared/pty-env'
 import { shellSpawnPlan, type ShellIntegrationFiles } from '../../shared/node/shell-integration'
 import { DaemonClient } from './daemon-client'
+import { OCTOPUS_CONTROL_SOCKET_ENV } from '../../shared/data-paths'
 import { DaemonSessionRuntime } from './daemon-session-runtime'
 
 export interface DaemonSessionManagerDeps {
@@ -39,17 +40,24 @@ export interface DaemonSessionManagerDeps {
    * shells.
    */
   readonly shellIntegration?: ShellIntegrationFiles
+  /**
+   * Control-socket path exported to every session (rides in the spawn `envPatch`, so no daemon protocol change) as `OCTOPUS_CONTROL_SOCKET` so
+   * `octopus-cli` inside a terminal finds this instance (control socket design).
+   */
+  readonly controlSocketPath?: string
 }
 
 export class DaemonSessionManager implements SessionManager {
   private readonly client: DaemonClient
   private readonly getSettings: () => Settings
   private readonly shellIntegration?: ShellIntegrationFiles
+  private readonly controlSocketPath?: string
 
   constructor(deps: DaemonSessionManagerDeps) {
     this.client = deps.client
     this.getSettings = deps.getSettings
     this.shellIntegration = deps.shellIntegration
+    this.controlSocketPath = deps.controlSocketPath
   }
 
   createRuntime(ctx: SessionRuntimeContext): SessionRuntime {
@@ -72,7 +80,11 @@ export class DaemonSessionManager implements SessionManager {
       client: this.client,
       shell,
       args: plan?.args,
-      envPatch: { ...sessionScopedEnv(process.env), ...plan?.envPatch }
+      envPatch: {
+        ...sessionScopedEnv(process.env),
+        ...(this.controlSocketPath ? { [OCTOPUS_CONTROL_SOCKET_ENV]: this.controlSocketPath } : {}),
+        ...plan?.envPatch
+      }
     })
   }
 }

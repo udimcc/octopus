@@ -42,6 +42,23 @@ describe('buildPtyEnv (§6.1)', () => {
     expect(env.BAR).toBe('ok')
   })
 
+  it('sets OCTOPUS_CONTROL_SOCKET only when a control socket path is given', () => {
+    const withSock = buildPtyEnv({}, { ...ctx, controlSocketPath: '/d/octopus/control.sock' })
+    expect(withSock.OCTOPUS_CONTROL_SOCKET).toBe('/d/octopus/control.sock')
+    expect('OCTOPUS_CONTROL_SOCKET' in buildPtyEnv({}, ctx)).toBe(false)
+    expect('OCTOPUS_CONTROL_SOCKET' in buildPtyEnv({}, { ...ctx, controlSocketPath: '' })).toBe(
+      false
+    )
+  })
+
+  it('lets OCTOPUS_CONTROL_SOCKET from the app override an inherited stale value', () => {
+    const env = buildPtyEnv(
+      { OCTOPUS_CONTROL_SOCKET: '/stale.sock' },
+      { ...ctx, controlSocketPath: '/new.sock' }
+    )
+    expect(env.OCTOPUS_CONTROL_SOCKET).toBe('/new.sock')
+  })
+
   it('lets OCTOPUS_* / TERM override any inherited value of the same name', () => {
     const env = buildPtyEnv({ TERM: 'dumb', OCTOPUS_TASK_ID: 'stale' }, ctx)
     expect(env.TERM).toBe('xterm-256color')

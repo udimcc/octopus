@@ -328,6 +328,35 @@ describe('ipc-handlers field forwarding and command mapping (I4)', () => {
     expect((dispatched[0] as { input: { issueId?: unknown } }).input.issueId).toBeUndefined()
   })
 
+  it('taskCreate strips a renderer-supplied background flag', async () => {
+    const { loop, dispatched } = fakeLoop()
+    registerIpcHandlers(loop, noDeps(), hooks)
+    const create = handlerFor(CHANNELS.taskCreate)
+
+    await create({}, { mode: 'none', name: 'n', background: true })
+
+    const input = (dispatched[0] as { input: { background?: unknown } }).input
+    expect(input.background).toBeUndefined()
+  })
+
+  it('sessionCreate cannot pass background or launchCommand through from the renderer', async () => {
+    const { loop, dispatched } = fakeLoop()
+    registerIpcHandlers(loop, noDeps(), hooks)
+    const create = handlerFor(CHANNELS.sessionCreate)
+
+    await create(
+      { sender: { id: 1 } },
+      { taskId: 't1', background: true, launchCommand: 'rm -rf /' }
+    )
+
+    expect(dispatched).toHaveLength(1)
+    const input = (dispatched[0] as { input: Record<string, unknown> }).input
+    expect(input.taskId).toBe('t1')
+    expect(input.background).toBeUndefined()
+    expect(input.launchCommand).toBeUndefined()
+    expect(JSON.stringify(input)).not.toContain('rm -rf')
+  })
+
   it('taskDelete forwards alsoDeleteIssue through to the dispatched command input', async () => {
     const { loop, dispatched } = fakeLoop()
     registerIpcHandlers(loop, noDeps(), hooks)

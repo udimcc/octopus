@@ -48,19 +48,28 @@ import type { SessionConfig } from '../../domain/session-config'
 import type { Group } from '../../domain/task'
 import { Session } from '../../domain/session'
 import { InvariantViolationError } from '../../domain/errors'
-import { asTypeId, MAIN_WINDOW_ID, type TypeId } from '../../domain/ids'
+import { asTypeId, MAIN_WINDOW_ID, type SessionId, type TypeId } from '../../domain/ids'
 import { startSessionRuntime } from './start-session-runtime'
 import { persistGroups } from './persist-groups'
 import { windowGroupRoot, viewForTask } from './window-groups'
 
-export async function openSession(deps: AppDependencies, input: CreateSessionInput): Promise<void> {
+export async function openSession(
+  deps: AppDependencies,
+  input: CreateSessionInput
+): Promise<SessionId> {
   const task = deps.workspace.task(input.taskId)
   if (!task) {
     throw new InvariantViolationError(`task ${input.taskId} not found`)
   }
 
-  const windowId = input.windowId ?? MAIN_WINDOW_ID
   const windows = deps.persistence.loadWindows()
+  // A background (control-socket) open names no window: target the task's view if it has
+  // one. Resolved here, inside the loop, so a view closed while this command queued
+  // behind a provisioning task.create is never targeted.
+  const windowId =
+    input.windowId ??
+    (input.background ? viewForTask(windows, input.taskId)?.id : undefined) ??
+    MAIN_WINDOW_ID
   const targetRoot = windowGroupRoot(windows, windowId)
   const view = viewForTask(windows, input.taskId)
   if (view && targetRoot !== view.id) {
@@ -99,7 +108,8 @@ export async function openSession(deps: AppDependencies, input: CreateSessionInp
     deps.bus.publish({
       type: 'error',
       taskId: input.taskId,
-      message: `invalid session config: ${validation.error}`
+      message: `invalid session config: ${validation.error}`,
+      ...(input.background ? { background: true } : {})
     })
     throw new InvariantViolationError(`invalid session config: ${validation.error}`)
   }
@@ -139,7 +149,10 @@ export async function openSession(deps: AppDependencies, input: CreateSessionInp
 
   // Start the runtime (Created → Starting → Running). On failure this throws after
   // marking StartFailed + disposing; the session is never added or persisted.
-  await startSessionRuntime(deps, task, session, worktree)
+  await startSessionRuntime(deps, task, session, worktree, {
+    launchCommand: input.launchCommand,
+    background: input.background === true
+  })
 
   task.addSession(session)
 
@@ -169,7 +182,12 @@ export async function openSession(deps: AppDependencies, input: CreateSessionInp
     }
   })
 
-  deps.bus.publish({ type: 'sessionCreated', taskId: input.taskId, session: session.toSnapshot() })
+  deps.bus.publish({
+    type: 'sessionCreated',
+    taskId: input.taskId,
+    session: session.toSnapshot(),
+    ...(input.background ? { background: true } : {})
+  })
   if (joined) {
     deps.bus.publish({ type: 'groupsChanged', taskId: task.id, groups: groupsAfter })
     deps.bus.publish({
@@ -178,6 +196,7 @@ export async function openSession(deps: AppDependencies, input: CreateSessionInp
       orderedSessionIds: ordered.map((s) => s.id)
     })
   }
+  return session.id
 }
 
 /**

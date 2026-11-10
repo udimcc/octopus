@@ -9,6 +9,7 @@
     "src/ports/**/*",
     "src/adapters/**/*",
     "src/daemon/**/*",
+    "src/cli/**/*",
     "src/shared/**/*",
     "test/**/*",
     "electron.vite.config.ts",

@@ -245,7 +245,7 @@ describe('createTask issue binding (Issues §13.3, I19)', () => {
 
     const res = await createTask(fd.deps, taskInput('New', { issueId }))
 
-    expect(res).toEqual({ ok: true })
+    expect(res).toEqual({ ok: true, taskId: asTaskId('task-2') })
     const newTaskId = asTaskId('task-2')
     expect(fd.workspace.task(newTaskId)).toBeDefined()
     // The issue stays bound to the OTHER task, untouched.
@@ -262,7 +262,7 @@ describe('createTask issue binding (Issues §13.3, I19)', () => {
 
     const res = await createTask(fd.deps, taskInput('New', { issueId: bogusIssueId }))
 
-    expect(res).toEqual({ ok: true })
+    expect(res).toEqual({ ok: true, taskId: asTaskId('task-1') })
     const taskId = asTaskId('task-1')
     expect(fd.workspace.task(taskId)).toBeDefined()
     const errors = fd.bus.ofType('error')
@@ -352,5 +352,72 @@ describe('createTask issue binding (Issues §13.3, I19)', () => {
     expect(issue.taskId).toBeUndefined()
     expect(issue.status).toBe(IssueStatus.Todo)
     expect(fd.bus.ofType('issueUpserted')).toHaveLength(1)
+  })
+})
+
+describe('createTask background (octopus-cli control socket)', () => {
+  it('returns the taskId on Ready and does NOT activate the task', async () => {
+    const { deps, workspace, persistence, bus } = makeDeps()
+
+    const res = await createTask(deps, taskInput('Bg', { background: true }))
+
+    const task = workspace.tasks()[0]
+    expect(res).toEqual({ ok: true, taskId: task.id })
+    expect(task.lifecycle).toBe(TaskLifecycle.Ready)
+    expect(workspace.activeTaskId).toBeUndefined()
+    expect(persistence.activeTaskSet).toEqual([])
+    expect(persistence.upsertedTasks.map((t) => t.id)).toEqual([task.id])
+    expect(bus.ofType('activeTaskChanged')).toEqual([])
+    // Every event the create emits carries the background flag.
+    const created = bus.ofType('taskCreated')
+    const progress = bus.ofType('scriptProgress')
+    expect(created).toHaveLength(2) // provisioning, then ready
+    expect(progress).toHaveLength(1)
+    for (const e of created) expect(e.background).toBe(true)
+    for (const e of progress) expect(e.background).toBe(true)
+  })
+
+  it('leaves a previously active task active', async () => {
+    const { deps, workspace } = makeDeps()
+    await createTask(deps, taskInput('First'))
+    const first = workspace.activeTaskId
+    expect(first).toBeDefined()
+
+    const res = await createTask(deps, taskInput('Second', { background: true }))
+
+    expect(res.ok).toBe(true)
+    expect(workspace.activeTaskId).toBe(first)
+  })
+
+  it('a non-background create still activates and has no background flag', async () => {
+    const { deps, workspace, bus } = makeDeps()
+    await createTask(deps, taskInput('Fg'))
+    expect(workspace.activeTaskId).toBe(workspace.tasks()[0].id)
+    const created = bus.ofType('taskCreated')
+    expect(created).toHaveLength(2)
+    for (const e of created) expect(e.background).toBeUndefined()
+  })
+
+  it('provisioning failure returns an error, no taskId, and flags scriptError background', async () => {
+    const { deps, workspace, worktrees, bus, persistence } = makeDeps()
+    worktrees.createRejectsWith = new Error('create.sh exited 1')
+
+    const res = await createTask(deps, taskInput('Doomed', { background: true }))
+
+    expect(res).toEqual({ ok: false, error: 'create.sh exited 1' })
+    expect(workspace.tasks()[0].lifecycle).toBe(TaskLifecycle.ProvisionFailed)
+    expect(bus.ofType('scriptError').map((e) => e.background)).toEqual([true])
+    expect(workspace.activeTaskId).toBeUndefined()
+    expect(persistence.activeTaskSet).toEqual([])
+    expect(bus.ofType('activeTaskChanged')).toEqual([])
+  })
+
+  it('"none" mode background: returns taskId, flags taskCreated, no activation', async () => {
+    const { deps, workspace, bus } = makeDeps()
+    const res = await createTask(deps, { mode: 'none', name: 'Scratch', background: true })
+    expect(res).toEqual({ ok: true, taskId: workspace.tasks()[0].id })
+    expect(workspace.activeTaskId).toBeUndefined()
+    expect(bus.ofType('taskCreated').map((e) => e.background)).toEqual([true])
+    expect(bus.ofType('activeTaskChanged')).toEqual([])
   })
 })

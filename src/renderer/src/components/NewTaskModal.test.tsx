@@ -607,6 +607,51 @@ describe('<NewTaskModal>', () => {
     await waitFor(() => expect(screen.getByText('Preparing worktree')).toBeInTheDocument())
   })
 
+  it('ignores background (octopus-cli) error, taskCreated, scriptProgress and scriptError while busy', async () => {
+    window.octopusAPI.projects.list = vi.fn().mockResolvedValue([PROJECT_APP])
+    const onClose = vi.fn()
+    render(<NewTaskModal onClose={onClose} />)
+    await screen.findByRole('option', { name: 'app' })
+    fireEvent.click(screen.getByRole('option', { name: 'app' }))
+    fill('task name', 'Feature')
+    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
+    await waitFor(() => expect(window.octopusAPI.tasks.create).toHaveBeenCalled())
+
+    emit({ type: 'scriptProgress', taskId: 'cli-1', line: 'CLI progress', background: true })
+    emit({
+      type: 'scriptError',
+      taskId: 'cli-1',
+      script: 'create_worktree',
+      exitCode: 1,
+      stderr: 'cli failure',
+      background: true
+    })
+    emit({ type: 'error', message: 'cli error', background: true })
+    emit({
+      type: 'taskCreated',
+      task: {
+        id: 'cli-1',
+        name: 'cli',
+        lifecycle: 'ready',
+        state: 'unknown',
+        sessions: [],
+        position: 0,
+        createdAt: 1,
+        groups: []
+      },
+      background: true
+    })
+    await Promise.resolve()
+
+    expect(screen.queryByText('CLI progress')).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(onClose).not.toHaveBeenCalled()
+
+    // The modal is still listening for its OWN task's events.
+    emit({ type: 'scriptProgress', taskId: 'task-1', line: 'Own progress' })
+    await waitFor(() => expect(screen.getByText('Own progress')).toBeInTheDocument())
+  })
+
   // ── Associated issue picker + "Create task" prefill (PRD "Issues") ───────────
 
   describe('associated issue', () => {

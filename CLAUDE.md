@@ -20,6 +20,7 @@ Three source-of-truth docs govern all work — read the relevant one before chan
 @.claude/rules/claude-state-prd.md
 @.claude/rules/modals-and-overlays.md
 @.claude/rules/jira-import.md
+@.claude/rules/control-socket.md
 
 ## Current status: V0 (foundation only)
 
@@ -63,6 +64,7 @@ The design is **Ports & Adapters** (`DESIGN §2`): a pure domain surrounded by p
   nowhere else (`src/main/composition-root.ts`).
 - `preload/` — the single typed `window.octopusAPI` contextBridge; may import only `shared`.
 - `renderer/` — React UI; may import `renderer`, `application`, `shared` (**never** adapters or ports directly).
+- `cli/` — `octopus-cli` control-socket client (own process); may import only `shared`.
 - `shared/` — transport-agnostic IPC contract (`src/shared/ipc.ts`); may import only `shared`.
 
 **Consequences when adding code:** put OS/framework/IO code behind a port + adapter; keep domain logic free of
@@ -77,7 +79,9 @@ protocol over a Unix socket unchanged.
 The build produces **three bundles**, one per Electron process (`electron.vite.config.ts`): `main` and
 `preload` build as Node (with `externalizeDepsPlugin` so `node_modules` stay unbundled — this is what lets V1's
 native modules `node-pty`/`better-sqlite3` ship their `.node` binaries), `renderer` builds as a browser context
-with the React plugin.
+with the React plugin. The `main` build has three entries: `index`, `daemon` (`octopusd`) and `cli`
+(`out/main/cli.js`, the `octopus-cli` client, run via `ELECTRON_RUN_AS_NODE=1`; dev:
+`ELECTRON_RUN_AS_NODE=1 npx electron out/main/cli.js --help` after `npm run build`). See `DESIGN §14`.
 
 Because the two runtimes differ, the repo has **two TS configs** and typechecks each separately:
 - `tsconfig.node.json` — main, preload, and the process-agnostic layers (domain/application/ports/adapters),
@@ -118,6 +122,10 @@ helper binaries come from GitHub — the same deferral noted in `electron-builde
    `release/<version>/Octopus-<version>-x86_64.tar.gz`. Inside: `octopus-<version>/` with
    the `linux-unpacked/` payload + `install.sh`/`uninstall.sh` + `CHANGELOG.md`.
 
+`resources/octopus-cli` (launcher) is staged next to the `octopus` binary and `resources/claude-skill/octopus/`
+is staged alongside; `install.sh` symlinks `octopus-cli` into `~/.local/bin` and copies the skill to
+`~/.claude/skills/octopus` (`uninstall.sh` removes both).
+
 **Install (user side):** extract, `cd octopus-<version>`, `./install.sh` — copies the app
 to a per-user program dir and symlinks `octopus` into `~/.local/bin`. `uninstall.sh`
 reverses it. Neither touches the **data** dir (`~/.local/share/octopus`). The tarball also
@@ -154,7 +162,8 @@ restores the `.bak`. See `CHANGELOG.md` and `DESIGN §6.3`.
 - Data locations (`DESIGN §6.3`) are resolved in `src/adapters/env/paths.ts` to `$XDG_DATA_HOME/octopus/`
   (Linux) / `%APPDATA%\octopus\` (Windows) — **deliberately not** Electron's `app.getPath('userData')` (the XDG
   *config* dir). The resolver is a pure function of `(env, platform, home)` so it is unit-testable without
-  Electron; the side-effecting `ensureAppDirs` is separate. Follow this pure-resolver / effectful-wrapper split.
+  Electron; the side-effecting `ensureAppDirs` is separate. Follow this pure-resolver / effectful-wrapper split. `paths.ts` also resolves `controlSocketPath`
+  (`<dataDir>/control.sock`, §14).
 - **Single instance** (`src/main/index.ts`): a relaunch only raises main. Electron keys the lock on `userData`,
   so unpackaged (dev) builds set `userData` to `<dataDir>/electron-dev`: a dev build on the same data dir as the
   running installed app exits (logged), one with its own `XDG_DATA_HOME` runs alongside it.
@@ -162,7 +171,7 @@ restores the `.bak`. See `CHANGELOG.md` and `DESIGN §6.3`.
   secondary belongs to the view named by its `parentWindowId`, else to main. Use `windowGroupRoot`/`viewForTask`
   (`src/application/use-cases/window-groups.ts`, mirrored as store selectors) — never compare `parentWindowId`
   to `MAIN_WINDOW_ID`.
-- **Runtime assets for main** live in `resources/` (today only `icon.png`), imported with electron-vite's
+- **Runtime assets for main** live in `resources/` (`icon.png`, `octopus-cli` launcher, `claude-skill/`; the last two are staged by `release.mjs`, not imported), imported with electron-vite's
   `?asset` suffix (typed in `src/main/env.d.ts`). `?asset` does not copy the file into `out/`; it resolves to
   `resources/` at runtime, which is why `electron-builder.yml` packages `resources/**` and the lint boundaries
   rule ignores `resources/**`.
