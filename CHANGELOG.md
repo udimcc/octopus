@@ -6,8 +6,9 @@ All notable changes to Octopus are documented here. The format is based on
 
 ## [Unreleased]
 
-Adds a **Blocked** issue status with a "Blocked reasons" field, and `octopus-cli` so Claude Code can
-drive a running Octopus.
+Adds a **Blocked** issue status with a "Blocked reasons" field, `octopus-cli` so Claude Code can
+drive a running Octopus, and in-app self-update. `install.sh` is now runnable while Octopus is
+running (the app keeps its open files and is relaunched promptly).
 
 ### Added
 
@@ -22,6 +23,12 @@ drive a running Octopus.
   open in the background (no focus steal). `install.sh` symlinks `octopus-cli` into `~/.local/bin`
   and installs the skill to `~/.claude/skills/octopus`; `uninstall.sh` removes both. The socket path
   is exported to session terminals as `OCTOPUS_CONTROL_SOCKET`. See `DESIGN §14`.
+- **In-app update check.** Octopus checks `/mnt/scratch/octopus` (override: hidden
+  `updates.dir` in `settings.json`) at startup and hourly for a newer `octopus-X.Y.Z`
+  release. An available update shows a popup in the main window (Dismiss is remembered per
+  version), a download badge next to the title, and a "Check for updates" Settings tab.
+  Install runs the release's `install.sh` and relaunches Octopus without the busy-sessions
+  prompt; daemon shells survive the restart.
 
 ### Changed
 
@@ -30,6 +37,9 @@ drive a running Octopus.
   the upgraded DB.
 - **Narrower issue view on the Board tab.** The issue view takes about 40% of the Issues window on
   the Board tab (still about 61% on List), so all five columns fit without scrolling.
+- **`install.sh` swaps atomically.** The payload is staged into `octopus-app.new` and swapped
+  in by rename, so installing while Octopus runs is safe and a failed install leaves the
+  previous version intact.
 
 ## [1.1.1]
 

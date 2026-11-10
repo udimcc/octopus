@@ -1,5 +1,5 @@
 import { homedir } from 'node:os'
-import { isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { mkdirSync, chmodSync } from 'node:fs'
 import { controlSocketPath, resolveDataDir } from '../../shared/data-paths'
 
@@ -133,4 +133,26 @@ export function resolveDefaultWorktreeBase(home: string = homedir()): string {
 export function ensureWorktreeBase(base: string): string {
   mkdirSync(base, { recursive: true })
   return base
+}
+
+/** Folder `install.sh` installs the app payload into (must match `PROGRAM_DIR` there). */
+const PROGRAM_DIR = 'octopus-app'
+
+/**
+ * Resolve the per-user PROGRAM dir (`$XDG_DATA_HOME/octopus-app`, default
+ * `~/.local/share/octopus-app`) that `install.sh` installs into; the app binary is
+ * `<programDir>/octopus`. Pure. Linux semantics, matching install.sh exactly.
+ */
+export function resolveProgramDir(env: NodeJS.ProcessEnv, home: string): string {
+  const xdg = env.XDG_DATA_HOME
+  return join(xdg && xdg.length > 0 ? xdg : join(home, '.local', 'share'), PROGRAM_DIR)
+}
+
+/**
+ * Resolve the dir the updater stages a release copy into: a sibling of the program
+ * dir (`$XDG_DATA_HOME/octopus-update-staging`), so the copy lives on the program
+ * dir's filesystem and never depends on a possibly-`noexec` /tmp. Pure.
+ */
+export function resolveUpdateStagingDir(env: NodeJS.ProcessEnv, home: string): string {
+  return join(dirname(resolveProgramDir(env, home)), 'octopus-update-staging')
 }

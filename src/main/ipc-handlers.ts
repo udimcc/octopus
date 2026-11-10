@@ -69,6 +69,7 @@ import type {
   JiraSprintDTO,
   JiraSearchPageDTO,
   JiraResultDTO,
+  UpdateStatusDTO,
   ImportJiraIssuesInput,
   ImportJiraIssuesResultDTO,
   SetJiraKeyInput
@@ -98,6 +99,10 @@ import {
 import type { JiraSprintFilter } from '../domain/jira-import'
 import type { JiraIssueSource, JiraSearchFilters } from '../ports/jira-issue-source'
 import { JIRA_API_KEY_REF, type CredentialsProvider } from '../ports/credentials-provider'
+import type { UpdateChecker } from '../application/use-cases/check-for-updates'
+import type { UpdateInstaller } from '../application/use-cases/install-update'
+import { toStatusDTO, type UpdateScheduler } from './update-scheduler'
+import { parseSemver } from '../domain/semver'
 import { normalizeJiraIssueKey } from '../shared/jira-key'
 import { isPrintableAsciiKey } from '../shared/jira-api-key'
 import {
@@ -398,6 +403,15 @@ export interface IpcHandlerHooks {
    * composition root (only it owns `BrowserWindow`/the window registry).
    */
   readonly toggleIssuesDrawer?: () => void
+  /**
+   * Update check/install (check-for-updates). Optional so harnesses that don't
+   * exercise `updates:*` can omit it (the handlers are then not registered).
+   */
+  readonly updates?: {
+    readonly checker: UpdateChecker
+    readonly installer: UpdateInstaller
+    readonly scheduler: UpdateScheduler
+  }
 }
 
 /** Resolve the WindowId of the calling renderer (`e.sender`), defaulting to main. */
@@ -1133,6 +1147,47 @@ export function registerIpcHandlers(
   ipcMain.handle(CHANNELS.credentialsHasJiraKey, async (): Promise<boolean> => {
     return hooks.credentials.has(JIRA_API_KEY_REF)
   })
+
+  // ── Updates (check-for-updates) ─────────────────────────────────────────────
+  const updates = hooks.updates
+  if (updates) {
+    ipcMain.handle(CHANNELS.updatesGetStatus, (): UpdateStatusDTO =>
+      toStatusDTO(updates.checker.getStatus())
+    )
+    ipcMain.handle(CHANNELS.updatesCheckNow, (): Promise<UpdateStatusDTO> =>
+      updates.scheduler.checkNow()
+    )
+    ipcMain.handle(CHANNELS.updatesDismiss, (_e, version: unknown): void => {
+      if (typeof version !== 'string' || parseSemver(version) === null) {
+        return // malformed: ignore rather than persist garbage
+      }
+      updates.checker.dismiss(version)
+      updates.scheduler.publish()
+    })
+    ipcMain.handle(
+      CHANNELS.updatesInstall,
+      (_e, version: unknown): Promise<{ ok: true } | { ok: false; error: string }> => {
+        if (typeof version !== 'string' || version === '') {
+          return Promise.resolve({ ok: false, error: 'updates:install: invalid version' })
+        }
+        const status = updates.checker.getStatus()
+        if (status.state === 'unreachable') {
+          return Promise.resolve({
+            ok: false,
+            error: 'The updates folder is unreachable; cannot install right now. Try again later.'
+          })
+        }
+        const path = updates.checker.releasePathFor(version)
+        if (status.availableVersion !== version || path === undefined) {
+          return Promise.resolve({
+            ok: false,
+            error: 'updates:install: that version is no longer the available update'
+          })
+        }
+        return updates.installer.install(path)
+      }
+    )
+  }
 
   // ── App-level ─────────────────────────────────────────────────────────────
   ipcMain.handle(CHANNELS.appGetState, (e): WindowedWorkspaceStateDTO => {

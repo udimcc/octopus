@@ -95,6 +95,16 @@ export interface JiraSettings {
   readonly lastFilters?: JiraLastFilters
 }
 
+/**
+ * Update-check settings. `dir` is the directory scanned for `octopus-X.Y.Z`
+ * release folders; empty/absent means "use the built-in default". `dismissedVersion`
+ * is the release the user chose to skip, so it is not offered again.
+ */
+export interface UpdatesSettings {
+  readonly dir?: string
+  readonly dismissedVersion?: string
+}
+
 export interface Settings {
   readonly worktree: WorktreeSettings
   readonly terminal: TerminalSettings
@@ -154,6 +164,8 @@ export interface Settings {
   readonly focusPaneDownKey?: string
   /** Non-secret Jira import settings (DESIGN §Jira import). See `JiraSettings`. */
   readonly jira?: JiraSettings
+  /** Update-check settings. See `UpdatesSettings`. */
+  readonly updates?: UpdatesSettings
 }
 
 /** A deep-partial patch for `save` (nested objects merged, not replaced). */
@@ -187,6 +199,8 @@ export interface SettingsPatch {
    * last-used filter set, not a field-by-field merge target), same as `projects`.
    */
   readonly jira?: Partial<JiraSettings>
+  /** See `Settings.updates`. Merged field-by-field. */
+  readonly updates?: Partial<UpdatesSettings>
 }
 
 export interface SettingsStore {

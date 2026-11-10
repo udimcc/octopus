@@ -42,7 +42,8 @@ import type {
   ProjectSettings,
   Settings,
   SettingsPatch,
-  SettingsStore
+  SettingsStore,
+  UpdatesSettings
 } from '../../ports/settings-store'
 
 /** Complete default settings; every key present so the shape is total. */
@@ -170,7 +171,8 @@ export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
     focusPaneRightKey: pickString(patch.focusPaneRightKey, base.focusPaneRightKey),
     focusPaneUpKey: pickString(patch.focusPaneUpKey, base.focusPaneUpKey),
     focusPaneDownKey: pickString(patch.focusPaneDownKey, base.focusPaneDownKey),
-    jira: pickJira(patch.jira, base.jira)
+    jira: pickJira(patch.jira, base.jira),
+    updates: pickUpdates(patch.updates, base.updates)
   }
 }
 
@@ -328,6 +330,32 @@ function pickJira(value: unknown, fallback: JiraSettings | undefined): JiraSetti
   }
   const picked = pickJiraLastFiltersCandidate(lastFilters)
   return picked === undefined ? fallback : { lastFilters: picked }
+}
+
+/**
+ * Tolerant parse of the `updates` block: each string field merges independently
+ * (a patch carrying only `dismissedVersion` keeps `dir`); a non-object patch or a
+ * mistyped field falls back to the existing value. Returns `undefined` when
+ * neither field is set, so DEFAULT_SETTINGS stays a fixed point under
+ * serialize->parse.
+ */
+function pickUpdates(
+  value: unknown,
+  fallback: UpdatesSettings | undefined
+): UpdatesSettings | undefined {
+  const patch =
+    typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? (value as { dir?: unknown; dismissedVersion?: unknown })
+      : {}
+  const dir = pickString(patch.dir, fallback?.dir)
+  const dismissedVersion = pickString(patch.dismissedVersion, fallback?.dismissedVersion)
+  if (dir === undefined && dismissedVersion === undefined) {
+    return undefined
+  }
+  return {
+    ...(dir !== undefined && { dir }),
+    ...(dismissedVersion !== undefined && { dismissedVersion })
+  }
 }
 
 export class JsonSettingsStore implements SettingsStore {

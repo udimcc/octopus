@@ -97,7 +97,7 @@ import { matchesChord } from '../keybindings/chords'
 /**
  * The topmost currently-open `[aria-modal="true"]` dialog, if any — App-level
  * (`NewTaskModal`, `SettingsModal`, `DeleteTaskConfirm`, `CreateViewConfirm` —
- * window-view feature) or one of the drawer's own
+ * window-view feature, `UpdateAvailableModal`, `RestartConfirmModal`) or one of the drawer's own
  * (`DiscardChangesPrompt`, `BoundDeleteDialog`, `LinkTaskPicker`, `IssueDetail`'s
  * simple delete confirm, `JiraImportModal`). "Last in document order" is topmost because every overlay
  * shares `overlayStyle` (`position: fixed`, the same `zIndex`) and nothing around the
@@ -105,7 +105,7 @@ import { matchesChord } from '../keybindings/chords'
  * order is DOM order (body-level portals always follow `#root`). Giving one overlay its own `zIndex`, or
  * a stacking context to the sidebar/main, would break this.
  */
-function topmostModal(): HTMLElement | null {
+export function topmostModal(): HTMLElement | null {
   const modals = document.querySelectorAll<HTMLElement>('[aria-modal="true"]')
   return modals.length > 0 ? modals[modals.length - 1] : null
 }

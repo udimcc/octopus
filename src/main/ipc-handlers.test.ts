@@ -1231,3 +1231,121 @@ describe('credentials:setJiraKey / credentials:hasJiraKey never leak the key ("J
     expect(has).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('updates:* routes (check-for-updates)', () => {
+  const status = (over: Record<string, unknown> = {}) => ({
+    state: 'available' as const,
+    availableVersion: '1.2.0',
+    currentVersion: '1.0.0',
+    ...over
+  })
+
+  function setup(initial = status()) {
+    let current: ReturnType<typeof status> = initial
+    const checker = {
+      getStatus: vi.fn(() => current),
+      check: vi.fn(),
+      dismiss: vi.fn((v: string) => {
+        current = { ...current, dismissedVersion: v } as typeof current
+        return current
+      }),
+      releasePathFor: vi.fn((v: string) => (v === '1.2.0' ? '/rel/octopus-1.2.0' : undefined))
+    }
+    const installer = { install: vi.fn(async () => ({ ok: true as const })) }
+    const scheduler = {
+      start: vi.fn(),
+      stop: vi.fn(),
+      publish: vi.fn(),
+      checkNow: vi.fn(async () => ({ ...status(), popup: true }))
+    }
+    ;(ipcMain.handle as Mock).mockClear()
+    registerIpcHandlers(fakeLoop().loop, noDeps(), {
+      ...hooks,
+      updates: { checker, installer, scheduler } as unknown as NonNullable<
+        IpcHandlerHooks['updates']
+      >
+    })
+    return { checker, installer, scheduler }
+  }
+
+  it('registers nothing when hooks.updates is omitted', () => {
+    ;(ipcMain.handle as Mock).mockClear()
+    registerIpcHandlers(fakeLoop().loop, noDeps(), hooks)
+    expect(() => handlerFor(CHANNELS.updatesGetStatus)).toThrow(/no handler/)
+  })
+
+  it('getStatus returns the DTO with the popup flag', () => {
+    setup()
+    expect(handlerFor(CHANNELS.updatesGetStatus)(null, undefined)).toMatchObject({
+      state: 'available',
+      popup: true
+    })
+  })
+
+  it('checkNow delegates to the scheduler', async () => {
+    const { scheduler } = setup()
+    const res = await handlerFor(CHANNELS.updatesCheckNow)(null, undefined)
+    expect(scheduler.checkNow).toHaveBeenCalled()
+    expect(res).toMatchObject({ popup: true })
+  })
+
+  it('dismiss with a valid semver persists then republishes', () => {
+    const { checker, scheduler } = setup()
+    handlerFor(CHANNELS.updatesDismiss)(null, '1.2.0')
+    expect(checker.dismiss).toHaveBeenCalledWith('1.2.0')
+    expect(scheduler.publish).toHaveBeenCalled()
+  })
+
+  it.each([undefined, 5, '', '1.2', 'v1.2.0', '1.2.0-rc1', {}])(
+    'dismiss ignores malformed %j',
+    (v) => {
+      const { checker, scheduler } = setup()
+      handlerFor(CHANNELS.updatesDismiss)(null, v)
+      expect(checker.dismiss).not.toHaveBeenCalled()
+      expect(scheduler.publish).not.toHaveBeenCalled()
+    }
+  )
+
+  it('install runs the installer with the release path for the available version', async () => {
+    const { installer } = setup()
+    expect(await handlerFor(CHANNELS.updatesInstall)(null, '1.2.0')).toEqual({ ok: true })
+    expect(installer.install).toHaveBeenCalledWith('/rel/octopus-1.2.0')
+  })
+
+  it('install is refused while unreachable', async () => {
+    const { installer } = setup(status({ state: 'unreachable' }))
+    const res = (await handlerFor(CHANNELS.updatesInstall)(null, '1.2.0')) as {
+      ok: boolean
+      error: string
+    }
+    expect(res.ok).toBe(false)
+    expect(res.error).toMatch(/unreachable/)
+    expect(installer.install).not.toHaveBeenCalled()
+  })
+
+  it('install is refused when the version is not the available one', async () => {
+    const { installer } = setup()
+    const res = (await handlerFor(CHANNELS.updatesInstall)(null, '1.1.0')) as {
+      ok: boolean
+      error: string
+    }
+    expect(res.ok).toBe(false)
+    expect(res.error).toMatch(/no longer the available/)
+    expect(installer.install).not.toHaveBeenCalled()
+  })
+
+  it('install is refused when there is no release path', async () => {
+    const { checker, installer } = setup()
+    checker.releasePathFor.mockReturnValue(undefined as never)
+    const res = (await handlerFor(CHANNELS.updatesInstall)(null, '1.2.0')) as { ok: boolean }
+    expect(res.ok).toBe(false)
+    expect(installer.install).not.toHaveBeenCalled()
+  })
+
+  it.each([undefined, 7, ''])('install rejects invalid version %j', async (v) => {
+    const { installer } = setup()
+    const res = (await handlerFor(CHANNELS.updatesInstall)(null, v)) as { ok: boolean }
+    expect(res.ok).toBe(false)
+    expect(installer.install).not.toHaveBeenCalled()
+  })
+})

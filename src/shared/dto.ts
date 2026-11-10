@@ -837,3 +837,17 @@ export interface CommandAck {
   /** Id of an issue created by `issues.create` ("Issues", §13.3). */
   readonly issueId?: string
 }
+
+/** Update availability as seen by the renderer (check-for-updates feature). */
+export interface UpdateStatusDTO {
+  readonly state: 'upToDate' | 'available' | 'unreachable'
+  /** Newest known newer release; kept while `unreachable`. */
+  readonly availableVersion?: string
+  readonly currentVersion: string
+  /** Epoch ms of the last check; absent before the first check. */
+  readonly lastCheckedAt?: number
+  /** Version the user dismissed the popup for. */
+  readonly dismissedVersion?: string
+  /** Main's verdict (checker `shouldPopup`): show the update popup for this status. */
+  readonly popup: boolean
+}

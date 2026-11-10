@@ -102,7 +102,7 @@ const CHORD_FIELDS: ReadonlyArray<ChordFieldDef> = [
 ]
 
 /** The settings categories, shown in the left sidebar in this order. */
-type CategoryId = 'general' | 'keybindings'
+type CategoryId = 'general' | 'keybindings' | 'updates'
 
 interface CategoryDef {
   readonly id: CategoryId
@@ -111,12 +111,17 @@ interface CategoryDef {
 
 const CATEGORIES: ReadonlyArray<CategoryDef> = [
   { id: 'general', label: 'General' },
-  { id: 'keybindings', label: 'Key Bindings' }
+  { id: 'keybindings', label: 'Key Bindings' },
+  { id: 'updates', label: 'Check for updates' }
 ]
 
 export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Element {
   const settings = useStore((s) => s.settings)
   const hydrate = useStore((s) => s.hydrate)
+  const updateStatus = useStore((s) => s.updateStatus)
+  const updateChecking = useStore((s) => s.updateChecking)
+  const checkForUpdates = useStore((s) => s.checkForUpdates)
+  const openRestartConfirm = useStore((s) => s.openRestartConfirm)
   const [location, setLocation] = useState(settings.worktree.location)
   const [shell, setShell] = useState(settings.terminal.shell ?? '')
   // State detection defaults ON; only an explicit `false` opts out (§9).
@@ -144,7 +149,9 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
   const [error, setError] = useState<string | null>(null)
   // The category whose panel is shown. Edits persist across switches (all field
   // state lives above), so this only chooses what's visible — never what's saved.
-  const [category, setCategory] = useState<CategoryId>('general')
+  const [category, setCategory] = useState<CategoryId>(
+    () => useStore.getState().settingsInitialTab ?? 'general'
+  )
 
   // The Jira API key (DESIGN §13.7, I16): a SEPARATE save flow from the rest of this
   // form. It never joins `settings`/`SettingsPatchDTO` —
@@ -493,6 +500,62 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
                   <span role="alert" style={{ color: color.errorText }}>
                     {jiraKeyError}
                   </span>
+                ) : null}
+              </div>
+            </div>
+          ) : category === 'updates' ? (
+            <div style={pane} role="tabpanel" aria-label="Check for updates">
+              <div>Installed version: {updateStatus?.currentVersion ?? 'unknown'}</div>
+              {updateStatus?.availableVersion ? (
+                <div>Available version: {updateStatus.availableVersion}</div>
+              ) : null}
+              <div style={{ color: color.textSecondary, fontSize: fontSize.sm }}>
+                {updateStatus?.lastCheckedAt !== undefined
+                  ? `Last checked ${new Date(updateStatus.lastCheckedAt).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      hour12: false
+                    })}`
+                  : 'Not checked yet'}
+              </div>
+              {updateStatus?.state === 'upToDate' ? <div>Octopus is up to date.</div> : null}
+              {updateStatus?.state === 'available' ? (
+                <div>Version {updateStatus.availableVersion} is available.</div>
+              ) : null}
+              {updateStatus?.state === 'unreachable' ? (
+                <div role="alert" style={{ color: color.errorText }}>
+                  Couldn&apos;t check: update folder unreachable.
+                  {updateStatus.availableVersion
+                    ? ' The version above was found earlier and can’t be installed until the folder is reachable.'
+                    : null}
+                </div>
+              ) : null}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  type="button"
+                  disabled={updateChecking}
+                  onClick={(e) => {
+                    // Focus the card before the button disables (else focus drops to <body>).
+                    e.currentTarget.closest<HTMLElement>('[role="dialog"]')?.focus()
+                    void checkForUpdates()
+                  }}
+                >
+                  {updateChecking ? 'Checking…' : 'Check now'}
+                </button>
+                {updateStatus?.availableVersion ? (
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    disabled={updateStatus.state === 'unreachable'}
+                    title={
+                      updateStatus.state === 'unreachable'
+                        ? 'The update folder is unreachable'
+                        : undefined
+                    }
+                    onClick={() => openRestartConfirm(updateStatus.availableVersion as string)}
+                  >
+                    Install
+                  </button>
                 ) : null}
               </div>
             </div>

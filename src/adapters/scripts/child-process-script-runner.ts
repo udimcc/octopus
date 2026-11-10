@@ -34,6 +34,7 @@ export class ChildProcessScriptRunner implements ScriptRunner {
         env: buildEnv(process.env, opts.env),
         // I17: NEVER a shell. argv is passed straight to execve.
         shell: false,
+        detached: opts.killProcessGroup === true,
         stdio: ['ignore', 'pipe', 'pipe']
       })
 
@@ -64,11 +65,23 @@ export class ChildProcessScriptRunner implements ScriptRunner {
         errSplitter.push(chunk)
       })
 
+      const signalChild = (sig: NodeJS.Signals): void => {
+        if (opts.killProcessGroup === true && child.pid !== undefined) {
+          try {
+            process.kill(-child.pid, sig)
+            return
+          } catch {
+            // group already gone / not signalable: fall back to the child itself
+          }
+        }
+        child.kill(sig)
+      }
+
       // SIGTERM at the timeout, then SIGKILL if it doesn't exit within the grace.
       const killTimer = setTimeout(() => {
         timedOut = true
-        child.kill('SIGTERM')
-        graceTimer = setTimeout(() => child.kill('SIGKILL'), graceMs)
+        signalChild('SIGTERM')
+        graceTimer = setTimeout(() => signalChild('SIGKILL'), graceMs)
       }, timeoutMs)
       let graceTimer: ReturnType<typeof setTimeout> | undefined
 

@@ -217,6 +217,11 @@ void app.whenReady().then(async () => {
     if (main) raiseWindow(main)
   }
 
+  // Windows are up: start the boot + hourly update check (status is pushed to windows).
+  ctx.updateScheduler.start()
+  // 'will-quit', not 'before-quit': before-quit can be cancelled and the app keep running.
+  app.on('will-quit', () => ctx.updateScheduler.stop())
+
   // macOS: re-create the main window when the dock icon is clicked and none are open.
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

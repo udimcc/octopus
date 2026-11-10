@@ -103,3 +103,38 @@ describe('ChildProcessScriptRunner (§6.4)', () => {
     await expect(runner.run('/no/such/binary-xyz', [], { cwd: process.cwd() })).rejects.toThrow()
   })
 })
+
+describe('killProcessGroup', () => {
+  const alive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  it('kills grandchildren in the child group on timeout', async () => {
+    // sh forks a backgrounded sleep, prints its pid, then waits.
+    const res = await runner.run('sh', ['-c', 'sleep 30 & echo $!; wait'], {
+      cwd: process.cwd(),
+      timeoutMs: 300,
+      graceMs: 200,
+      killProcessGroup: true
+    })
+    expect(res.timedOut).toBe(true)
+    const grandchild = Number(res.stdout.trim())
+    expect(grandchild).toBeGreaterThan(1)
+    await new Promise((r) => setTimeout(r, 200))
+    expect(alive(grandchild)).toBe(false)
+  })
+
+  it('a normal exit with killProcessGroup returns the exit code', async () => {
+    const res = await runner.run('sh', ['-c', 'exit 4'], {
+      cwd: process.cwd(),
+      killProcessGroup: true
+    })
+    expect(res.exitCode).toBe(4)
+    expect(res.timedOut).toBe(false)
+  })
+})

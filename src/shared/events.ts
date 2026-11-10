@@ -12,7 +12,7 @@
  * up state without a signature change (§10); nobody emits them in V1.
  */
 
-import type { TaskDTO, SessionDTO, IssueDTO, GroupDTO, WindowRole } from './dto'
+import type { TaskDTO, SessionDTO, IssueDTO, GroupDTO, WindowRole, UpdateStatusDTO } from './dto'
 
 export interface PtyDataEventDTO {
   readonly type: 'ptyData'
@@ -272,6 +272,12 @@ export interface IssuesDrawerToggleEventDTO {
   readonly type: 'issuesDrawerToggle'
 }
 
+/** The update status changed (check finished, dismissed, ...). */
+export interface UpdateStatusChangedEventDTO {
+  readonly type: 'updateStatusChanged'
+  readonly status: UpdateStatusDTO
+}
+
 /** Every event that can flow over the `app:event` channel. Discriminated on `type`. */
 export type EventDTO =
   | PtyDataEventDTO
@@ -303,3 +309,4 @@ export type EventDTO =
   | SessionStateNotificationEventDTO
   | SessionSeenEventDTO
   | IssuesDrawerToggleEventDTO
+  | UpdateStatusChangedEventDTO

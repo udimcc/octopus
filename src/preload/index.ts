@@ -60,7 +60,8 @@ import type {
   JiraResultDTO,
   ImportJiraIssuesInput,
   ImportJiraIssuesResultDTO,
-  SetJiraKeyInput
+  SetJiraKeyInput,
+  UpdateStatusDTO
 } from '../shared/dto'
 import type { EventDTO } from '../shared/events'
 
@@ -208,6 +209,15 @@ const octopusAPI: OctopusAPI = {
     setJiraKey: (input: SetJiraKeyInput): Promise<CommandAck> =>
       ipcRenderer.invoke(CHANNELS.credentialsSetJiraKey, input),
     hasJiraKey: (): Promise<boolean> => ipcRenderer.invoke(CHANNELS.credentialsHasJiraKey)
+  },
+
+  updates: {
+    getStatus: (): Promise<UpdateStatusDTO> => ipcRenderer.invoke(CHANNELS.updatesGetStatus),
+    checkNow: (): Promise<UpdateStatusDTO> => ipcRenderer.invoke(CHANNELS.updatesCheckNow),
+    dismiss: (version: string): Promise<void> =>
+      ipcRenderer.invoke(CHANNELS.updatesDismiss, version),
+    install: (version: string): Promise<{ ok: true } | { ok: false; error: string }> =>
+      ipcRenderer.invoke(CHANNELS.updatesInstall, version)
   },
 
   onEvent: (handler: (event: EventDTO) => void): (() => void) => {

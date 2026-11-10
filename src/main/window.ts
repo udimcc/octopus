@@ -43,6 +43,17 @@ import {
 } from '../application/queries/busy-sessions'
 import { CRASH_BURST_WINDOW_MS, decideCrashRecovery } from './crash-recovery'
 
+/** Set by `skipBusyQuitWarning()`; makes the quit path skip `confirmQuitWhileBusy`. */
+let skipBusyQuitWarningFlag = false
+
+/**
+ * Skip the "sessions are busy" quit confirmation from now on. Used by the update
+ * installer, which has already obtained the user's consent before relaunching.
+ */
+export function skipBusyQuitWarning(): void {
+  skipBusyQuitWarningFlag = true
+}
+
 /** How long to wait after the last move/resize before persisting bounds (§6.3). */
 const BOUNDS_SAVE_DEBOUNCE_MS = 500
 
@@ -655,7 +666,7 @@ export function registerQuitHandler(ctx: AppContext): void {
     // In-process backend only: quitting kills live shells, so warn if any session
     // is Working/Blocked and let the user back out. Daemon PTYs survive quit (§6.2),
     // so skip. Runs before `isQuitting` is set so a cancel leaves windows intact.
-    if (!ctx.daemonActive()) {
+    if (!ctx.daemonActive() && !skipBusyQuitWarningFlag) {
       const summary = busySessions(ctx.deps.workspace)
       if (isBusy(summary) && !confirmQuitWhileBusy(summary)) {
         event.preventDefault()

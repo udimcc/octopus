@@ -366,7 +366,9 @@ export class FakeSettingsStore implements SettingsStore {
       projects: patch.projects ?? this.current.projects,
       worktreeCreateTimeoutMs:
         patch.worktreeCreateTimeoutMs ?? this.current.worktreeCreateTimeoutMs,
-      groupTasksByRepo: patch.groupTasksByRepo ?? this.current.groupTasksByRepo
+      groupTasksByRepo: patch.groupTasksByRepo ?? this.current.groupTasksByRepo,
+      // Mirrors `pickUpdates`: each field merges independently.
+      updates: patch.updates ? { ...this.current.updates, ...patch.updates } : this.current.updates
     }
     return this.current
   }

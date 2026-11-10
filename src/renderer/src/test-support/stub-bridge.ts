@@ -151,6 +151,16 @@ export function makeStubBridge(options?: {
       setJiraKey: newAck(),
       hasJiraKey: vi.fn().mockResolvedValue(false)
     },
+    updates: {
+      getStatus: vi
+        .fn()
+        .mockResolvedValue({ state: 'upToDate', currentVersion: '0.0.0', popup: false }),
+      checkNow: vi
+        .fn()
+        .mockResolvedValue({ state: 'upToDate', currentVersion: '0.0.0', popup: false }),
+      dismiss: vi.fn().mockResolvedValue(undefined),
+      install: vi.fn().mockResolvedValue({ ok: true })
+    },
     onEvent: (handler) => {
       listeners.add(handler)
       return () => listeners.delete(handler)

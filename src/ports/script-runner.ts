@@ -17,6 +17,11 @@ export interface ScriptRunOptions {
   readonly graceMs?: number
   /** Cap captured stderr at this many bytes (default 64 KiB, §6.4). */
   readonly maxStderrBytes?: number
+  /**
+   * Spawn in its own process group and signal the whole group on timeout, so
+   * grandchildren (e.g. a script's foreground `cp`) die too. Default false.
+   */
+  readonly killProcessGroup?: boolean
   /** Called per complete stdout line (§6.4: create-script's path lands here). */
   readonly onStdoutLine?: (line: string) => void
   /**

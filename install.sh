@@ -3,7 +3,7 @@
 # directory (octopus-<version>/), i.e. after `tar xzf Octopus-<version>-x86_64.tar.gz`.
 #
 # What it does:
-#   - copies the app payload to a per-user PROGRAM dir (replace-in-place), and
+#   - copies the app payload to a per-user PROGRAM dir (atomic replace),
 #   - symlinks a launcher into ~/.local/bin so `octopus` runs from anywhere,
 #   - symlinks the `octopus-cli` launcher (shipped next to the binary) into ~/.local/bin, and
 #   - copies the Claude Code skill to ~/.claude/skills/octopus (replace-in-place).
@@ -13,6 +13,16 @@
 # of that data is handled by the app itself (schema migrations), not by this script.
 #
 # No root required; nothing is installed system-wide (this is not an apt package).
+#
+# The replace is atomic: the payload is staged into "$PROGRAM_DIR.new", then the live
+# dir is renamed to ".old", ".new" is renamed into place, and ".old" is deleted. A
+# failure before the swap leaves the live install untouched. Running it while Octopus
+# is running is safe because the running app keeps its already-open files and is
+# relaunched promptly by the in-app updater (do not rely on files lazily opened later
+# staying valid: ".old" is deleted right after the swap). Octopus' in-app updater runs
+# this script non-interactively while the app is running, then relaunches. Keep the
+# script runnable non-interactively (no prompts, no tty needed), including by older
+# Octopus builds that invoke it as `sh <dir>/install.sh` with cwd = <dir>.
 
 set -eu
 
@@ -60,37 +70,90 @@ if [ ! -f "$ICON_SRC" ]; then
   exit 1
 fi
 
-# --- install (replace in place) ----------------------------------------------
+# --- install (atomic replace) -------------------------------------------------
 echo "Installing Octopus to $PROGRAM_DIR ..."
-rm -rf "$PROGRAM_DIR"
-mkdir -p "$PROGRAM_DIR"
-cp -a "$PAYLOAD/." "$PROGRAM_DIR/"
+NEW_DIR="$PROGRAM_DIR.new"
+OLD_DIR="$PROGRAM_DIR.old"
+
+# Until the swap succeeds, any failure/interrupt removes the half-staged copy and
+# leaves the live dir untouched.
+STAGING=1
+cleanup() {
+  if [ "$STAGING" = 1 ]; then
+    rm -rf "$NEW_DIR"
+    # Interrupted between the two swap renames: put the previous install back.
+    if [ ! -e "$PROGRAM_DIR" ] && [ -e "$OLD_DIR" ]; then
+      mv "$OLD_DIR" "$PROGRAM_DIR" || true
+    fi
+  fi
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
+# Stale leftovers from an earlier interrupted run. If that run died between the swap
+# renames, the live dir is missing and ".old" is the previous install: restore it first.
+if [ ! -e "$PROGRAM_DIR" ] && [ -e "$OLD_DIR" ]; then
+  mv "$OLD_DIR" "$PROGRAM_DIR" || true
+fi
+rm -rf "$NEW_DIR" "$OLD_DIR"
+
+mkdir -p "$NEW_DIR"
+cp -a "$PAYLOAD/." "$NEW_DIR/"
+
+if [ ! -x "$NEW_DIR/octopus" ]; then
+  echo "error: staged copy is missing an executable $NEW_DIR/octopus; install aborted, existing install untouched." >&2
+  exit 1
+fi
+
+# Swap. Both renames are within the same parent dir, so they are atomic.
+if [ -e "$PROGRAM_DIR" ]; then
+  mv "$PROGRAM_DIR" "$OLD_DIR"
+fi
+if ! mv "$NEW_DIR" "$PROGRAM_DIR"; then
+  echo "error: could not move the new install into place; restoring the previous install." >&2
+  if [ -e "$OLD_DIR" ]; then
+    mv "$OLD_DIR" "$PROGRAM_DIR" || echo "error: restore failed; previous install is at $OLD_DIR." >&2
+  fi
+  exit 1
+fi
+STAGING=0
+# The new payload is live. Everything below is best-effort: a failure here warns but
+# must not turn a successful install into a non-zero exit.
+rm -rf "$OLD_DIR" || echo "warning: could not remove $OLD_DIR" >&2
 
 # --- link launcher onto PATH --------------------------------------------------
-mkdir -p "$BIN_DIR"
-ln -sf "$LAUNCHER" "$SYMLINK"
+{ mkdir -p "$BIN_DIR" && ln -sf "$LAUNCHER" "$SYMLINK"; } ||
+  echo "warning: could not link $SYMLINK" >&2
 
 echo "Installed. Launcher symlinked at $SYMLINK -> $LAUNCHER"
 
-ln -sf "$CLI_LAUNCHER" "$CLI_SYMLINK"
-echo "CLI symlinked at $CLI_SYMLINK -> $CLI_LAUNCHER"
+if { mkdir -p "$BIN_DIR" && ln -sf "$CLI_LAUNCHER" "$CLI_SYMLINK"; }; then
+  echo "CLI symlinked at $CLI_SYMLINK -> $CLI_LAUNCHER"
+else
+  echo "warning: could not link $CLI_SYMLINK" >&2
+fi
 
 # --- Claude Code skill (replace in place) -------------------------------------
+install_skill() {
+  rm -rf "$SKILL_DEST" && mkdir -p "$SKILL_DEST" && cp -a "$SKILL_SRC/." "$SKILL_DEST/"
+}
 if [ ! -e "$SKILL_DEST" ] || [ -f "$SKILL_DEST/.octopus-managed" ]; then
-  rm -rf "$SKILL_DEST"
-  mkdir -p "$SKILL_DEST"
-  cp -a "$SKILL_SRC/." "$SKILL_DEST/"
-  echo "Claude skill installed at $SKILL_DEST"
+  if install_skill; then
+    echo "Claude skill installed at $SKILL_DEST"
+  else
+    echo "warning: could not install the Claude skill at $SKILL_DEST" >&2
+  fi
 else
   echo "warning: $SKILL_DEST exists and is not Octopus-managed — skill not installed." >&2
 fi
 
 # --- desktop integration (icon + launcher entry) ------------------------------
-mkdir -p "$ICON_DIR"
-cp "$ICON_SRC" "$ICON_DEST"
+{ mkdir -p "$ICON_DIR" && cp "$ICON_SRC" "$ICON_DEST"; } ||
+  echo "warning: could not install icon $ICON_DEST" >&2
 
-mkdir -p "$APPS_DIR"
-cat > "$DESKTOP_FILE" <<EOF
+write_desktop_file() {
+  mkdir -p "$APPS_DIR" || return 1
+  cat > "$DESKTOP_FILE" <<DESKTOP_EOF
 [Desktop Entry]
 Type=Application
 Name=Octopus
@@ -100,7 +163,9 @@ Icon=octopus
 Terminal=false
 Categories=Development;
 StartupWMClass=$WM_CLASS
-EOF
+DESKTOP_EOF
+}
+write_desktop_file || echo "warning: could not write $DESKTOP_FILE" >&2
 
 echo "Desktop entry installed at $DESKTOP_FILE"
 

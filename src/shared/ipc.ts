@@ -62,7 +62,8 @@ import type {
   JiraResultDTO,
   ImportJiraIssuesInput,
   ImportJiraIssuesResultDTO,
-  SetJiraKeyInput
+  SetJiraKeyInput,
+  UpdateStatusDTO
 } from './dto'
 import type { EventDTO } from './events'
 
@@ -228,6 +229,12 @@ export const CHANNELS = {
    */
   credentialsSetJiraKey: 'credentials:setJiraKey',
   credentialsHasJiraKey: 'credentials:hasJiraKey',
+
+  /** Update check/install (request/reply). `updateStatusChanged` pushes ride `event`. */
+  updatesGetStatus: 'updates:getStatus',
+  updatesCheckNow: 'updates:checkNow',
+  updatesDismiss: 'updates:dismiss',
+  updatesInstall: 'updates:install',
 
   /** Streaming events (backend → UI, webContents.send). Carries a discriminated EventDTO. */
   event: 'app:event'
@@ -482,6 +489,14 @@ export interface OctopusAPI {
     setJiraKey(input: SetJiraKeyInput): Promise<CommandAck>
     /** Whether a Jira API key is currently stored. Never the key itself. */
     hasJiraKey(): Promise<boolean>
+  }
+
+  /** Update availability: query, manual check, dismiss a version, install a release. */
+  updates: {
+    getStatus(): Promise<UpdateStatusDTO>
+    checkNow(): Promise<UpdateStatusDTO>
+    dismiss(version: string): Promise<void>
+    install(version: string): Promise<{ ok: true } | { ok: false; error: string }>
   }
 
   /** Subscribe to the backend event stream; returns an unsubscribe fn (§5.2). */

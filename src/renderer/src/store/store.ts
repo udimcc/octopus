@@ -27,7 +27,8 @@ import type {
   WindowRole,
   IssueDTO,
   GroupDTO,
-  JiraFiltersDTO
+  JiraFiltersDTO,
+  UpdateStatusDTO
 } from '../../../shared/dto'
 import type { EventDTO } from '../../../shared/events'
 import { type DisplayState, DISPLAY_RANK } from './display-state'
@@ -244,7 +245,32 @@ export interface StoreData {
    * on every launch, and survives a `hydrate()` re-hydration (see {@link useStore.hydrate}).
    */
   readonly settingsOpen: boolean
+  /** Tab Settings should open on (set by `openSettings(tab)`); undefined = default tab. */
+  readonly settingsInitialTab: SettingsTabId | undefined
+  /** True once `hydrate` has stamped this window's identity (role); gates boot-time update events. */
+  readonly hydrated: boolean
+  /** Version whose popup the user snoozed ("Not now"); renderer-only, never persisted. */
+  readonly popupSnoozedVersion: string | null
+  /** Latest self-update status; null until seeded by `loadUpdateStatus`. */
+  readonly updateStatus: UpdateStatusDTO | null
+  /** True while a manual `checkNow` is in flight in THIS window. */
+  readonly updateChecking: boolean
+  /** Whether the "Octopus will restart" confirm is open in THIS window. */
+  readonly restartConfirmOpen: boolean
+  /** Version snapshotted when the confirm opened (mid-install status events can't retitle it). */
+  readonly restartConfirmVersion: string | null
+  /** Progress of `updates.install` in THIS window. */
+  readonly installState: InstallState
 }
+
+/** Settings tab ids that can be requested on open. */
+export type SettingsTabId = 'updates'
+
+/** Install progress: stays `installing` on success because the app relaunches. */
+export type InstallState =
+  | { readonly kind: 'idle' }
+  | { readonly kind: 'installing' }
+  | { readonly kind: 'error'; readonly message: string }
 
 /**
  * A drawer action deferred behind the "Discard unsaved changes?" prompt while
@@ -368,9 +394,18 @@ export interface StoreActions {
    */
   focusPane(sessionId: string): void
   /** Open the Settings modal in THIS window. Renderer-local view-state. */
-  openSettings(): void
+  openSettings(tab?: SettingsTabId): void
   /** Close the Settings modal in THIS window. Renderer-local view-state. */
   closeSettings(): void
+  /** Seed `updateStatus` from `updates.getStatus()` (does not overwrite a newer event). */
+  loadUpdateStatus(): Promise<void>
+  /** Manual check via `updates.checkNow()`; sets `updateChecking` meanwhile. */
+  checkForUpdates(): Promise<void>
+  openRestartConfirm(version: string): void
+  /** Close the confirm and reset a failed install; no-op while installing. */
+  closeRestartConfirm(): void
+  /** Call `updates.install(version)`; `installing` on ok (app relaunches), `error` otherwise. */
+  installUpdate(version: string): Promise<void>
 }
 
 export type Store = StoreData & StoreActions
@@ -436,7 +471,15 @@ export function initialData(): StoreData {
     issueEditDirty: false,
     discardPrompt: null,
     issueEditSession: 1,
-    settingsOpen: false
+    settingsOpen: false,
+    settingsInitialTab: undefined,
+    hydrated: false,
+    popupSnoozedVersion: null,
+    updateStatus: null,
+    updateChecking: false,
+    restartConfirmOpen: false,
+    restartConfirmVersion: null,
+    installState: { kind: 'idle' }
   }
 }
 
@@ -1559,6 +1602,11 @@ export function reduceEvent(
       // which runs the SAME dirty-guarded toggle as the local `toggleIssuesDrawer` action.
       return toggleDrawerData(data)
 
+    case 'updateStatusChanged':
+      // A buffered boot event lands before hydrate (windowRole still defaults to 'main'):
+      // ignore it; `loadUpdateStatus` re-seeds after hydrate.
+      return data.hydrated ? { ...data, updateStatus: event.status } : data
+
     default: {
       // Exhaustiveness guard: a new EventDTO member must be handled above.
       const _never: never = event
@@ -1626,6 +1674,16 @@ export const useStore = create<Store>((set, get) => ({
         // on the wire) — a re-hydration triggered BY the SettingsModal's own save must not
         // close the modal that's still showing its own success/pending UI.
         settingsOpen: data.settingsOpen,
+        settingsInitialTab: data.settingsInitialTab,
+        // Self-update state is renderer-local/boot-seeded; initialData() would wipe it
+        // (the boot seed + boot-check event, and again on every Settings Save).
+        hydrated: true,
+        popupSnoozedVersion: data.popupSnoozedVersion,
+        updateStatus: data.updateStatus,
+        updateChecking: data.updateChecking,
+        restartConfirmOpen: data.restartConfirmOpen,
+        restartConfirmVersion: data.restartConfirmVersion,
+        installState: data.installState,
         // Renderer-local too: the in-flight replies still arrive after a re-hydration.
         inFlightTaskSwitches: data.inFlightTaskSwitches,
         selectedIssueId,
@@ -1765,9 +1823,58 @@ export const useStore = create<Store>((set, get) => ({
       return withMark(data, session.taskId, sessionId)
     }),
 
-  openSettings: () => set({ settingsOpen: true }),
+  openSettings: (tab) => set({ settingsOpen: true, settingsInitialTab: tab }),
 
-  closeSettings: () => set({ settingsOpen: false })
+  closeSettings: () => set({ settingsOpen: false, settingsInitialTab: undefined }),
+
+  loadUpdateStatus: async () => {
+    const status = await window.octopusAPI.updates.getStatus()
+    set((data) => (data.updateStatus === null ? { updateStatus: status } : data))
+  },
+
+  checkForUpdates: async () => {
+    if (get().updateChecking) return
+    set({ updateChecking: true })
+    try {
+      const status = await window.octopusAPI.updates.checkNow()
+      set({ updateStatus: status })
+    } catch (e) {
+      get().pushToast('error', `Update check failed: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      set({ updateChecking: false })
+    }
+  },
+
+  openRestartConfirm: (version) =>
+    set({
+      restartConfirmOpen: true,
+      restartConfirmVersion: version,
+      installState: { kind: 'idle' }
+    }),
+
+  closeRestartConfirm: () =>
+    set((data) =>
+      data.installState.kind === 'installing'
+        ? data
+        : {
+            restartConfirmOpen: false,
+            restartConfirmVersion: null,
+            installState: { kind: 'idle' },
+            // Closing without installing snoozes the popup for that version (renderer-only).
+            popupSnoozedVersion: data.restartConfirmVersion ?? data.popupSnoozedVersion
+          }
+    ),
+
+  installUpdate: async (version) => {
+    if (get().installState.kind === 'installing') return
+    set({ installState: { kind: 'installing' } })
+    try {
+      const res = await window.octopusAPI.updates.install(version)
+      if (!res.ok) set({ installState: { kind: 'error', message: res.error } })
+    } catch (e) {
+      set({ installState: { kind: 'error', message: e instanceof Error ? e.message : String(e) } })
+    }
+  }
 }))
 
 /** Return `map` with `sessionId` cleared, or `map` unchanged if it wasn't set (§9.5). */

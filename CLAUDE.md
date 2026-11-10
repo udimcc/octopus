@@ -134,8 +134,28 @@ a per-user `.desktop` launcher entry and icon-theme icon (both removed by `unins
 `src/renderer/src/assets/octopus.svg` is the icon source — re-run `npm run render:icon` after
 editing it.
 
-**Upgrade/rollback semantics (important).** Installs are **replace-in-place** and share
-one data dir, so the DB is the compatibility surface. Migrations are **forward-only and
+**Publishing.** Extract the release under `/mnt/scratch/octopus/.incoming/`, then `mv` the
+`octopus-X.Y.Z/` dir to `/mnt/scratch/octopus/octopus-X.Y.Z` (an atomic rename on the same
+filesystem, so a running app never sees a half-copied release; dot-dirs are ignored by the
+checker). It must contain `install.sh` and `linux-unpacked/octopus`. Running apps find it from there. A hidden `updates.dir` key in `settings.json` overrides that
+directory (no UI; used for testing against a temp dir).
+
+**In-app self-update.** Main checks the updates dir at boot and hourly (`update-scheduler.ts`); a
+strictly newer `octopus-X.Y.Z` shows a popup (main window, once per dismissed version), a title
+badge and a Settings tab. Install copies the release to a local staging dir next to the program dir
+(`octopus-update-staging`, not /tmp), runs its `install.sh`, then
+relaunches from the program dir without the busy-sessions prompt. Daemon-backed shells survive
+the restart and re-attach. Dev builds behave the same as packaged ones.
+
+**`install.sh` is a compatibility surface.** Older builds run the *new* release's `install.sh`
+non-interactively (no TTY, no prompts), so keep its flags, exit codes and install layout stable.
+It stages the payload into `octopus-app.new` and swaps by rename (`octopus-app` -> `.old`, `.new` ->
+`octopus-app`), so a failed install leaves the previous one intact. Running it under a live Octopus is
+safe because the running app keeps its already-open files and is relaunched promptly (files are not
+guaranteed to stay valid under `.old`, which is deleted right after the swap).
+
+**Upgrade/rollback semantics (important).** Installs replace the program dir by atomic rename and
+share one data dir, so the DB is the compatibility surface. Migrations are **forward-only and
 append-only** (`schema.ts` — add a new `MIGRATION` + bump `SCHEMA_VERSION`, never edit old
 DDL). Upgrading auto-migrates (after writing an `octopus.db.bak-v<N>` backup). Rolling back
 the binary is safe: an older build that meets a **newer** DB refuses to start with a fatal

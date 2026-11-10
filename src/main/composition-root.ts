@@ -30,6 +30,7 @@
 
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { resolveProgramDir, resolveUpdateStagingDir } from '../adapters/env/paths'
 import { raiseFileLimit } from '../adapters/env/raise-file-limit'
 import {
   ensureAppDirs,
@@ -76,7 +77,12 @@ import {
 import { createHttpsFetch } from '../adapters/jira/https-fetch'
 import { SafeStorageCredentials } from '../adapters/credentials/safe-storage-credentials'
 import { JIRA_API_KEY_REF } from '../ports/credentials-provider'
-import { BrowserWindow, safeStorage } from 'electron'
+import { app, BrowserWindow, safeStorage } from 'electron'
+import { FsUpdateSource } from '../adapters/update/fs-update-source'
+import { createUpdateChecker } from '../application/use-cases/check-for-updates'
+import { createUpdateInstaller } from '../application/use-cases/install-update'
+import { createUpdateScheduler, type UpdateScheduler } from './update-scheduler'
+import { skipBusyQuitWarning } from './window'
 import { createAjvConfigValidator } from '../application/config-validator'
 import {
   MapRuntimeRegistry,
@@ -102,7 +108,18 @@ import { CURRENT_VERSION } from '../shared/version'
 import { registerIpcHandlers } from './ipc-handlers'
 import { createWindowRegistry, type WindowRegistry } from './window-registry'
 
+/** Where releases are published when `settings.updates.dir` is unset. */
+const DEFAULT_UPDATES_DIR = '/mnt/scratch/octopus'
+/** Listing the (network) updates dir gives up after this long -> `unreachable`. */
+const UPDATE_CHECK_TIMEOUT_MS = 10_000
+/** Copying the (~300 MB) release to the local staging dir gives up after this long. */
+const UPDATE_STAGE_TIMEOUT_MS = 3 * 60_000
+/** A release's install.sh (copy + swap) must finish within this. */
+const UPDATE_INSTALL_TIMEOUT_MS = 5 * 60_000
+
 export interface AppContext {
+  /** Hourly update check + status push; started by index.ts once windows are up. */
+  readonly updateScheduler: UpdateScheduler
   readonly paths: AppPaths
   readonly commandLoop: CommandLoop
   /**
@@ -584,10 +601,69 @@ export function bootstrap(): AppContext {
     serverId: DEFAULT_JIRA_SERVER_ID
   })
 
-  // `onHydrate(windowId)` marks THAT window ready so its buffered startup events
-  // flush exactly when its renderer can receive them (§6.7, generalizes §6.5).
+  const updateSource = new FsUpdateSource({
+    stagingRoot: resolveUpdateStagingDir(process.env, homedir()),
+    stageTimeoutMs: UPDATE_STAGE_TIMEOUT_MS,
+    runner: scriptRunner
+  })
+  const updateChecker = createUpdateChecker({
+    source: updateSource,
+    settings,
+    clock,
+    currentVersion: app.getVersion(),
+    defaultDir: DEFAULT_UPDATES_DIR,
+    timeoutMs: UPDATE_CHECK_TIMEOUT_MS
+  })
+  const programDir = resolveProgramDir(process.env, homedir())
+  const updateInstaller = createUpdateInstaller({
+    source: updateSource,
+    scriptRunner,
+    programDir,
+    timeoutMs: UPDATE_INSTALL_TIMEOUT_MS,
+    relauncher: {
+      relaunch: (execPath) => {
+        skipBusyQuitWarning()
+        // The installed app must not inherit a node-mode flag from this process.
+        delete process.env.ELECTRON_RUN_AS_NODE
+        // In dev, electron-vite sets ELECTRON_RENDERER_URL on this process; the relaunched
+        // installed app would inherit it and window.ts would load the (dead) Vite dev server
+        // URL instead of its bundled renderer.
+        delete process.env.ELECTRON_RENDERER_URL
+        // Other electron-vite dev vars would equally leak into the installed app.
+        for (const key of [
+          'NODE_ENV_ELECTRON_VITE',
+          'ELECTRON_ENTRY',
+          'ELECTRON_EXEC_PATH',
+          'ELECTRON_CLI_ARGS',
+          'ELECTRON_MAJOR_VER'
+        ]) {
+          delete process.env[key]
+        }
+        if (!app.isPackaged) {
+          delete process.env.NODE_ENV
+        }
+        // args MUST be explicit: the default re-passes process.argv (in dev, the
+        // electron-vite project path).
+        app.relaunch({ execPath, args: [] })
+        app.quit()
+      }
+    }
+  })
+  const updateScheduler = createUpdateScheduler({
+    checker: updateChecker,
+    broadcast: (event) => {
+      windowRegistry.broadcast(event)
+      // Passive update (VDI SwiftShader): force a repaint so the popup/badge paint now,
+      // same as the §9.5 toast path. Repaint only, never a raise.
+      findWindow(windowIds, MAIN_WINDOW_ID)?.webContents.invalidate()
+    }
+  })
+
   registerIpcHandlers(commandLoop, deps, {
     windowIds,
+    updates: { checker: updateChecker, installer: updateInstaller, scheduler: updateScheduler },
+    // `onHydrate(windowId)` marks THAT window ready so its buffered startup events
+    // flush exactly when its renderer can receive them (§6.7, generalizes §6.5).
     onHydrate: (windowId) => windowRegistry.markReady(windowId),
     clipboard: new ElectronClipboard(),
     jira: jiraSource,
@@ -717,6 +793,7 @@ export function bootstrap(): AppContext {
 
   return {
     paths,
+    updateScheduler,
     commandLoop,
     controlServer,
     deps,

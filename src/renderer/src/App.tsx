@@ -40,6 +40,8 @@ import { SecondaryWorkspace } from './components/SecondaryWorkspace'
 import { Toaster } from './components/Toaster'
 import { NewTaskModal } from './components/NewTaskModal'
 import { DeleteTaskConfirm } from './components/DeleteTaskConfirm'
+import { UpdateAvailableModal } from './components/UpdateAvailableModal'
+import { RestartConfirmModal } from './components/RestartConfirmModal'
 import { IssuesDrawer } from './components/IssuesDrawer'
 import { DebugOverlay } from './components/DebugOverlay'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
@@ -180,11 +182,14 @@ function useFocusFlashExpiry(): void {
 function useBoot(): void {
   const hydrate = useStore((s) => s.hydrate)
   const applyEvent = useStore((s) => s.applyEvent)
+  const loadUpdateStatus = useStore((s) => s.loadUpdateStatus)
 
   useEffect(() => {
     const unsubscribe = initEventRouting(applyEvent)
     void window.octopusAPI.app.getState().then((state) => {
       hydrate(state)
+      // After hydrate so windowRole is known (no popup flash in secondary/view windows).
+      void loadUpdateStatus().catch(() => undefined)
       // Kick off restore of the initially-active task's sessions NOW (§6.3): the
       // backend only spawns a restored task's PTYs (and replays their scrollback)
       // inside `switchTask → startTaskSessions`, and nothing else fires a switch at
@@ -203,7 +208,7 @@ function useBoot(): void {
         void window.octopusAPI.tasks.switch({ taskId: state.activeTaskId })
     })
     return unsubscribe
-  }, [hydrate, applyEvent])
+  }, [hydrate, applyEvent, loadUpdateStatus])
 }
 
 /** Search the active task's session visible in THIS window (shared shortcut handler). */
@@ -296,6 +301,10 @@ function MainWindowApp(): React.JSX.Element {
           onDone={() => setBoundDelete(null)}
         />
       ) : null}
+      {/* Self-update modals (main window only). After ProgressPanel (which mounts
+          SettingsModal) in DOM order so the restart confirm paints above Settings. */}
+      <UpdateAvailableModal />
+      <RestartConfirmModal />
     </main>
   )
 }

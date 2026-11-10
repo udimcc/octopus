@@ -43,6 +43,7 @@ import { SortableContext, verticalListSortingStrategy, arrayMove } from '@dnd-ki
 import { TaskListItem } from './TaskListItem'
 import { DeleteTaskConfirm } from './DeleteTaskConfirm'
 import { SettingsModal } from './SettingsModal'
+import { hasUpdateAvailable } from '../store/update-status'
 import { CreateViewConfirm } from './CreateViewConfirm'
 import { useStore, taskDisplayState, isViewedTask, sameWindowGroup } from '../store/store'
 import { groupTasksByRepo, repoKeyOf, NO_REPOSITORY_KEY } from '../store/group-tasks'
@@ -72,6 +73,7 @@ export function ProgressPanel({
   const toggleIssuesDrawer = useStore((s) => s.toggleIssuesDrawer)
   const settingsOpen = useStore((s) => s.settingsOpen)
   const openSettings = useStore((s) => s.openSettings)
+  const updateStatus = useStore((s) => s.updateStatus)
   const closeSettings = useStore((s) => s.closeSettings)
   // Subscribe to every input `taskDisplayState` folds in so the rollup re-renders when
   // any of them change (§9.5/§9): the finished-unseen map and session states (raise/
@@ -191,6 +193,26 @@ export function ProgressPanel({
         >
           Octopus{version ? ` - ${version}` : ''}
         </h1>
+        {!readOnly && hasUpdateAvailable(updateStatus) ? (
+          <button
+            type="button"
+            className="icon-button"
+            aria-label={`Update available: ${updateStatus?.availableVersion}`}
+            title={`Update available: ${updateStatus?.availableVersion}`}
+            onClick={() => openSettings('updates')}
+            style={{ color: color.accent, display: 'inline-flex', padding: 2 }}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path
+                d="M8 2v8m0 0L4.5 6.5M8 10l3.5-3.5M3 13.5h10"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        ) : null}
         {/* Window-view feature: this panel is the VIEW window's pinned, read-only
             copy when `readOnly` — no settings here (nothing it opens applies to this
             window), and no pill either: `App.tsx`'s banner above both panels is the
@@ -201,7 +223,7 @@ export function ProgressPanel({
             type="button"
             className="icon-button"
             aria-label="settings"
-            onClick={openSettings}
+            onClick={() => openSettings()}
             style={{ fontSize: 20 }}
           >
             ⚙
