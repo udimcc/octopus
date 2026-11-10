@@ -324,9 +324,9 @@ describe('<ProgressPanel>', () => {
     expect(button).toHaveAttribute('aria-pressed', 'false')
   })
 
-  it('in a view (readOnly) keeps + New Window but hides the task-management controls', () => {
+  it('in a view (readOnly) keeps New Window but hides the task-management controls', () => {
     render(<ProgressPanel onNewTask={vi.fn()} readOnly />)
-    fireEvent.click(screen.getByRole('button', { name: '+ New Window' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New Window' }))
     expect(window.octopusAPI.windows.create).toHaveBeenCalledWith({})
     expect(screen.queryByRole('button', { name: '+ New Task' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Delete Task' })).toBeNull()

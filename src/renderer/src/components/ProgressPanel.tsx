@@ -1,7 +1,9 @@
 /**
  * The left "Progress" panel (DESIGN §5.1; PRD §Progress Window). It owns:
- *  - `PanelHeader`: the app title + **New Task**, **Delete Task** (disabled when no
- *    active task), and a gear that opens **Settings**.
+ *  - The header: the app title + a gear that opens **Settings**; then **+ New Task**
+ *    (primary) with an icon-only **Delete Task** (quiet trash, red on hover; disabled when no active task);
+ *    then **New Window** and the **Issues** drawer toggle; then a "Tasks" label row
+ *    carrying the Grouped/Flat toggle.
  *  - The task list: a dnd-kit vertical `SortableContext` of `TaskListItem`s. A drop
  *    dispatches `tasks.reorder({ taskId, toIndex })`; the store reconciles from the
  *    `taskReordered` event (never optimistically, §5.2).
@@ -24,9 +26,10 @@
  * non-interactive copy of this panel — every task is listed (so the user can still see
  * the whole workspace at a glance) with the viewed task shown selected via the normal
  * `activeTaskId` (a view window's `activeTaskId` is pinned to its `viewTaskId`, store.ts),
- * but nothing here can switch/drag/reorder/rename, and the New Task / Delete Task / New
- * Window / grouping-toggle / Issues controls are omitted outright (not merely disabled) —
- * none of them apply to a window permanently pinned to one task. `onNewTask` is unused
+ * but nothing here can switch/drag/reorder/rename, and the New Task / Delete Task /
+ * grouping-toggle / Issues controls are omitted outright (not merely disabled) — none of
+ * them apply to a window permanently pinned to one task. New Window stays (it joins the
+ * view's group). `onNewTask` is unused
  * in that mode.
  */
 
@@ -48,6 +51,7 @@ import { CreateViewConfirm } from './CreateViewConfirm'
 import { useStore, taskDisplayState, isViewedTask, sameWindowGroup } from '../store/store'
 import { groupTasksByRepo, repoKeyOf, NO_REPOSITORY_KEY } from '../store/group-tasks'
 import { color, fontSize } from '../style/tokens'
+import { chordLabel } from '../keybindings/chords'
 import octopusMascot from '../assets/octopus.svg'
 
 export interface ProgressPanelProps {
@@ -56,6 +60,61 @@ export interface ProgressPanelProps {
   readonly onNewTask: () => void
   /** Window-view feature (Task 5): render the non-interactive variant — see header comment. */
   readonly readOnly?: boolean
+}
+
+/** Tooltip text with the (user-rebindable) shortcut appended when one is set. */
+function withShortcut(label: string, chord: string | undefined): string {
+  return chord ? `${label} (${chordLabel(chord)})` : label
+}
+
+/** Muted uppercase label of a repo group header (grouped view). */
+const repoLabel: React.CSSProperties = {
+  color: color.muted,
+  fontSize: fontSize.sm,
+  fontWeight: 600,
+  textTransform: 'uppercase',
+  letterSpacing: '0.04em'
+}
+
+/* 16px line icons in the update icon's style (currentColor stroke, round caps). */
+const iconProps = {
+  width: 16,
+  height: 16,
+  viewBox: '0 0 16 16',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 1.6,
+  strokeLinecap: 'round',
+  strokeLinejoin: 'round',
+  'aria-hidden': true
+} as const
+
+function TrashIcon(): React.JSX.Element {
+  return (
+    <svg {...iconProps}>
+      <path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.7 8.5h5.6l.7-8.5M6.8 7v3.5M9.2 7v3.5" />
+    </svg>
+  )
+}
+
+function WindowIcon(): React.JSX.Element {
+  return (
+    <svg {...iconProps}>
+      <rect x="2.5" y="3" width="11" height="10" rx="1.5" />
+      <path d="M2.5 6h11" />
+    </svg>
+  )
+}
+
+function IssuesIcon(): React.JSX.Element {
+  return (
+    <svg {...iconProps}>
+      <path d="M6.5 4.5h6.5M6.5 8h6.5M6.5 11.5h6.5" />
+      <circle cx="3.5" cy="4.5" r="0.8" fill="currentColor" />
+      <circle cx="3.5" cy="8" r="0.8" fill="currentColor" />
+      <circle cx="3.5" cy="11.5" r="0.8" fill="currentColor" />
+    </svg>
+  )
 }
 
 export function ProgressPanel({
@@ -75,6 +134,8 @@ export function ProgressPanel({
   const openSettings = useStore((s) => s.openSettings)
   const updateStatus = useStore((s) => s.updateStatus)
   const closeSettings = useStore((s) => s.closeSettings)
+  const newTaskKey = useStore((s) => s.settings.newTaskKey)
+  const issuesKey = useStore((s) => s.settings.issuesKey)
   // Subscribe to every input `taskDisplayState` folds in so the rollup re-renders when
   // any of them change (§9.5/§9): the finished-unseen map and session states (raise/
   // clear + plain state flips), PLUS the on-screen inputs (window focus + active tab),
@@ -166,7 +227,12 @@ export function ProgressPanel({
     void window.octopusAPI.tasks.reorder({ taskId: activeId, toIndex })
   }
 
-  const headerButton: React.CSSProperties = { flex: 1 }
+  // Tighter side padding than the base button so both labels fit in 216px.
+  const rowButton: React.CSSProperties = {
+    flex: '1 1 auto',
+    whiteSpace: 'nowrap',
+    padding: '4px 8px'
+  }
 
   return (
     <aside
@@ -231,56 +297,104 @@ export function ProgressPanel({
         )}
       </div>
 
+      {/* Header controls (PRD "Progress Window" → "Controls"). The panel is 240px wide
+          (216px inside the padding), so two equal halves can't hold "New Window":
+          row 1 is the primary New Task + an icon-only Delete; row 2 sizes its two
+          secondary buttons to their labels (`flex: 1 1 auto`). */}
       {readOnly ? null : (
-        <div style={{ display: 'flex', gap: 6, padding: '0 12px 12px' }}>
-          <button type="button" className="btn-primary" onClick={onNewTask} style={headerButton}>
+        <div style={{ display: 'flex', gap: 6, padding: '0 12px 8px' }}>
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={onNewTask}
+            title={withShortcut('New task', newTaskKey)}
+            style={{ flex: 1 }}
+          >
             + New Task
           </button>
           <button
             type="button"
+            className="btn-quiet-danger btn-square"
+            aria-label="Delete Task"
+            title="Delete task"
             onClick={() => setDeleteTaskId(activeTaskId ?? null)}
             disabled={!activeTaskId}
-            style={headerButton}
           >
-            Delete Task
+            <TrashIcon />
           </button>
         </div>
       )}
 
-      {/* Open an empty secondary session-only window (V1.5, §6.7); the backend emits
-          `windowCreated` and the main process opens the OS window. Shown in a view too:
-          the backend parents it to the sender's group, so it joins the view's group. */}
-      <div style={{ display: 'flex', padding: '0 12px 12px' }}>
+      <div style={{ display: 'flex', gap: 6, padding: '0 12px 12px' }}>
+        {/* Open an empty secondary session-only window (V1.5, §6.7); the backend emits
+            `windowCreated` and the main process opens the OS window. Shown in a view too:
+            the backend parents it to the sender's group, so it joins the view's group. */}
         <button
           type="button"
           onClick={() => void window.octopusAPI.windows.create({})}
-          style={{ flex: 1 }}
+          title="Open an empty window for sessions"
+          style={rowButton}
         >
-          + New Window
+          <WindowIcon />
+          New Window
         </button>
+        {/* "Issues" toggle ("Issues" → "Issues window"); `.btn-toggle` tints it while the
+            drawer is open. The `id` is a focus-restore fallback target for `IssuesDrawer`:
+            if the drawer can't restore focus to whatever had it before opening (or to an
+            on-screen terminal), it lands here instead of `<body>`.
+            Window-view feature: the Issues drawer is main-only (DESIGN §13.4/§13.5) —
+            omitted entirely in the `readOnly` (view-window) panel, not just disabled,
+            since `IssuesDrawer` itself is never mounted there either (`App.tsx`). */}
+        {readOnly ? null : (
+          <button
+            id="issues-drawer-toggle"
+            data-issues-drawer-control
+            type="button"
+            className="btn-toggle"
+            onClick={toggleIssuesDrawer}
+            aria-pressed={issuesDrawerOpen}
+            title={withShortcut('Issues', issuesKey)}
+            style={rowButton}
+          >
+            <IssuesIcon />
+            Issues
+          </button>
+        )}
       </div>
 
-      {readOnly ? null : (
-        <>
-          {/* Toggle between the repo-grouped and flat task views (§5.1); persisted as a
-              setting so it survives restart. Grouped is the default. */}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '0 12px 12px' }}>
-            <button
-              type="button"
-              onClick={toggleGrouped}
-              aria-pressed={grouped}
-              aria-label="group tasks by repo"
-              title={
-                grouped
-                  ? 'Grouping by repo — click for a flat list'
-                  : 'Flat list — click to group by repo'
-              }
-            >
-              {grouped ? 'Grouped ▾' : 'Flat ▸'}
-            </button>
-          </div>
-        </>
-      )}
+      {/* "Tasks" section label over the list, carrying the grouped/flat toggle (§5.1;
+          persisted as a setting so it survives restart, grouped is the default). */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '8px 8px 4px 12px',
+          borderTop: `1px solid ${color.borderSubtle}`
+        }}
+      >
+        {/* Title-case, larger and brighter than the uppercase muted repo headers below,
+            so the section title never reads as one more repo group. */}
+        <span style={{ fontSize: fontSize.base, fontWeight: 600, color: color.textSecondary }}>
+          Tasks
+        </span>
+        {readOnly ? null : (
+          <button
+            type="button"
+            className="btn-ghost-sm"
+            onClick={toggleGrouped}
+            aria-pressed={grouped}
+            aria-label="group tasks by repo"
+            title={
+              grouped
+                ? 'Grouping by repo — click for a flat list'
+                : 'Flat list — click to group by repo'
+            }
+          >
+            {grouped ? 'Grouped ▾' : 'Flat ▸'}
+          </button>
+        )}
+      </div>
 
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
         {grouped ? (
@@ -289,12 +403,8 @@ export function ProgressPanel({
               <li key={g.repoRoot || 'no-repo'} style={{ listStyle: 'none' }}>
                 <div
                   style={{
+                    ...repoLabel,
                     padding: '8px 12px 4px',
-                    color: color.muted,
-                    fontSize: fontSize.sm,
-                    fontWeight: 600,
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.04em',
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
                     whiteSpace: 'nowrap'
@@ -350,30 +460,6 @@ export function ProgressPanel({
           </SortableContext>
         )}
       </DndContext>
-
-      {/* "Issues" button (PRD "Progress Window" → "Controls"; "Issues" → "Issues
-          window"), pinned below the task list: the list above is the `flex: 1`
-          scroller, so this sits in the remaining space and never scrolls with it.
-          The `id` is a focus-restore fallback target for `IssuesDrawer`:
-          if the drawer can't restore focus to whatever had it before opening (or
-          to an on-screen terminal), it lands here instead of `<body>`.
-          Window-view feature: the Issues drawer is main-only (DESIGN §13.4/§13.5) —
-          omitted entirely in the `readOnly` (view-window) panel, not just disabled,
-          since `IssuesDrawer` itself is never mounted there either (`App.tsx`). */}
-      {readOnly ? null : (
-        <div style={{ padding: 12, borderTop: `1px solid ${color.border}` }}>
-          <button
-            id="issues-drawer-toggle"
-            data-issues-drawer-control
-            type="button"
-            onClick={toggleIssuesDrawer}
-            aria-pressed={issuesDrawerOpen}
-            style={{ width: '100%' }}
-          >
-            Issues
-          </button>
-        </div>
-      )}
 
       {deleteTaskId && tasks[deleteTaskId] ? (
         <DeleteTaskConfirm taskId={deleteTaskId} onClose={() => setDeleteTaskId(null)} />

@@ -129,7 +129,7 @@ The Issues window is a large panel. It is **not a session**, is not tied to any 
 closes regardless of which task is active.
 
 **Opening and closing:**
-- Open it from the **Issues** button at the bottom left of the Progress window, below the tasks, or
+- Open it from the **Issues** button at the top of the Progress window, next to **New Window**, or
   with the keyboard shortcut (default **Alt+Shift+I**, configurable in Settings → Keybindings).
 - It slides in from the right and covers the whole session area, up to the Progress window, which
   stays visible.
@@ -366,7 +366,7 @@ A window listing all task names. Located on the left side of the screen.
 - **New Task** button at the top of the window — opens the task-creation modal (name, a configured project, source branch, new branch).
 - **Delete Task** button at the top of the window. Deleting a task bound to an issue offers Delete
   task only / Delete issue only / Delete both / Cancel (see Issues → Deleting).
-- **Issues** button at the bottom left of the window (below the task list) — toggles the Issues
+- **Issues** button at the top of the window, next to **New Window** — toggles the Issues
   window (see Issues → Issues window).
 
 ## UI Layout

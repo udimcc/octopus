@@ -328,6 +328,55 @@ button:focus-visible {
   border-color: var(--accent-active);
 }
 
+/* Square icon-only button (e.g. the Progress panel's Delete). Stretches to its row's
+   height; pair with a colour class such as .btn-quiet-danger. */
+.btn-square {
+  flex: none;
+  width: 32px;
+  padding: 0;
+}
+
+/* Destructive action that should not draw the eye at rest (e.g. the Progress panel's
+   trash): a plain muted button that turns red only on hover. .btn-danger is the
+   always-red variant for confirm dialogs. */
+.btn-quiet-danger {
+  color: var(--text-muted);
+}
+
+.btn-quiet-danger:hover:not(:disabled) {
+  background: var(--error-bg);
+  border-color: var(--error-border);
+  color: var(--error-fg);
+}
+
+/* Two-state toggle (aria-pressed) — accent tint while on, e.g. the Issues button. */
+.btn-toggle[aria-pressed='true'] {
+  background: var(--accent-subtle);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.btn-toggle[aria-pressed='true']:hover:not(:disabled) {
+  background: var(--accent-subtle);
+  border-color: var(--accent-hover);
+  color: var(--accent-hover);
+}
+
+/* Small borderless text control for section headers (e.g. Grouped/Flat). */
+.btn-ghost-sm {
+  padding: 2px var(--space-2);
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.btn-ghost-sm:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: transparent;
+  color: var(--text-primary);
+}
+
 /* Destructive action button. */
 .btn-danger {
   background: transparent;
