@@ -59,8 +59,9 @@ export function handleRuntimeExit(deps: AppDependencies, input: HandleRuntimeExi
   if (scrollback) {
     try {
       deps.persistence.saveScrollback(input.sessionId, scrollback)
+      deps.scrollbacks.markClean(input.sessionId)
     } catch {
-      // Ignore — scrollback persistence is best-effort.
+      // Ignore — scrollback persistence is best-effort (it stays dirty for the next flush).
     }
   }
 

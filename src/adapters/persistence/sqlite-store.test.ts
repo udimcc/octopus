@@ -3,6 +3,7 @@ import { SqliteStore } from './sqlite-store'
 import { IncompatibleDbError } from './errors'
 import { SCHEMA_STATEMENTS, MIGRATIONS } from './schema'
 import type { SqliteDb, SqliteStatement } from './sqlite-db'
+import { SCROLLBACK_MAX_BYTES } from '../../shared/node/ring-buffer'
 import type { TaskRow, SessionRow, IssueRow } from './mappers'
 import { asTaskId, asSessionId, asTypeId, asIssueId, asGroupId } from '../../domain/ids'
 import { TaskState, SessionState } from '../../domain/state'
@@ -180,7 +181,7 @@ describe('SqliteStore.create (§6.3)', () => {
     const db = new FakeDb()
     SqliteStore.create(db)
     expect(db.execed.some((s) => s.includes('ADD COLUMN base_ref'))).toBe(false)
-    expect(db.pragmas).toContain('user_version = 12')
+    expect(db.pragmas).toContain('user_version = 13')
   })
 
   it('runs the pending migrations on a pre-existing older DB (base_ref + session_scrollback)', () => {
@@ -190,7 +191,7 @@ describe('SqliteStore.create (§6.3)', () => {
     db.stub('sqlite_master', [{ name: 'tasks' }])
     SqliteStore.create(db)
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN base_ref'))).toBe(true)
-    expect(db.pragmas).toContain('user_version = 12')
+    expect(db.pragmas).toContain('user_version = 13')
   })
 
   it('runs ONLY the v3 migration on a v2 DB (skips the already-applied v2 ALTER)', () => {
@@ -207,7 +208,7 @@ describe('SqliteStore.create (§6.3)', () => {
     expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS session_scrollback'))).toBe(
       true
     )
-    expect(db.pragmas).toContain('user_version = 12')
+    expect(db.pragmas).toContain('user_version = 13')
   })
 
   it('runs ONLY the v4 migration on a v3 DB (adds window_id + windows, seeds main)', () => {
@@ -224,7 +225,7 @@ describe('SqliteStore.create (§6.3)', () => {
     )
     expect(db.execed.some((s) => s.includes('CREATE TABLE IF NOT EXISTS windows'))).toBe(true)
     expect(db.execed.some((s) => s.includes('INSERT OR IGNORE INTO windows'))).toBe(true)
-    expect(db.pragmas).toContain('user_version = 12')
+    expect(db.pragmas).toContain('user_version = 13')
   })
 
   it('runs the v5 + v6 + v7 + v8 + v9 migrations on a v4 DB (managed + back-fill, last_cwd, repo_less, issues, session_groups)', () => {
@@ -248,7 +249,7 @@ describe('SqliteStore.create (§6.3)', () => {
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN repo_less'))).toBe(true)
     // Bootstrap + v8 + v9's healing re-run, all IF NOT EXISTS.
     expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues')).length).toBe(3)
-    expect(db.pragmas).toContain('user_version = 12')
+    expect(db.pragmas).toContain('user_version = 13')
   })
 
   it('runs the v6 + v7 + v8 + v9 migrations on a v5 DB (last_cwd, repo_less, issues, session_groups)', () => {
@@ -265,7 +266,7 @@ describe('SqliteStore.create (§6.3)', () => {
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN repo_less'))).toBe(true)
     // Bootstrap + v8 + v9's healing re-run, all IF NOT EXISTS.
     expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues')).length).toBe(3)
-    expect(db.pragmas).toContain('user_version = 12')
+    expect(db.pragmas).toContain('user_version = 13')
   })
 
   it('runs the v7 + v8 + v9 migrations on a v6 DB (adds repo_less, issues, session_groups)', () => {
@@ -282,7 +283,7 @@ describe('SqliteStore.create (§6.3)', () => {
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN repo_less'))).toBe(true)
     // Bootstrap + v8 + v9's healing re-run, all IF NOT EXISTS.
     expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues')).length).toBe(3)
-    expect(db.pragmas).toContain('user_version = 12')
+    expect(db.pragmas).toContain('user_version = 13')
   })
 
   it('throws IncompatibleDbError on a DB newer than this binary, without touching it', () => {
@@ -292,7 +293,7 @@ describe('SqliteStore.create (§6.3)', () => {
     // silently downgraded and the next upgrade would re-run an applied migration.
     const db = new FakeDb()
     db.stub('sqlite_master', [{ name: 'tasks' }])
-    db.stubPragma('user_version', [{ user_version: 13 }])
+    db.stubPragma('user_version', [{ user_version: 14 }])
     expect(() => SqliteStore.create(db)).toThrow(IncompatibleDbError)
     // No schema statements ran and the version was NOT lowered.
     expect(db.execed.some((s) => s.includes('CREATE TABLE'))).toBe(false)
@@ -304,7 +305,7 @@ describe('SqliteStore.create (§6.3)', () => {
     // though fromVersion (0) < SCHEMA_VERSION; it bootstraps and stamps to current.
     const db = new FakeDb()
     expect(() => SqliteStore.create(db)).not.toThrow()
-    expect(db.pragmas).toContain('user_version = 12')
+    expect(db.pragmas).toContain('user_version = 13')
   })
 
   it('invokes beforeMigrate with fromVersion on an upgrade, but not on fresh/current DBs', () => {
@@ -326,7 +327,7 @@ describe('SqliteStore.create (§6.3)', () => {
     // Already-current DB: nothing to migrate, so no backup.
     const current = new FakeDb()
     current.stub('sqlite_master', [{ name: 'tasks' }])
-    current.stubPragma('user_version', [{ user_version: 12 }])
+    current.stubPragma('user_version', [{ user_version: 13 }])
     const onCurrent = vi.fn()
     SqliteStore.create(current, onCurrent)
     expect(onCurrent).not.toHaveBeenCalled()
@@ -362,7 +363,7 @@ describe('SqliteStore.create (§6.3)', () => {
     )
     expect(db.execed.some((s) => s.includes('ALTER TABLE tasks ADD COLUMN repo_less'))).toBe(false)
     expect(db.execed.filter((s) => s.includes('CREATE TABLE IF NOT EXISTS issues')).length).toBe(3)
-    expect(db.pragmas).toContain('user_version = 12')
+    expect(db.pragmas).toContain('user_version = 13')
   })
 })
 
@@ -467,7 +468,7 @@ describe('SqliteStore.load (§6.3)', () => {
       projectPath: undefined,
       taskId: undefined
     })
-    expect(db.pragmas).toContain('user_version = 12')
+    expect(db.pragmas).toContain('user_version = 13')
   })
 
   it('runs ONLY the v9 migration on a v8 DB (session_groups, §5.7)', () => {
@@ -492,7 +493,7 @@ describe('SqliteStore.load (§6.3)', () => {
     expect(
       v9Migration!.statements.some((s) => s.includes('CREATE TABLE IF NOT EXISTS session_groups'))
     ).toBe(true)
-    expect(db.pragmas).toContain('user_version = 12')
+    expect(db.pragmas).toContain('user_version = 13')
   })
 
   it('a current v10 DB runs no migration, so no split_layouts DROP nor v10 ALTER', () => {
@@ -524,7 +525,7 @@ describe('SqliteStore.load (§6.3)', () => {
     expect(
       db.execed.some((s) => s.includes('CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_jira_key'))
     ).toBe(true)
-    expect(db.pragmas).toContain('user_version = 12')
+    expect(db.pragmas).toContain('user_version = 13')
   })
 
   it('skips the v10 ALTERs when `issues.source` already exists (the v7-bootstrap path)', () => {
@@ -543,7 +544,7 @@ describe('SqliteStore.load (§6.3)', () => {
     expect(
       db.execed.some((s) => s.includes('CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_jira_key'))
     ).toBe(true)
-    expect(db.pragmas).toContain('user_version = 12')
+    expect(db.pragmas).toContain('user_version = 13')
   })
 
   it('does NOT run the v10 ALTERs on a fresh DB', () => {
@@ -554,7 +555,7 @@ describe('SqliteStore.load (§6.3)', () => {
     expect(
       db.execed.some((s) => s.includes('CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_jira_key'))
     ).toBe(true)
-    expect(db.pragmas).toContain('user_version = 12')
+    expect(db.pragmas).toContain('user_version = 13')
   })
 })
 
@@ -588,7 +589,7 @@ describe('SqliteStore v12 migration (Blocked issue status)', () => {
       'DROP TABLE issues',
       'ALTER TABLE issues_v12 RENAME TO issues'
     ])
-    expect(db.pragmas).toContain('user_version = 12')
+    expect(db.pragmas).toContain('user_version = 13')
   })
 
   it('the rebuild copies every legacy column and leaves blocked_reasons to its default', () => {
@@ -629,7 +630,7 @@ describe('SqliteStore v12 migration (Blocked issue status)', () => {
     const db = openAt(null)
     expect(db.execed.some((s) => s.includes(REBUILD_MARK))).toBe(false)
     expect(db.execed.some((s) => s === 'DROP TABLE issues')).toBe(false)
-    expect(db.pragmas).toContain('user_version = 12')
+    expect(db.pragmas).toContain('user_version = 13')
   })
 
   it('skips the rebuild on an already-v12 DB', () => {
@@ -645,7 +646,7 @@ describe('SqliteStore v12 migration (Blocked issue status)', () => {
     expect(
       db.execed.some((s) => s.includes('CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_jira_key'))
     ).toBe(true)
-    expect(db.pragmas).toContain('user_version = 12')
+    expect(db.pragmas).toContain('user_version = 13')
   })
 
   it('fresh DDL and the v12 rebuild DDL carry the same status CHECK and blocked_reasons column', () => {
@@ -781,24 +782,129 @@ describe('SqliteStore writes', () => {
     expect(db.runs.some((r) => r.sql.includes('DELETE FROM app_state'))).toBe(true)
   })
 
-  it('saveScrollback upserts the (session_id, data) row', () => {
+  it('saveScrollback writes only the live part, keeps history, and needs the session row', () => {
     const db = new FakeDb()
     const store = SqliteStore.create(db)
     store.saveScrollback(asSessionId('s1'), 'the output')
     const call = db.runs.find((r) => r.sql.includes('INSERT INTO session_scrollback'))
     expect(call).toBeDefined()
-    expect(call!.sql).toContain('ON CONFLICT(session_id) DO UPDATE')
-    expect(call!.params).toEqual([asSessionId('s1'), 'the output'])
+    const sql = normalizeDdl(call!.sql)
+    // A new row starts with an empty (non-legacy) history; an update touches only `data`.
+    expect(sql).toContain("SELECT ?, ?, '' WHERE EXISTS (SELECT 1 FROM sessions WHERE id = ?)")
+    expect(sql).toContain('ON CONFLICT(session_id) DO UPDATE SET data = excluded.data')
+    expect(sql).not.toContain('history = excluded')
+    expect(call!.params).toEqual([asSessionId('s1'), 'the output', asSessionId('s1')])
   })
 
-  it('loadScrollback returns the stored data, or undefined when absent', () => {
+  it('loadScrollback returns both parts (NULL history = legacy), or undefined when absent', () => {
     const db = new FakeDb()
     const store = SqliteStore.create(db)
-    db.stub('FROM session_scrollback', [{ data: 'restored output' }])
-    expect(store.loadScrollback(asSessionId('s1'))).toBe('restored output')
+    db.stub('FROM session_scrollback', [{ data: 'live output', history: 'old' }])
+    expect(store.loadScrollback(asSessionId('s1'))).toEqual({ history: 'old', live: 'live output' })
+
+    const legacy = new FakeDb()
+    legacy.stub('FROM session_scrollback', [{ data: 'mixed', history: null }])
+    expect(SqliteStore.create(legacy).loadScrollback(asSessionId('s1'))).toEqual({
+      history: null,
+      live: 'mixed'
+    })
 
     const empty = SqliteStore.create(new FakeDb())
     expect(empty.loadScrollback(asSessionId('gone'))).toBeUndefined()
+  })
+
+  describe('rotateScrollback (fresh-spawn fold, §6.6)', () => {
+    function rotate(row: { data: string; history: string | null } | undefined): {
+      db: FakeDb
+      result: string
+    } {
+      const db = new FakeDb()
+      const store = SqliteStore.create(db)
+      if (row) db.stub('FROM session_scrollback', [row])
+      const before = db.runs.length
+      const result = store.rotateScrollback(asSessionId('s1'))
+      db.runs.splice(0, before)
+      return { db, result }
+    }
+    const updates = (db: FakeDb): Array<{ sql: string; params: unknown }> =>
+      db.runs.filter((r) => r.sql.includes('UPDATE session_scrollback'))
+
+    it('folds live into history and clears live, in one transaction', () => {
+      const { db, result } = rotate({ data: 'live', history: 'old ' })
+      expect(result).toBe('old live')
+      const [update] = updates(db)
+      expect(normalizeDdl(update.sql)).toBe(
+        "UPDATE session_scrollback SET history = ?, data = '' WHERE session_id = ?"
+      )
+      expect(update.params).toEqual(['old live', asSessionId('s1')])
+    })
+
+    it('treats a legacy NULL history as empty', () => {
+      const { db, result } = rotate({ data: 'mixed', history: null })
+      expect(result).toBe('mixed')
+      expect(updates(db)).toHaveLength(1)
+    })
+
+    it('does not rewrite when there is nothing to fold (a StartFailed tab rebooting)', () => {
+      const { db, result } = rotate({ data: '', history: 'kept' })
+      expect(result).toBe('kept')
+      expect(updates(db)).toHaveLength(0)
+    })
+
+    it('returns empty for a session with no row', () => {
+      const { db, result } = rotate(undefined)
+      expect(result).toBe('')
+      expect(updates(db)).toHaveLength(0)
+    })
+
+    it('caps the folded history to its newest SCROLLBACK_MAX_BYTES', () => {
+      const old = 'a'.repeat(SCROLLBACK_MAX_BYTES)
+      const { result } = rotate({ data: 'tail', history: old })
+      expect(Buffer.byteLength(result, 'utf8')).toBe(SCROLLBACK_MAX_BYTES)
+      expect(result.endsWith('tail')).toBe(true)
+    })
+  })
+
+  it('setScrollbackHistory updates only the history column', () => {
+    const db = new FakeDb()
+    const store = SqliteStore.create(db)
+    store.setScrollbackHistory(asSessionId('s1'), 'split')
+    const call = db.runs.find((r) => r.sql.includes('UPDATE session_scrollback'))
+    expect(call!.sql).toBe('UPDATE session_scrollback SET history = ? WHERE session_id = ?')
+    expect(call!.params).toEqual(['split', asSessionId('s1')])
+  })
+})
+
+describe('SqliteStore v13 migration (scrollback history)', () => {
+  const ALTER = 'ALTER TABLE session_scrollback ADD COLUMN history TEXT'
+
+  function openAt(version: number, scrollbackColumns: string[]): FakeDb {
+    const db = new FakeDb()
+    db.stub('sqlite_master', [{ name: 'tasks' }])
+    db.stubPragma('user_version', [{ user_version: version }])
+    db.stubPragma(
+      'table_info(session_scrollback)',
+      scrollbackColumns.map((name) => ({ name }))
+    )
+    SqliteStore.create(db)
+    return db
+  }
+
+  it('a v12 DB adds the nullable history column and stamps 13', () => {
+    const db = openAt(12, ['session_id', 'data'])
+    expect(db.execed).toContain(ALTER)
+    expect(db.pragmas).toContain('user_version = 13')
+  })
+
+  it('skips the ALTER when the bootstrap already created the v13 shape (pre-v3 DB)', () => {
+    const db = openAt(2, ['session_id', 'data', 'history'])
+    expect(db.execed).not.toContain(ALTER)
+    expect(db.pragmas).toContain('user_version = 13')
+  })
+
+  it('the fresh-DB DDL already has the history column', () => {
+    const ddl = SCHEMA_STATEMENTS.find((s) => s.includes('session_scrollback'))!
+    expect(normalizeDdl(ddl)).toContain('data TEXT NOT NULL, history TEXT )')
   })
 })
 

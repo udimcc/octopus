@@ -19,5 +19,8 @@ export function writeToPty(deps: AppDependencies, input: WriteToPtyInput): void 
 
 export function resizePty(deps: AppDependencies, input: ResizePtyInput): void {
   const runtime = deps.runtimes.get(input.sessionId)
-  runtime?.resize(input.cols, input.rows)
+  if (!runtime) return
+  runtime.resize(input.cols, input.rows)
+  // Output from here on is laid out at this size; the saved history records it.
+  deps.scrollbacks.setSize(input.sessionId, input.cols, input.rows)
 }

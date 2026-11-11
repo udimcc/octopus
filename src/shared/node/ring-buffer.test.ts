@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { RingBuffer } from './ring-buffer'
+import { RingBuffer, tailBytes } from './ring-buffer'
 
 describe('RingBuffer (§6.6)', () => {
   it('retains everything while under the cap (append → snapshot round-trip)', () => {
@@ -63,5 +63,32 @@ describe('RingBuffer (§6.6)', () => {
     rb.clear()
     expect(rb.snapshot()).toBe('')
     expect(rb.byteLength).toBe(0)
+  })
+})
+
+describe('tailBytes', () => {
+  it('returns the string unchanged when it fits', () => {
+    expect(tailBytes('hello', 5)).toBe('hello')
+    expect(tailBytes('', 0)).toBe('')
+  })
+
+  it('keeps the newest bytes of an ASCII string', () => {
+    expect(tailBytes('abcdefghij', 4)).toBe('ghij')
+  })
+
+  it('never splits a multibyte character (cuts forward to the next boundary)', () => {
+    // 'é' is 2 bytes, '€' is 3, '😀' is 4 (a surrogate pair in UTF-16).
+    const s = 'aé€😀'
+    expect(tailBytes(s, 4)).toBe('😀')
+    expect(tailBytes(s, 6)).toBe('😀') // 6 bytes would start mid-'€'
+    expect(tailBytes(s, 7)).toBe('€😀')
+    expect(tailBytes(s, 9)).toBe('é€😀')
+  })
+
+  it('result never exceeds the cap on a large mixed string', () => {
+    const s = 'x€'.repeat(100_000)
+    const out = tailBytes(s, 1001)
+    expect(Buffer.byteLength(out, 'utf8')).toBeLessThanOrEqual(1001)
+    expect(s.endsWith(out)).toBe(true)
   })
 })

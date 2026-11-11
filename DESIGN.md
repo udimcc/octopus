@@ -780,13 +780,45 @@ path exists (else mark task `Stale` with a warning, don't start sessions); then 
 backend decides:
 - **Fresh spawn** (in-process always; daemon when the session's PTY is gone) — open a new PTY at the session's
   `last_cwd` if present (captured daemon-side on quit / roster refresh), else the config `cwdOverride`, else the
-  worktree root. Persisted scrollback is metadata, independent of the live PTY (I13): it is loaded and published
-  (as a `ptyData` event) **ahead of** the spawn, so restored history paints immediately without waiting on the
-  shell fork. The configured `initialCommand` runs on a fresh spawn.
+  worktree root. Persisted scrollback is metadata, independent of the live PTY (I13): the row is **rotated**
+  (`rotateScrollback`: frozen history := tail-capped(history + live), live := '') and the history is published
+  (as a `ptyData` event, plus the "session restored" separator) **ahead of** the spawn, so it paints immediately
+  without waiting on the shell fork. Main's buffer starts empty: it holds only the new PTY's output. The
+  configured `initialCommand` runs on a fresh spawn. Restored history carries in-band markers (private OSCs,
+  `shared/restored-history.ts`) that the pane's writer (`restored-history-writer.ts`) acts on once xterm has
+  parsed what precedes them:
+  - **Size.** The scrollback store records the PTY size (`setSize`: the 80×24 default at a fresh spawn, then
+    every `resizePty`) ahead of the next output, repeated every 64 KB so ring eviction can't drop it. The writer
+    sizes xterm to it, so each stretch parses at the width it was written at. A TUI's absolute column moves
+    (`CSI n G`) and padded lines scramble at any other width. Pane refits wait until the end marker. Output
+    recorded without markers (saved by an older build, or the ≤ 64 KB head of a long history) parses at the pane's
+    width, which is why the pane connects to its output only after its first real fit.
+  - **End** (`RESTORED_HISTORY_END`, appended by `publishHistory`). The writer leaves the alternate screen,
+    soft-resets (DECSTR: cursor visible, full scroll region), parks the cursor on a row below the last non-blank
+    line and refits, so xterm reflows the history like a live terminal on resize (it never reflows the cursor's
+    row). It then steps back up, so the separator lands right under the old content. A TUI killed mid-frame
+    (Claude parks its cursor, hidden, in the input box) would otherwise get the separator and the new prompt
+    drawn inside its old frame.
 - **Re-attach** (daemon backend, when the session id is still in the daemon's live roster — `liveDaemonSessions`)
-  — the daemon replays its own richer live ring buffer, so the persisted DB scrollback is **not** re-published
-  (that would double-print history) and the `initialCommand` is **suppressed** (I15 — the process already exists
-  and likely already ran it). The live cwd and foreground program come back with the process.
+  — only the row's **frozen history** is published (ahead of the attach), then the daemon replays its ring,
+  which already holds the row's live part. Re-publishing the live part would double-print it; skipping the
+  history (pre-v13 behavior) lost it on the next save. The `initialCommand` is **suppressed** (I15 — the
+  process already exists and likely already ran it). The live cwd and foreground program come back with the
+  process. A failed re-attach (the session died between the roster check and the attach) also publishes the
+  saved live part, so the `StartFailed` pane is not blank.
+
+**Scrollback rows (schema v13).** `session_scrollback` holds two parts: `history` (frozen: output of earlier
+PTYs, restored at a fresh spawn) and `data` (live: main's buffer, i.e. output since the last fresh spawn —
+the same bytes the daemon ring holds). Saves write **only** `data`, so a save can never overwrite or duplicate
+the history. Both parts are tail-capped at `SCROLLBACK_MAX_BYTES` (500 KiB) — the restore display path is capped
+there anyway (`OutputTail` in main's pre-hydration queue and the renderer's pre-mount buffer), so storing more
+would show nothing more. Rotation is idempotent (`live === ''` → no write), so a `StartFailed` tab's history does
+not grow per boot. Migration v13 adds `history TEXT` (NULL = a legacy one-blob row). A legacy row is split once,
+on its first re-attach, against the daemon replay (`splitLegacyScrollback`: the part of the blob the replay
+does not contain becomes history); on a fresh spawn the NULL history simply rotates as ''. The split drops only
+text the replay provably repeats: a blob whose start lies in the replay, or a tail the replay starts with.
+Anything less certain keeps the whole blob, because a stray duplicate beats lost history. A re-attach that fails
+after its replay arrived drops that replay from main's buffer, so no flush writes it over the stored row.
 
 The `repo_root` column round-trips the per-task repo directory so delete-after-restart re-invokes the correct
 repo-local script / git repo (§6.4).
@@ -995,8 +1027,18 @@ Events (backend→UI):  ptyData, sessionCreated, sessionExited, sessionClosed,
 - **Task-delete ordering (strict):** set `deleting` flag → dirty check (confirm) → kill all PTYs → run delete
   script → remove rows in one transaction → emit `taskDeleted`. Delete-script failure still removes the task
   (+ warning).
-- **App quit:** SIGHUP all PTYs (fire-and-forget), `PRAGMA wal_checkpoint(TRUNCATE)`, then quit. Warn the
-  user if any session is `Working`/`Blocked`.
+- **Scrollback persistence:** main's per-session buffers are written to the DB by `flushScrollbacks` —
+  dirty sessions only (output since their last write), longest-dirty first, in one transaction, marked clean
+  only after the commit. It runs every 30 s (`scrollback-flush-scheduler.ts`, a 4 MiB per-tick budget bounds the
+  synchronous main-thread cost), on quit, on `powerMonitor` `shutdown` and on a spontaneous shell exit, so an
+  app killed at reboot / crash loses at most one interval. It is **not** a CommandLoop command: scrollback is
+  I13 metadata, and the FIFO loop can be blocked for minutes by a `createTask` exactly when data is at risk.
+  SIGTERM/SIGINT/SIGHUP need no Node handler: Electron's shutdown detector turns them into `app.quit()`, which
+  runs the normal `before-quit` path.
+- **App quit:** flush scrollback (synchronously, first — the app may be killed during the async step that
+  follows), on the daemon backend persist cwds (bounded to 2 s: a wedged daemon never answers), SIGHUP all PTYs
+  (fire-and-forget), `PRAGMA wal_checkpoint(TRUNCATE)`, then quit. Warn the user if any session is
+  `Working`/`Blocked`.
 
 ### 6.7 Multi-window backend (phase 1.5)
 

@@ -25,6 +25,7 @@
  */
 
 import type { AppDependencies } from './dependencies'
+import { flushScrollbacks } from './flush-scrollbacks'
 
 export interface ShutdownOptions {
   /**
@@ -69,17 +70,12 @@ export function shutdown(deps: AppDependencies, opts: ShutdownOptions = {}): voi
     }
   }
 
-  // Flush every session's captured output to the store so it can be replayed on
-  // the next launch (§6.6). Ordering is load-bearing: AFTER `runtimes.clear()` (no
-  // more `onData` can race the buffer) and BEFORE `checkpointAndClose()` (the store
-  // is still open). Best-effort per session — one bad write must not skip the rest.
-  for (const [sessionId, data] of deps.scrollbacks.entries()) {
-    try {
-      deps.persistence.saveScrollback(sessionId, data)
-    } catch {
-      // Ignore — scrollback is a convenience, not correctness; keep flushing.
-    }
-  }
+  // Flush every DIRTY session's captured output to the store so it can be replayed
+  // on the next launch (§6.6). The periodic flush and the before-quit flush already
+  // wrote most of it; this catches the tail. Ordering is load-bearing: AFTER
+  // `runtimes.clear()` (no more `onData` can race the buffer) and BEFORE
+  // `checkpointAndClose()` (the store is still open). Best-effort per session.
+  flushScrollbacks(deps)
 
   try {
     deps.persistence.checkpointAndClose()

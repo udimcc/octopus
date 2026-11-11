@@ -30,6 +30,9 @@ function fakeBridge(): { emit: (e: EventDTO) => void; unsubscribed: () => boolea
   }
 }
 
+/** Let the deferred pre-mount replay (a microtask after register) run. */
+const settle = (): Promise<void> => Promise.resolve()
+
 describe('pty-router (§5.2 bypass)', () => {
   beforeEach(() => {
     _resetSinks()
@@ -102,7 +105,7 @@ describe('pty-router pre-mount ring buffer (§6.6 replay)', () => {
     _resetSinks()
   })
 
-  it('replays output buffered before the sink mounted, in order, then stops buffering', () => {
+  it('replays output buffered before the sink mounted, in order, then stops buffering', async () => {
     const bridge = fakeBridge()
     initEventRouting(vi.fn())
 
@@ -112,7 +115,8 @@ describe('pty-router pre-mount ring buffer (§6.6 replay)', () => {
 
     const sink = vi.fn()
     registerTerminalSink('s1', sink)
-    // The backlog is replayed on register, oldest-first.
+    await settle()
+    // The backlog is replayed once the mount settles, oldest-first.
     expect(sink.mock.calls.map((c) => c[0])).toEqual(['one', 'two'])
 
     // Subsequent live output goes straight through (no double replay).
@@ -120,23 +124,74 @@ describe('pty-router pre-mount ring buffer (§6.6 replay)', () => {
     expect(sink.mock.calls.map((c) => c[0])).toEqual(['one', 'two', 'three'])
   })
 
-  it('clears the buffer after replay — a re-registered sink does not see it again', () => {
+  it('clears the buffer after replay — a re-registered sink does not see it again', async () => {
     const bridge = fakeBridge()
     initEventRouting(vi.fn())
     bridge.emit({ type: 'ptyData', sessionId: 's1', data: 'backlog' })
 
     const first = vi.fn()
     registerTerminalSink('s1', first)
+    await settle()
     expect(first).toHaveBeenCalledWith('backlog')
 
     unregisterTerminalSink('s1')
     const second = vi.fn()
     registerTerminalSink('s1', second)
+    await settle()
     // Backlog was already consumed by `first`; `second` starts clean.
     expect(second).not.toHaveBeenCalled()
   })
 
-  it('does not buffer once a sink is live (output is delivered, not double-shown)', () => {
+  /**
+   * REGRESSION (restored history missing in dev builds): StrictMode mounts the pane,
+   * unmounts it (disposing its xterm) and mounts it again, all synchronously. The
+   * backlog must reach the second, live sink, not the disposed first one.
+   */
+  it('replays into the sink that survives a StrictMode mount/unmount/mount', async () => {
+    const bridge = fakeBridge()
+    initEventRouting(vi.fn())
+    bridge.emit({ type: 'ptyData', sessionId: 's1', data: 'HISTORY' })
+
+    const disposed = vi.fn()
+    registerTerminalSink('s1', disposed)
+    unregisterTerminalSink('s1')
+    const live = vi.fn()
+    registerTerminalSink('s1', live)
+    await settle()
+    bridge.emit({ type: 'ptyData', sessionId: 's1', data: 'LIVE' })
+
+    expect(disposed).not.toHaveBeenCalled()
+    expect(live.mock.calls.map((c) => c[0])).toEqual(['HISTORY', 'LIVE'])
+  })
+
+  it('keeps the backlog for a later sink when the pane unmounts before the replay', async () => {
+    const bridge = fakeBridge()
+    initEventRouting(vi.fn())
+    bridge.emit({ type: 'ptyData', sessionId: 's1', data: 'HISTORY' })
+
+    registerTerminalSink('s1', vi.fn())
+    unregisterTerminalSink('s1')
+    await settle()
+    const later = vi.fn()
+    registerTerminalSink('s1', later)
+    await settle()
+    expect(later).toHaveBeenCalledWith('HISTORY')
+  })
+
+  it('output arriving before the replay runs is queued behind the backlog', async () => {
+    const bridge = fakeBridge()
+    initEventRouting(vi.fn())
+    bridge.emit({ type: 'ptyData', sessionId: 's1', data: 'one' })
+
+    const sink = vi.fn()
+    registerTerminalSink('s1', sink)
+    bridge.emit({ type: 'ptyData', sessionId: 's1', data: 'two' })
+    expect(sink).not.toHaveBeenCalled()
+    await settle()
+    expect(sink.mock.calls.map((c) => c[0]).join('')).toBe('onetwo')
+  })
+
+  it('does not buffer once a sink is live (output is delivered, not double-shown)', async () => {
     const bridge = fakeBridge()
     initEventRouting(vi.fn())
     const sink = vi.fn()
@@ -150,7 +205,7 @@ describe('pty-router pre-mount ring buffer (§6.6 replay)', () => {
     expect(sink).toHaveBeenCalledWith('live')
   })
 
-  it('bounds the buffer at the byte cap, discarding the OLDEST bytes first', () => {
+  it('bounds the buffer at the byte cap, discarding the OLDEST bytes first', async () => {
     const bridge = fakeBridge()
     initEventRouting(vi.fn())
 
@@ -161,6 +216,7 @@ describe('pty-router pre-mount ring buffer (§6.6 replay)', () => {
 
     const chunks: string[] = []
     registerTerminalSink('s1', (d) => chunks.push(d))
+    await settle()
 
     const replayed = chunks.join('')
     // The oldest chunk was evicted to stay under the cap; the newest survives.
@@ -169,7 +225,7 @@ describe('pty-router pre-mount ring buffer (§6.6 replay)', () => {
     expect(replayed.length).toBeLessThanOrEqual(REPLAY_BUFFER_MAX_BYTES)
   })
 
-  it('truncates a SINGLE oversized chunk to its tail (the daemon re-attach replay)', () => {
+  it('truncates a SINGLE oversized chunk to its tail (the daemon re-attach replay)', async () => {
     const bridge = fakeBridge()
     initEventRouting(vi.fn())
 
@@ -182,6 +238,7 @@ describe('pty-router pre-mount ring buffer (§6.6 replay)', () => {
 
     const chunks: string[] = []
     registerTerminalSink('s1', (d) => chunks.push(d))
+    await settle()
 
     const replayed = chunks.join('')
     expect(replayed.length).toBe(REPLAY_BUFFER_MAX_BYTES)
@@ -197,7 +254,7 @@ describe('pty-router pre-mount ring buffer (§6.6 replay)', () => {
    * Claude repaint, a prompt redraw) evicted the whole replay and the terminal came back
    * blank. The bound must be on bytes: the head chunk is trimmed, not dropped.
    */
-  it('keeps the replayed history when live output arrives before the pane mounts', () => {
+  it('keeps the replayed history when live output arrives before the pane mounts', async () => {
     const bridge = fakeBridge()
     initEventRouting(vi.fn())
 
@@ -207,6 +264,7 @@ describe('pty-router pre-mount ring buffer (§6.6 replay)', () => {
 
     const chunks: string[] = []
     registerTerminalSink('s1', (d) => chunks.push(d))
+    await settle()
 
     const replayed = chunks.join('')
     expect(replayed.length).toBe(REPLAY_BUFFER_MAX_BYTES)
@@ -214,7 +272,7 @@ describe('pty-router pre-mount ring buffer (§6.6 replay)', () => {
     expect(replayed.endsWith('TAIL-MARKERL')).toBe(true)
   })
 
-  it('keeps a single chunk that fits intact — no truncation at the boundary', () => {
+  it('keeps a single chunk that fits intact — no truncation at the boundary', async () => {
     const bridge = fakeBridge()
     initEventRouting(vi.fn())
     const exact = 'y'.repeat(REPLAY_BUFFER_MAX_BYTES)
@@ -222,10 +280,11 @@ describe('pty-router pre-mount ring buffer (§6.6 replay)', () => {
 
     const chunks: string[] = []
     registerTerminalSink('s1', (d) => chunks.push(d))
+    await settle()
     expect(chunks.join('')).toBe(exact)
   })
 
-  it('_resetSinks clears pending buffers too', () => {
+  it('_resetSinks clears pending buffers too', async () => {
     const bridge = fakeBridge()
     initEventRouting(vi.fn())
     bridge.emit({ type: 'ptyData', sessionId: 's1', data: 'gone' })

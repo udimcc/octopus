@@ -6,7 +6,7 @@
  *    array, and lives in a ref. It is never recreated on re-render — recreating it
  *    would wipe scrollback and drop the PTY sink registration.
  *  - Output arrives via the `pty-router` bypass, not through React state: on mount
- *    we `registerTerminalSink(id, d => term.write(d))`. Keystrokes go the other way,
+ *    we register `createTerminalWriter(term)` (term.write + restored-history end). Keystrokes go the other way,
  *    `term.onData(d => pty.write(...))`.
  *  - The terminal is disposed (and its sink unregistered) only when the pane
  *    unmounts — which in V1 happens on session close. Task switching keeps every
@@ -81,6 +81,7 @@ import { registerSearchOpener, unregisterSearchOpener } from './terminal-search'
 import { registerTerminalFocuser, unregisterTerminalFocuser } from './terminal-focus'
 import { registerPaneMetrics, unregisterPaneMetrics } from './terminal-metrics'
 import { installCursorBlinkGuard } from './cursor-blink-guard'
+import { createTerminalWriter, type TerminalWriter } from './restored-history-writer'
 import { webglBudget } from './webgl-budget'
 import { probeGpuTier } from './gpu-capability'
 import { color, radius, shadow, terminalTheme } from '../style/tokens'
@@ -124,15 +125,22 @@ interface LoadedRenderer {
  * alone keeps a real box, so the non-active session tab of the *active* task (only
  * hidden, not 0×0) still fits.
  */
-function fitAndResize(sessionId: string, term: Terminal, fit: FitAddon, host: HTMLElement): void {
-  if (host.offsetWidth === 0 || host.offsetHeight === 0) return
+/** Fit the grid to the host and tell the PTY. False when the host has no layout box. */
+function fitAndResize(
+  sessionId: string,
+  term: Terminal,
+  fit: FitAddon,
+  host: HTMLElement
+): boolean {
+  if (host.offsetWidth === 0 || host.offsetHeight === 0) return false
   try {
     fit.fit()
   } catch {
     // Host detached mid-teardown — nothing to fit.
-    return
+    return false
   }
   window.octopusAPI.pty.resize({ sessionId, cols: term.cols, rows: term.rows })
+  return true
 }
 
 /** Load `CanvasAddon`; on failure leave the DOM renderer (no addon held). */
@@ -221,6 +229,10 @@ export function TerminalPane({
     viewportY: 0
   })
   const rafRef = useRef<number | null>(null)
+  // Connects this pane to its output (the pty-router sink) once it is fitted; see below.
+  const attachSinkRef = useRef<(() => void) | null>(null)
+  // Writes output into xterm; holds pane refits off while restored history replays.
+  const writerRef = useRef<TerminalWriter | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -344,8 +356,27 @@ export function TerminalPane({
     // in sync thereafter). Keeps WebGL leases off hidden panes at mount.
     applyRendererTier(sessionId, term, rendererRef, visible)
 
-    // Backend output → this terminal (the §5.2 bypass, not via the store).
-    registerTerminalSink(sessionId, (data) => term.write(data))
+    // Backend output → this terminal (the §5.2 bypass, not via the store), connected
+    // only once the pane has been fitted to a real size. Until then output waits in
+    // the router's pre-mount buffer. The backlog (restored history, a re-attach
+    // replay) was drawn at the width the pane had back then, and TUIs like Claude Code
+    // place each word with absolute column moves (`ESC[<col>G`). Written into an
+    // unfitted pane (a hidden task's, still xterm's 80-column default), every move
+    // past column 80 lands on column 80, so words overwrite each other and wrap one
+    // per line.
+    // Restored history carries its recorded size (size markers), so the writer parses it
+    // at that size and refits at its end; the first fit still matters for older rows.
+    const writer = createTerminalWriter(term, () => {
+      fitAndResize(sessionId, term, fit, host)
+    })
+    writerRef.current = writer
+    let sinkAttached = false
+    const attachSink = (): void => {
+      if (sinkAttached) return
+      sinkAttached = true
+      registerTerminalSink(sessionId, writer.write)
+    }
+    attachSinkRef.current = attachSink
     // Ctrl+Shift+F opens this pane's search box (§5.4).
     registerSearchOpener(sessionId, () => {
       setSearchOpen(true)
@@ -389,7 +420,7 @@ export function TerminalPane({
     }
     host.addEventListener('contextmenu', onContextMenu)
 
-    fitAndResize(sessionId, term, fit, host)
+    if (fitAndResize(sessionId, term, fit, host)) attachSink()
 
     // Focus a pane that mounts already-focused (a freshly opened session becomes
     // the focused tab, or the new pane of a split created via a split chord —
@@ -415,7 +446,10 @@ export function TerminalPane({
     if (typeof ResizeObserver !== 'undefined') {
       observer = new ResizeObserver(() => {
         if (debounce) clearTimeout(debounce)
-        debounce = setTimeout(() => fitAndResize(sessionId, term, fit, host), RESIZE_DEBOUNCE_MS)
+        debounce = setTimeout(() => {
+          // A replay in progress refits at its end.
+          if (!writer.replaying() && fitAndResize(sessionId, term, fit, host)) attachSink()
+        }, RESIZE_DEBOUNCE_MS)
       })
       observer.observe(host)
     }
@@ -425,7 +459,9 @@ export function TerminalPane({
       observer?.disconnect()
       host.removeEventListener('contextmenu', onContextMenu)
       dataSub.dispose()
-      unregisterTerminalSink(sessionId)
+      attachSinkRef.current = null
+      writerRef.current = null
+      if (sinkAttached) unregisterTerminalSink(sessionId)
       unregisterSearchOpener(sessionId)
       unregisterTerminalFocuser(sessionId)
       unregisterPaneMetrics(sessionId)
@@ -482,7 +518,10 @@ export function TerminalPane({
     if (!term || !fit || !host) return
     applyRendererTier(sessionId, term, rendererRef, visible)
     if (!visible) return
-    fitAndResize(sessionId, term, fit, host) // reflow first — this moves baseY
+    // Reflow first (this moves baseY); a first fit also connects the output sink.
+    if (!writerRef.current?.replaying() && fitAndResize(sessionId, term, fit, host)) {
+      attachSinkRef.current?.()
+    }
     term.refresh(0, term.rows - 1)
     const restore = (): void => {
       const t = termRef.current

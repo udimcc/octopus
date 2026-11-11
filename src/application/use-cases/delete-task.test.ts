@@ -322,3 +322,18 @@ describe('deleteTask issue unbind/delete (Issues §13.3, I19)', () => {
     expect(fd.persistence.deletedIssues).toEqual([])
   })
 })
+
+describe('deleteTask frees scrollback buffers (§6.6)', () => {
+  it("drops the task's sessions' buffers (and dirty flags) after the rows are removed", async () => {
+    const fd = await seedReadyTask(2)
+    const [a, b] = fd.workspace.task(fd.taskId)!.sessions()
+    fd.scrollbacks.append(a.id, 'out-a')
+    fd.scrollbacks.append(b.id, 'out-b')
+
+    await deleteTask(fd.deps, { taskId: fd.taskId })
+
+    expect(fd.scrollbacks.snapshot(a.id)).toBeUndefined()
+    expect(fd.scrollbacks.snapshot(b.id)).toBeUndefined()
+    expect([...fd.scrollbacks.dirtyEntries()]).toEqual([])
+  })
+})

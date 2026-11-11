@@ -95,6 +95,12 @@ import { createControlHandlers } from './control-handlers'
 import { reconcileOnStartup, reconcileStaleGroups } from '../application/reconcile'
 import { pruneStaleViews } from '../application/use-cases/prune-stale-views'
 import { shutdown } from '../application/quit'
+import { flushScrollbacks } from '../application/flush-scrollbacks'
+import {
+  createScrollbackFlushScheduler,
+  SCROLLBACK_FLUSH_TICK_BYTES,
+  type ScrollbackFlushScheduler
+} from './scrollback-flush-scheduler'
 import { worstStatusWins } from '../domain/task-state-aggregator'
 import { Workspace } from '../domain/workspace'
 import { TaskLifecycle } from '../domain/lifecycle'
@@ -120,6 +126,14 @@ const UPDATE_INSTALL_TIMEOUT_MS = 5 * 60_000
 export interface AppContext {
   /** Hourly update check + status push; started by index.ts once windows are up. */
   readonly updateScheduler: UpdateScheduler
+  /** Periodic dirty-scrollback flush (§6.6); started by index.ts, stopped by `shutdown`. */
+  readonly scrollbackFlusher: ScrollbackFlushScheduler
+  /**
+   * Synchronously persist every dirty session's scrollback now (§6.6), with no byte
+   * budget. Called first thing on quit and on a system shutdown, before anything
+   * async can be cut short. A no-op once `shutdown` closed the store.
+   */
+  readonly flushScrollbacks: () => void
   readonly paths: AppPaths
   readonly commandLoop: CommandLoop
   /**
@@ -151,6 +165,12 @@ export interface AppContext {
    * nor launched) it is a no-op and the in-process backend stays — today's behavior.
    */
   readonly warmupSessions: () => Promise<void>
+  /**
+   * Daemon path only: dispatch `startTaskSessions` for every Ready task (re-attach or
+   * fresh-spawn at boot). Call AFTER the boot windows are registered, or the first
+   * session's restored history is published to no window and lost from its pane.
+   */
+  readonly startReadyTasks: () => void
   /** True once the durable daemon backend is confirmed reachable AND adopted (§6.2). */
   readonly daemonActive: () => boolean
   /**
@@ -347,7 +367,7 @@ export function bootstrap(): AppContext {
   const aggregator = worstStatusWins
   const runtimes = new MapRuntimeRegistry()
   // Per-session output accumulator (§6.6): captured on every `onData`, flushed to
-  // `session_scrollback` on quit/exit, replayed into the fresh PTY on restart.
+  // `session_scrollback` periodically and on quit/exit, replayed on restart.
   // Structurally implements the application's `ScrollbackBuffers` port (the
   // interface-in-app / impl-in-adapter split mirrors MapRuntimeRegistry).
   const scrollbacks = new RingBufferScrollbackStore()
@@ -733,22 +753,31 @@ export function bootstrap(): AppContext {
       console.log(
         `[octopus] daemon backend active: ${liveDaemonSessions.size} live session(s) to re-attach`
       )
-      // Re-attach EVERY Ready task's sessions at boot, not just the one the first
-      // window will focus, so a re-attached shell resumes streaming immediately and
-      // the Claude state watcher's replayed status shows without waiting for the
-      // user to focus the task. We dispatch `startTaskSessions` (NOT `switchTask`) so
-      // no active-task pointer moves and no `activeTaskChanged` fires; it's idempotent
-      // with the later focus switch (§6.2, §9.6, §6.6 — runs on the single writer).
-      for (const task of workspace.tasks()) {
-        if (task.lifecycle === TaskLifecycle.Ready) {
-          void commandLoop.dispatch({ kind: 'startTaskSessions', input: { taskId: task.id } })
-        }
-      }
     } catch (err) {
       // Connected but the roster query failed — safest is to spawn fresh in-process
       // rather than half-adopt the daemon. Leave the delegate as-is.
       const message = err instanceof Error ? err.message : String(err)
       console.warn(`[octopus] daemon roster query failed, using in-process PTYs: ${message}`)
+    }
+  }
+
+  // Daemon path only: start EVERY Ready task's sessions at boot, not just the one the
+  // first window will focus, so a re-attached shell resumes streaming immediately and
+  // the Claude state watcher's replayed status shows without waiting for the user to
+  // focus the task. `startTaskSessions` (NOT `switchTask`), so no active-task pointer
+  // moves and no `activeTaskChanged` fires; idempotent with the later focus switch
+  // (§6.2, §9.6, §6.6 — runs on the single writer). The entry point calls this only
+  // once the windows are registered: the first command runs on the next microtask and
+  // publishes its restored history synchronously, and the registry drops output for a
+  // window it doesn't know yet, so that pane would come up without its history.
+  const startReadyTasks = (): void => {
+    if (!daemonActive) {
+      return
+    }
+    for (const task of workspace.tasks()) {
+      if (task.lifecycle === TaskLifecycle.Ready) {
+        void commandLoop.dispatch({ kind: 'startTaskSessions', input: { taskId: task.id } })
+      }
     }
   }
 
@@ -791,9 +820,22 @@ export function bootstrap(): AppContext {
     }
   })
 
+  // Periodic flush (§6.6) so an app killed at reboot loses at most one interval of
+  // output. Runs outside the CommandLoop on purpose (see flush-scrollbacks.ts).
+  let storeClosed = false
+  const scrollbackFlusher = createScrollbackFlushScheduler({
+    flush: () => {
+      if (!storeClosed) flushScrollbacks(deps, { maxBytes: SCROLLBACK_FLUSH_TICK_BYTES })
+    }
+  })
+
   return {
     paths,
     updateScheduler,
+    scrollbackFlusher,
+    flushScrollbacks: () => {
+      if (!storeClosed) flushScrollbacks(deps)
+    },
     commandLoop,
     controlServer,
     deps,
@@ -802,9 +844,11 @@ export function bootstrap(): AppContext {
     windowIds,
     isQuitting: false,
     warmupSessions,
+    startReadyTasks,
     daemonActive: () => daemonActive,
     persistDaemonCwds,
     shutdown: () => {
+      scrollbackFlusher.stop() // no tick may hit the store once it closes below
       // Stop accepting CLI requests BEFORE the loop's runtimes/store go away.
       void controlServer.close().catch(() => undefined)
       windowRegistry.dispose()
@@ -815,6 +859,7 @@ export function bootstrap(): AppContext {
         // disconnect as detach-all and keeps every PTY running (§6.2).
         onReleased: daemonActive ? () => daemonClient.dispose() : undefined
       })
+      storeClosed = true
     }
   }
 }

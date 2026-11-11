@@ -40,7 +40,11 @@ import type { DomainEvent, EventBus, EventHandler, Unsubscribe } from '../../por
 import type { IdGenerator } from '../../ports/id-generator'
 import type { Clock } from '../../ports/clock'
 import type { Settings, SettingsStore, SettingsPatch } from '../../ports/settings-store'
-import type { WorkspacePersistence, WindowRecord } from '../../ports/workspace-persistence'
+import type {
+  WorkspacePersistence,
+  WindowRecord,
+  PersistedScrollback
+} from '../../ports/workspace-persistence'
 import type {
   WorktreeProvider,
   CreateWorktreeRequest,
@@ -102,6 +106,8 @@ export class FakeRuntime implements SessionRuntime {
   readonly resizes: Array<{ cols: number; rows: number }> = []
   /** When set, `start()` rejects with this error (drives StartFailed). */
   failStartWith?: Error
+  /** When set, `start()` emits this through `ctx.onData` before resolving (a daemon re-attach replay). */
+  replayOnStart?: string
   /** Value returned by `currentCwd()` (undefined → cwd unavailable). */
   cwdValue?: string
 
@@ -110,6 +116,11 @@ export class FakeRuntime implements SessionRuntime {
   }
 
   start(): Promise<void> {
+    // The replay lands first, as on the daemon: its data frame precedes the `attached`
+    // reply, so a connection lost in between fails a start that already got output.
+    if (this.replayOnStart) {
+      this.ctx.onData(this.replayOnStart)
+    }
     if (this.failStartWith) {
       return Promise.reject(this.failStartWith)
     }
@@ -139,12 +150,17 @@ export class FakeSessionManager implements SessionManager {
   readonly created: FakeRuntime[] = []
   /** Set to make the NEXT created runtime fail on start(). */
   failNextStartWith?: Error
+  /** Per-session replay emitted by a RESUMED runtime's start() (models the daemon ring). */
+  readonly replays = new Map<SessionId, string>()
 
   createRuntime(ctx: SessionRuntimeContext): SessionRuntime {
     const rt = new FakeRuntime(ctx)
     if (this.failNextStartWith) {
       rt.failStartWith = this.failNextStartWith
       this.failNextStartWith = undefined
+    }
+    if (ctx.resume) {
+      rt.replayOnStart = this.replays.get(ctx.sessionId)
     }
     this.created.push(rt)
     return rt
@@ -209,7 +225,9 @@ export class FakePersistence implements WorkspacePersistence {
   /** Persisted issues keyed by id (I19, mirrors the `issues` table). Seeded from the initial snapshot. */
   readonly issues: Map<IssueId, IssueSnapshot>
   /** Persisted scrollback keyed by session id (mirrors the `session_scrollback` table). */
-  readonly savedScrollback = new Map<SessionId, string>()
+  readonly savedScrollback = new Map<SessionId, PersistedScrollback>()
+  /** Session ids whose scrollback was rotated (one entry per write), in order. */
+  readonly rotations: SessionId[] = []
   /** Persisted last-known cwd keyed by session id (mirrors the `sessions.last_cwd` column). */
   readonly savedLastCwd = new Map<SessionId, string>()
   /** Persisted window records keyed by id (V1.5, mirrors the `windows` table). */
@@ -276,11 +294,26 @@ export class FakePersistence implements WorkspacePersistence {
     this.savedScrollback.delete(sessionId)
     this.savedLastCwd.delete(sessionId)
   }
-  saveScrollback(sessionId: SessionId, data: string): void {
-    this.savedScrollback.set(sessionId, data)
+  saveScrollback(sessionId: SessionId, live: string): void {
+    const prev = this.savedScrollback.get(sessionId)
+    this.savedScrollback.set(sessionId, { history: prev ? prev.history : '', live })
   }
-  loadScrollback(sessionId: SessionId): string | undefined {
+  loadScrollback(sessionId: SessionId): PersistedScrollback | undefined {
     return this.savedScrollback.get(sessionId)
+  }
+  /** Mirrors `SqliteStore.rotateScrollback` minus the byte cap (tested in the adapter). */
+  rotateScrollback(sessionId: SessionId): string {
+    const row = this.savedScrollback.get(sessionId)
+    if (!row) return ''
+    if (row.live === '' && row.history !== null) return row.history
+    const history = (row.history ?? '') + row.live
+    this.savedScrollback.set(sessionId, { history, live: '' })
+    this.rotations.push(sessionId)
+    return history
+  }
+  setScrollbackHistory(sessionId: SessionId, history: string): void {
+    const row = this.savedScrollback.get(sessionId)
+    if (row) this.savedScrollback.set(sessionId, { ...row, history })
   }
   saveLastCwd(sessionId: SessionId, cwd: string): void {
     this.savedLastCwd.set(sessionId, cwd)
@@ -478,26 +511,40 @@ export class FakeWorktreeProvider implements WorktreeProvider {
 
 /**
  * Fake scrollback store: a plain per-session string accumulator (no byte cap —
- * the cap is the adapter's `RingBuffer` concern, tested there). Enough to assert
- * capture (`append`), the quit flush (`entries`), and the user-close free
- * (`delete`) in the use-case tests.
+ * the cap is the adapter's `RingBuffer` concern, tested there) with the same dirty
+ * tracking as the adapter. Enough to assert capture (`append`), the flushes
+ * (`dirtyEntries`/`markClean`), and the user-close free (`delete`).
  */
 export class FakeScrollbackStore implements ScrollbackBuffers {
   readonly buffers = new Map<SessionId, string>()
+  readonly dirty = new Set<SessionId>()
+  readonly sizes = new Map<SessionId, { cols: number; rows: number }>()
+  setSize(id: SessionId, cols: number, rows: number): void {
+    this.sizes.set(id, { cols, rows })
+  }
   append(id: SessionId, data: string): void {
     this.buffers.set(id, (this.buffers.get(id) ?? '') + data)
+    this.dirty.add(id)
   }
   snapshot(id: SessionId): string | undefined {
     return this.buffers.get(id)
   }
-  *entries(): Iterable<[SessionId, string]> {
-    yield* this.buffers
+  *dirtyEntries(): Iterable<[SessionId, string]> {
+    for (const id of [...this.dirty]) {
+      const data = this.buffers.get(id)
+      if (data) yield [id, data]
+    }
+  }
+  markClean(id: SessionId): void {
+    this.dirty.delete(id)
   }
   delete(id: SessionId): void {
     this.buffers.delete(id)
+    this.dirty.delete(id)
   }
   clear(): void {
     this.buffers.clear()
+    this.dirty.clear()
   }
 }
 

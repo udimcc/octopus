@@ -39,6 +39,15 @@ const INPUT_REPORTING_MODES = [
   2004 // bracketed paste
 ]
 
+/**
+ * In-band end-of-history marker, written after painted history. The pane's writer
+ * (`renderer/src/terminal/restored-history-writer.ts`) replaces it with a display reset
+ * and moves the cursor below the old content: only the terminal knows where that ends.
+ * Mirrors `shared/restored-history.ts`, which this layer may not import (kept equal by
+ * `main/restored-history-marker.test.ts`).
+ */
+export const RESTORED_HISTORY_END = '\x1b]7764;octopus-history-end\x07'
+
 /** `CSI ? m ; … l` resetting every input-reporting mode in one DECRST. */
 const RESET_INPUT_MODES = `\x1b[?${INPUT_REPORTING_MODES.join(';')}l`
 

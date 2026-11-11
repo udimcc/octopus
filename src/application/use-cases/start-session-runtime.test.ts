@@ -134,6 +134,19 @@ describe('startSessionRuntime spawn-vs-attach seam (§6.2)', () => {
     expect(ctx.worktreePath).toBe('/wt/task')
   })
 
+  it('records the default PTY size for the saved history on a fresh spawn only', async () => {
+    const fresh = makeDeps({ snapshot: snapshot('/wt/task') })
+    await run(fresh)
+    expect(fresh.scrollbacks.sizes.get(SESSION)).toEqual({ cols: 80, rows: 24 })
+    // A re-attached PTY keeps the daemon's size: unknown until the pane's first fit.
+    const live = makeDeps({
+      snapshot: snapshot('/wt/task'),
+      liveDaemonSessions: new Set<SessionId>([SESSION])
+    })
+    await run(live)
+    expect(live.scrollbacks.sizes.has(SESSION)).toBe(false)
+  })
+
   it('tells state detection fresh vs resume before the runtime is created (§9.3)', async () => {
     for (const live of [false, true]) {
       const f = makeDeps({

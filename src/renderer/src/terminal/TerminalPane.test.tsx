@@ -419,6 +419,49 @@ describe('<TerminalPane> wiring (§5.3/§6.1)', () => {
     expect(window.octopusAPI.pty.resize).not.toHaveBeenCalled()
   })
 
+  /**
+   * REGRESSION (garbled restored Claude history): a pane mounted hidden is still at
+   * xterm's 80-column default. Claude Code places words with absolute column moves, so
+   * a backlog written at 80 columns overwrote itself and wrapped one word per line. The
+   * sink (and so the backlog replay) must wait for the first real fit.
+   */
+  it('connects the output sink only after the first real fit (hidden at mount)', () => {
+    cleanup()
+    Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, value: 0 })
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, value: 0 })
+    const { rerender, unmount } = render(
+      <TerminalPane sessionId="s1" visible={false} focused={false} />
+    )
+    expect(registerTerminalSink).not.toHaveBeenCalled()
+
+    // Shown: the host gains a layout box, the on-show effect fits, then connects.
+    Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, value: 800 })
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, value: 600 })
+    rerender(<TerminalPane sessionId="s1" visible={true} focused={true} />)
+    expect(registerTerminalSink).toHaveBeenCalledOnce()
+    // After the fit (`pty.resize` follows every real fit).
+    expect(vi.mocked(registerTerminalSink).mock.invocationCallOrder[0]).toBeGreaterThan(
+      vi.mocked(window.octopusAPI.pty.resize).mock.invocationCallOrder[0]
+    )
+
+    // Hidden again and re-shown: still the one sink.
+    rerender(<TerminalPane sessionId="s1" visible={false} focused={false} />)
+    rerender(<TerminalPane sessionId="s1" visible={true} focused={true} />)
+    expect(registerTerminalSink).toHaveBeenCalledOnce()
+    unmount()
+    expect(unregisterTerminalSink).toHaveBeenCalledWith('s1')
+  })
+
+  it('a pane that never got a layout box unmounts without touching the router', () => {
+    cleanup()
+    Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, value: 0 })
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, value: 0 })
+    const { unmount } = render(<TerminalPane sessionId="s1" visible={false} focused={false} />)
+    unmount()
+    // Its buffered output stays in the router for whichever pane shows the session.
+    expect(unregisterTerminalSink).not.toHaveBeenCalled()
+  })
+
   it('re-pins to the bottom on show when the pane was at the bottom before hiding', () => {
     cleanup()
     // Start active, at the bottom (viewportY === baseY). The mount fit re-pins once.

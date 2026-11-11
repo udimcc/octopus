@@ -122,8 +122,13 @@ describe('switchTask scrollback restore (§6.6)', () => {
     expect(replayIdx).toBeGreaterThanOrEqual(0)
     expect(createdIdx).toBeGreaterThan(replayIdx)
 
-    // History is re-appended to the in-memory buffer so it accumulates across restarts.
-    expect(fd.scrollbacks.snapshot(asSessionId('t2-s1'))).toContain('PRIOR OUTPUT')
+    // History is rotated into the persisted frozen part (not main's live buffer), so it
+    // accumulates across restarts without a later save overwriting it.
+    expect(fd.persistence.savedScrollback.get(asSessionId('t2-s1'))).toEqual({
+      history: 'PRIOR OUTPUT',
+      live: ''
+    })
+    expect(fd.scrollbacks.snapshot(asSessionId('t2-s1'))).toBeUndefined()
   })
 
   it('publishes no extra ptyData when the restored session has no persisted scrollback', async () => {

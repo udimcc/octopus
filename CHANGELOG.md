@@ -4,6 +4,33 @@ All notable changes to Octopus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Fixes terminal history being lost across restarts.
+
+### Fixed
+
+- **History lost after a daemon re-attach.** Re-attaching a session still running in `octopusd`
+  skipped the saved history and the next save overwrote it with the daemon's shorter buffer. The
+  saved scrollback is now split into frozen history (shown on every restore) and the live part
+  (what the daemon replays); saves write only the live part.
+- **History lost when the app is killed.** Scrollback was written only on a graceful quit or a
+  shell exit. It is now also saved every 30 s (only sessions with new output) and on system
+  shutdown, and quit saves it before waiting on the daemon (that wait is now capped at 2 s).
+- **Restored history missing at boot.** The first session's history could be dropped before its
+  window registered, and a React StrictMode remount lost the pane's pre-mount output.
+- **Restored Claude history scrambled.** History is now replayed at the terminal size it was
+  recorded at (saved in-band), then reflowed to the pane. Output saved by older builds has no
+  recorded size and still replays at the pane's width.
+- **Prompt drawn inside a killed TUI's frame, cursor hidden.** After restored history the terminal
+  is soft-reset and the "session restored" separator starts below the old content.
+- Deleting a task now frees its sessions' in-memory scrollback.
+
+### Upgrade notes
+
+- **Schema v13** (`session_scrollback.history`). An older build refuses the upgraded DB; a
+  `octopus.db.bak-v12` backup is written first. Existing rows are split on their first re-attach.
+
 ## [1.2.1]
 
 Moves the Issues button to the top of the Progress panel and restyles the panel's header buttons.

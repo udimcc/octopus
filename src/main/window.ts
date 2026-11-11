@@ -653,11 +653,19 @@ function confirmQuitWhileBusy(summary: BusySessionsSummary): boolean {
  * an async round-trip. `before-quit` can't await, so we `preventDefault()` the
  * first quit, run the flush, then re-issue `app.quit()`; the second pass (flush
  * already done) proceeds straight to teardown. The in-process path has nothing
- * async to do and tears down inline on the first pass (unchanged).
+ * async to do and tears down inline on the first pass (unchanged). The roster wait is
+ * capped at {@link PERSIST_CWDS_TIMEOUT_MS}.
+ *
+ * Scrollback (§6.6) is flushed synchronously before any of that, once: if the quit is
+ * a system shutdown, systemd may kill the app (or the daemon) mid-await.
  */
+/** Longest the daemon-path quit waits for the cwd roster before tearing down anyway. */
+export const PERSIST_CWDS_TIMEOUT_MS = 2000
+
 export function registerQuitHandler(ctx: AppContext): void {
   let didShutdown = false
   let didFlushCwds = false
+  let didFlushScrollback = false
   app.on('before-quit', (event) => {
     if (didShutdown) {
       ctx.isQuitting = true
@@ -674,12 +682,22 @@ export function registerQuitHandler(ctx: AppContext): void {
       }
     }
     ctx.isQuitting = true
-    // Daemon path: defer once to persist cwds while the socket is still up.
+    // Scrollback first, synchronously (§6.6): at system shutdown the app may be
+    // killed during the async step below, and history matters more than cwds.
+    if (!didFlushScrollback) {
+      didFlushScrollback = true
+      ctx.flushScrollbacks()
+    }
+    // Daemon path: defer once to persist cwds while the socket is still up. Bounded:
+    // a stopped/wedged daemon keeps its socket open and never answers, which would
+    // otherwise block quit forever.
     if (ctx.daemonActive() && !didFlushCwds) {
       event.preventDefault()
       didFlushCwds = true
-      void ctx
-        .persistDaemonCwds()
+      void Promise.race([
+        ctx.persistDaemonCwds(),
+        new Promise<void>((resolve) => setTimeout(resolve, PERSIST_CWDS_TIMEOUT_MS))
+      ])
         .catch(() => {
           // Best-effort — a failed flush just falls back to worktree cwd on respawn.
         })

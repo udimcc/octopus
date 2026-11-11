@@ -62,8 +62,15 @@
  * issue status) to add `issues.blocked_reasons` (`TEXT NOT NULL DEFAULT ''`) and
  * widen the `issues.status` CHECK to admit `'blocked'`; the CHECK is unalterable,
  * so v12 REBUILDS `issues` (guarded like v10/v11 — see the v12 {@link Migration}).
+ * 12 → 13 (scrollback history) to add the nullable `session_scrollback.history`
+ * column: the FROZEN restored history (output from before the session's last fresh
+ * spawn), kept apart from `data`, which now holds only the LIVE part (output since
+ * that spawn — what the daemon replays on re-attach). The boundary is what lets a
+ * re-attach show the old history without double-printing the replay, and stops a
+ * save from overwriting it (§6.6). `NULL` marks a pre-v13 row whose `data` mixes
+ * both; it is split on its first re-attach (`splitLegacyScrollback`).
  */
-export const SCHEMA_VERSION = 12
+export const SCHEMA_VERSION = 13
 
 /**
  * Connection pragmas applied on every open. `foreign_keys` is per-connection
@@ -132,9 +139,12 @@ export const SCHEMA_STATEMENTS: readonly string[] = Object.freeze([
   // (§6.6 backend ring buffer). A separate table (not a `sessions` column) keeps
   // the hot `load()` startup read lean; `ON DELETE CASCADE` auto-purges the row
   // when its session is closed or its task deleted — no explicit cleanup needed.
+  // `data` is the LIVE part (output since the last fresh spawn), `history` the frozen
+  // part from before it (v13; NULL = a legacy row not yet split).
   `CREATE TABLE IF NOT EXISTS session_scrollback (
      session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
-     data TEXT NOT NULL
+     data TEXT NOT NULL,
+     history TEXT
    )`,
   // Fetching a task's sessions in tab order is the hot read on load (§6.3).
   `CREATE INDEX IF NOT EXISTS idx_sessions_task ON sessions(task_id, position)`,
@@ -423,5 +433,14 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       'DROP TABLE issues',
       'ALTER TABLE issues_v12 RENAME TO issues'
     ])
+  },
+  // v13 (scrollback history): the frozen `history` part next to the live `data`.
+  // Nullable with no default, so every existing row reads NULL = "legacy, not yet
+  // split" (see SCHEMA_VERSION). Guarded like v10: a pre-v3 DB gets the table from
+  // the bootstrap CREATE above, already in its v13 shape.
+  {
+    toVersion: 13,
+    unlessColumnExists: { table: 'session_scrollback', column: 'history' },
+    statements: Object.freeze(['ALTER TABLE session_scrollback ADD COLUMN history TEXT'])
   }
 ])

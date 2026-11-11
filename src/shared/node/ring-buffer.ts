@@ -18,7 +18,17 @@
  * Pure, no I/O — fully unit-testable.
  */
 
-const DEFAULT_MAX_BYTES = 500 * 1024
+/**
+ * Byte cap of main's per-session scrollback buffer, and of the frozen restored history
+ * persisted next to it (§6.6). Deliberately 10x smaller than the daemon's 5 MB ring:
+ * every restore path shows at most ~500K characters anyway (`OUTPUT_TAIL_MAX_BYTES`
+ * in `src/shared/output-tail.ts` bounds both main's pre-hydration queue and the
+ * renderer's pre-mount buffer), so keeping more in main would cost memory and flush
+ * time and show nothing more. Raise both together if deeper restored history is wanted.
+ */
+export const SCROLLBACK_MAX_BYTES = 500 * 1024
+
+const DEFAULT_MAX_BYTES = SCROLLBACK_MAX_BYTES
 
 export class RingBuffer {
   private readonly maxBytes: number
@@ -70,19 +80,24 @@ export class RingBuffer {
   }
 }
 
-/** Return the longest suffix of `s` whose UTF-8 size is ≤ maxBytes. */
-function tailBytes(s: string, maxBytes: number): string {
-  // Walk back from the end accumulating byte cost; cheap enough for the rare
-  // oversized-chunk path and avoids splitting a multibyte char mid-sequence.
-  let bytes = 0
-  let i = s.length
-  while (i > 0) {
-    const chBytes = Buffer.byteLength(s[i - 1], 'utf8')
-    if (bytes + chBytes > maxBytes) {
-      break
-    }
-    bytes += chBytes
-    i--
+/**
+ * Return the longest suffix of `s` whose UTF-8 size is <= maxBytes. Encodes once and
+ * cuts at a UTF-8 character boundary, so it is linear in `s` with a small constant:
+ * it runs on every multi-megabyte daemon replay and on every history rotation. A lone
+ * surrogate (invalid UTF-16) comes back as U+FFFD, as with any UTF-8 round trip.
+ */
+export function tailBytes(s: string, maxBytes: number): string {
+  if (s.length <= maxBytes / 3) {
+    return s // even at 3 bytes per UTF-16 unit it fits; skip the encode
   }
-  return s.slice(i)
+  const buf = Buffer.from(s, 'utf8')
+  if (buf.length <= maxBytes) {
+    return s
+  }
+  let start = buf.length - Math.max(0, maxBytes)
+  // Skip continuation bytes (10xxxxxx) so the cut never splits a character.
+  while (start < buf.length && (buf[start] & 0xc0) === 0x80) {
+    start++
+  }
+  return buf.subarray(start).toString('utf8')
 }

@@ -9,7 +9,7 @@
 
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { app, dialog, screen, BrowserWindow, Menu } from 'electron'
+import { app, dialog, screen, BrowserWindow, Menu, powerMonitor } from 'electron'
 import { bootstrap, findWindow, raiseWindow, type AppContext } from './composition-root'
 import {
   createWindow,
@@ -211,6 +211,10 @@ void app.whenReady().then(async () => {
     }
   }
 
+  // Every boot window is registered now, so the restored history each session
+  // publishes on start reaches its pane (daemon path; see `startReadyTasks`).
+  ctx.startReadyTasks()
+
   // A relaunch during warmup asked for main; raise it now that every window is up.
   if (raiseMainAfterBoot) {
     const main = findWindow(ctx.windowIds, MAIN_WINDOW_ID)
@@ -221,6 +225,19 @@ void app.whenReady().then(async () => {
   ctx.updateScheduler.start()
   // 'will-quit', not 'before-quit': before-quit can be cancelled and the app keep running.
   app.on('will-quit', () => ctx.updateScheduler.stop())
+  // Persist terminal output every 30 s (§6.6), so a kill at reboot loses little.
+  ctx.scrollbackFlusher.start()
+  // System reboot/shutdown (§6.6): on Linux Electron holds a logind delay lock, so
+  // this fires before systemd starts killing processes (octopusd included). Save the
+  // scrollback synchronously first, then quit cleanly while the daemon is still up.
+  // SIGTERM/SIGINT/SIGHUP need no handler: Electron maps them to `app.quit()`, which
+  // runs the same before-quit flush.
+  // (Electron's typings omit the event its docs pass for preventDefault, hence args.)
+  powerMonitor.on('shutdown', (...args: unknown[]) => {
+    ctx.flushScrollbacks()
+    ;(args[0] as Electron.Event | undefined)?.preventDefault()
+    app.quit()
+  })
 
   // macOS: re-create the main window when the dock icon is clicked and none are open.
   app.on('activate', () => {

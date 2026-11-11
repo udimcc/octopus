@@ -164,7 +164,12 @@ export async function deleteTask(
     }
   })
 
-  // The SQL transaction committed — now apply the matching in-memory drop.
+  // The SQL transaction committed — now apply the matching in-memory drop. Free the
+  // sessions' scrollback buffers too (their rows cascaded away), so the periodic flush
+  // stops carrying them.
+  for (const session of task.sessions()) {
+    deps.scrollbacks.delete(session.id)
+  }
   deps.workspace.removeTask(input.taskId) // also clears the issue's binding in memory (I19)
   let deletedIssueId: IssueId | undefined
   let upsertedIssue: IssueSnapshot | undefined

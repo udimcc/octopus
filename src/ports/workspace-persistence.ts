@@ -44,6 +44,18 @@ export interface WindowRecord {
   readonly parentWindowId?: WindowId
 }
 
+/**
+ * A session's persisted scrollback, split at its last fresh spawn (§6.6, schema v13).
+ * `live` is what the PTY produced since that spawn (on the daemon backend: what its
+ * ring buffer replays on re-attach); `history` is the frozen text from before it,
+ * shown above the live part and never re-derived from a replay. `history === null`
+ * marks a legacy (pre-v13) row whose `live` still mixes both.
+ */
+export interface PersistedScrollback {
+  readonly history: string | null
+  readonly live: string
+}
+
 export interface WorkspacePersistence {
   /**
    * Load the full persisted workspace on startup (empty on first run) (§6.3).
@@ -68,14 +80,27 @@ export interface WorkspacePersistence {
   deleteSession(sessionId: SessionId): void
 
   /**
-   * Persist a session's captured terminal output (the §6.6 backend ring buffer),
-   * replacing any prior snapshot. Replayed into a fresh PTY on restart. A raw
-   * string, not a domain snapshot — captured output is metadata, not live state
-   * (I13). The row cascades away when the session is deleted (close/task-delete).
+   * Persist a session's LIVE captured output (main's §6.6 buffer: everything since
+   * its last fresh spawn), replacing the prior live part and keeping the frozen
+   * history. A raw string, not a domain snapshot — captured output is metadata, not
+   * live state (I13). A no-op once the session row is gone (closed/task-deleted);
+   * the row cascades away with the session.
    */
-  saveScrollback(sessionId: SessionId, data: string): void
-  /** Load a session's persisted scrollback, or undefined if none was stored. */
-  loadScrollback(sessionId: SessionId): string | undefined
+  saveScrollback(sessionId: SessionId, live: string): void
+  /** Load a session's persisted scrollback (both parts), or undefined if none was stored. */
+  loadScrollback(sessionId: SessionId): PersistedScrollback | undefined
+  /**
+   * Fresh-spawn rotation (§6.6): fold the live part into the frozen history (tail-
+   * capped), clear the live part, and return the new history ('' if none). Atomic.
+   * Called once per fresh spawn, so the next live part starts empty — exactly what
+   * the new PTY (and, on the daemon, its ring buffer) holds.
+   */
+  rotateScrollback(sessionId: SessionId): string
+  /**
+   * Set the frozen history of an existing row (used once to split a legacy pre-v13
+   * row on re-attach). A no-op if the session has no scrollback row.
+   */
+  setScrollbackHistory(sessionId: SessionId, history: string): void
 
   /**
    * Persist a session's last-known working directory (§6.2). Like scrollback this

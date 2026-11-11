@@ -37,11 +37,21 @@ import type { ConfigValidator } from './config-validator'
 export interface ScrollbackBuffers {
   /** Append a chunk of a session's output (byte-capped, oldest evicted). */
   append(id: SessionId, data: string): void
+  /**
+   * The session's PTY size from now on. The store records it in the saved stream
+   * ahead of the output written at it, so restored history replays at its own width.
+   */
+  setSize(id: SessionId, cols: number, rows: number): void
   /** The retained output for a session (oldest → newest), or undefined if none. */
   snapshot(id: SessionId): string | undefined
-  /** All buffered sessions as `[id, output]` pairs (for the quit flush). */
-  entries(): Iterable<[SessionId, string]>
-  /** Drop a session's buffer (on user close — the session is gone). */
+  /**
+   * Sessions whose buffer changed since it was last {@link markClean}ed, as
+   * `[id, output]` pairs, longest-dirty first (for the periodic and quit flushes).
+   */
+  dirtyEntries(): Iterable<[SessionId, string]>
+  /** Mark a session's buffer as persisted (until its next `append`). */
+  markClean(id: SessionId): void
+  /** Drop a session's buffer (on user close / task delete — the session is gone). */
   delete(id: SessionId): void
   /** Drop every buffer (teardown). */
   clear(): void

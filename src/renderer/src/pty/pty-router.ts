@@ -66,14 +66,27 @@ function bufferPending(sessionId: string, data: string): void {
  * Register a terminal's write function for a session. Replaces any prior sink and
  * replays (then clears) any output buffered before the pane mounted, so a restored
  * or just-created session shows its backlog rather than starting blank.
+ *
+ * The replay runs on the next microtask, and only if `write` is still the session's
+ * sink by then. React StrictMode (dev builds) mounts a pane, unmounts it and mounts
+ * it again in one synchronous pass, disposing the first xterm. Replaying at once fed
+ * the backlog (the restored history) into that disposed xterm and the live pane came
+ * up blank. Until the replay runs, new output is buffered behind the backlog (see
+ * `initEventRouting`), so order is kept.
  */
 export function registerTerminalSink(sessionId: string, write: WriteSink): void {
   sinks.set(sessionId, write)
-  const buf = pending.get(sessionId)
-  if (buf) {
+  if (!pending.has(sessionId)) {
+    return
+  }
+  queueMicrotask(() => {
+    const buf = pending.get(sessionId)
+    if (!buf || sinks.get(sessionId) !== write) {
+      return // superseded or unmounted: the backlog waits for the next sink
+    }
     pending.delete(sessionId)
     for (const chunk of buf.drain()) write(chunk)
-  }
+  })
 }
 
 /** Remove a session's sink (on pane close). Idempotent. */
@@ -95,8 +108,9 @@ export function _resetSinks(): void {
 export function initEventRouting(applyEvent: (event: EventDTO) => void): () => void {
   return window.octopusAPI.onEvent((event) => {
     if (event.type === 'ptyData') {
+      // Behind an un-replayed backlog, output joins it (registerTerminalSink).
       const sink = sinks.get(event.sessionId)
-      if (sink) sink(event.data)
+      if (sink && !pending.has(event.sessionId)) sink(event.data)
       else bufferPending(event.sessionId, event.data)
       return
     }

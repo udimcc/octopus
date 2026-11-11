@@ -105,6 +105,10 @@ export async function startSessionRuntime(
   // a fresh shell never inherits a previous Claude's status (§9.3).
   deps.prepareClaudeState?.(id, resume ? 'resume' : 'fresh')
 
+  // A fresh PTY starts at the default size until the pane's first fit resizes it. A
+  // re-attached one keeps the daemon's size, unknown here until that fit.
+  if (!resume) deps.scrollbacks.setSize(id, DEFAULT_COLS, DEFAULT_ROWS)
+
   const runtime = provider.createRuntime(deps.sessions, ctx)
 
   session.markStarting()

@@ -185,9 +185,11 @@ describe('handleRuntimeExit — spontaneous death (§6.1, §6.6, I13)', () => {
     handleRuntimeExit(fd.deps, { sessionId: fd.sessionId, exitCode: 0 })
 
     // The exited session keeps its row, so its final output is persisted for restart.
-    expect(fd.persistence.savedScrollback.get(fd.sessionId)).toBe('final output')
-    // Unlike a user close, the in-memory buffer is NOT freed (the session persists).
+    expect(fd.persistence.savedScrollback.get(fd.sessionId)?.live).toBe('final output')
+    // Unlike a user close, the in-memory buffer is NOT freed (the session persists),
+    // but it is clean: the periodic flush must not rewrite it.
     expect(fd.scrollbacks.snapshot(fd.sessionId)).toBe('final output')
+    expect([...fd.scrollbacks.dirtyEntries()]).toEqual([])
   })
 
   it('ignores a late exit for a session already Closed (no resurrection, I13)', async () => {

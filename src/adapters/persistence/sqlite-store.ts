@@ -18,7 +18,12 @@ import type {
   IssueSnapshot,
   GroupSnapshot
 } from '../../domain/snapshots'
-import type { WorkspacePersistence, WindowRecord } from '../../ports/workspace-persistence'
+import type {
+  WorkspacePersistence,
+  WindowRecord,
+  PersistedScrollback
+} from '../../ports/workspace-persistence'
+import { SCROLLBACK_MAX_BYTES, tailBytes } from '../../shared/node/ring-buffer'
 import type { SqliteDb } from './sqlite-db'
 import {
   SCHEMA_STATEMENTS,
@@ -287,20 +292,47 @@ export class SqliteStore implements WorkspacePersistence {
     this.db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId)
   }
 
-  saveScrollback(sessionId: SessionId, data: string): void {
+  saveScrollback(sessionId: SessionId, live: string): void {
+    // Writes only the live part; `history` is set by rotation alone. Guarded on the
+    // session row existing so a flush racing a close/task-delete is a no-op instead
+    // of a foreign-key error. A new row starts with an empty (not legacy NULL) history.
     this.db
       .prepare(
-        `INSERT INTO session_scrollback (session_id, data) VALUES (?, ?)
+        `INSERT INTO session_scrollback (session_id, data, history)
+         SELECT ?, ?, '' WHERE EXISTS (SELECT 1 FROM sessions WHERE id = ?)
          ON CONFLICT(session_id) DO UPDATE SET data = excluded.data`
       )
-      .run(sessionId, data)
+      .run(sessionId, live, sessionId)
   }
 
-  loadScrollback(sessionId: SessionId): string | undefined {
+  loadScrollback(sessionId: SessionId): PersistedScrollback | undefined {
     const row = this.db
-      .prepare('SELECT data FROM session_scrollback WHERE session_id = ?')
-      .get(sessionId) as { data: string } | undefined
-    return row ? row.data : undefined
+      .prepare('SELECT data, history FROM session_scrollback WHERE session_id = ?')
+      .get(sessionId) as { data: string; history: string | null } | undefined
+    return row ? { history: row.history ?? null, live: row.data } : undefined
+  }
+
+  rotateScrollback(sessionId: SessionId): string {
+    return this.db.transaction(() => {
+      const row = this.loadScrollback(sessionId)
+      if (!row) {
+        return ''
+      }
+      if (row.live === '' && row.history !== null) {
+        return row.history // nothing to fold (e.g. a StartFailed tab's next boot)
+      }
+      const history = tailBytes((row.history ?? '') + row.live, SCROLLBACK_MAX_BYTES)
+      this.db
+        .prepare(`UPDATE session_scrollback SET history = ?, data = '' WHERE session_id = ?`)
+        .run(history, sessionId)
+      return history
+    })()
+  }
+
+  setScrollbackHistory(sessionId: SessionId, history: string): void {
+    this.db
+      .prepare('UPDATE session_scrollback SET history = ? WHERE session_id = ?')
+      .run(history, sessionId)
   }
 
   saveLastCwd(sessionId: SessionId, cwd: string): void {

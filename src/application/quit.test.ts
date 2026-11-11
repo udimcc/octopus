@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { shutdown } from './quit'
 import { createTask } from './use-cases/create-task'
 import { openSession } from './use-cases/open-session'
@@ -116,7 +116,22 @@ describe('shutdown (§6.3 Quit, I13)', () => {
 
     shutdown(fd.deps)
 
-    expect(fd.persistence.savedScrollback.get(sessionId)).toBe('buffered output')
+    expect(fd.persistence.savedScrollback.get(sessionId)?.live).toBe('buffered output')
+    expect(fd.persistence.checkpointed).toBe(true)
+  })
+
+  it('writes only DIRTY buffers (already-flushed output is not rewritten)', async () => {
+    const fd = makeDeps()
+    await createTask(fd.deps, taskInput('T'))
+    await openSession(fd.deps, { taskId: asTaskId('task-1') })
+    const sessionId = fd.workspace.task(asTaskId('task-1'))!.sessions()[0].id
+    fd.deps.scrollbacks.append(sessionId, 'flushed earlier')
+    fd.deps.scrollbacks.markClean(sessionId) // e.g. by the periodic flush
+    const save = vi.spyOn(fd.persistence, 'saveScrollback')
+
+    shutdown(fd.deps)
+
+    expect(save).not.toHaveBeenCalled()
     expect(fd.persistence.checkpointed).toBe(true)
   })
 

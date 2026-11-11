@@ -211,7 +211,7 @@ d('scrollback persist + replay across a simulated restart (integration, §6.6/§
 
     // Simulate quit: flush the buffers to persistence + checkpoint/close.
     shutdown(r1.deps)
-    expect(persistence.savedScrollback.get(sessionId)).toMatch(/SCROLLBACK_MARK_54/)
+    expect(persistence.savedScrollback.get(sessionId)?.live).toMatch(/SCROLLBACK_MARK_54/)
 
     // ---- Run 2: re-bootstrap from the SAME persistence + a restored snapshot. ----
     const snapshot = restoredSnapshot('task-1', 'session-1', cwd)
@@ -244,5 +244,13 @@ d('scrollback persist + replay across a simulated restart (integration, §6.6/§
     )
     expect(afterOut).toContain('AFTER_RESTORE')
     expect(afterOut.indexOf('session restored')).toBeLessThan(afterOut.indexOf('AFTER_RESTORE'))
+
+    // The fresh spawn froze run 1's output as history; this run's save writes only its
+    // own (live) output, so run 1's output is kept exactly once.
+    shutdown(r2.deps)
+    const row = persistence.savedScrollback.get(sessionId)!
+    expect(row.history).toMatch(/SCROLLBACK_MARK_54/)
+    expect(row.live).toContain('AFTER_RESTORE')
+    expect(row.live).not.toMatch(/SCROLLBACK_MARK_54/)
   })
 })
