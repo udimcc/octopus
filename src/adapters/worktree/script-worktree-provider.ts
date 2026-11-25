@@ -40,7 +40,7 @@ import type {
   RepoWorktree
 } from '../../ports/worktree-provider'
 import { validateWorktreePath, assertSafeToDelete, type PathProbe } from './path-safety'
-import { fsPathProbe } from './fs-path-probe'
+import { deleteSafetyCanonicalizer, fsPathProbe } from './fs-path-probe'
 import { scriptEnv, firstNonEmptyLine, firstLine, gitIsDirty } from './worktree-support'
 
 /** The repo-local script file names the selector probes for (§6.4). */
@@ -122,7 +122,8 @@ export class ScriptWorktreeProvider implements WorktreeProvider {
     assertSafeToDelete({
       candidate: req.path,
       storedPath: req.path,
-      repoRoot: req.repoDir
+      repoRoot: req.repoDir,
+      canonical: deleteSafetyCanonicalizer()
     })
 
     // Resolve regardless of exit code — the user asked to delete, so the record

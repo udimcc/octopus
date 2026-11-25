@@ -114,3 +114,61 @@ describe('assertSafeToDelete (§6.4)', () => {
     ).not.toThrow()
   })
 })
+
+describe('assertSafeToDelete with a canonical mapping (macOS, §6.4)', () => {
+  const fold = (p: string): string => p.replace(/^\/tmp(?=\/|$)/, '/private/tmp').toLowerCase()
+
+  it('without a mapping, a differently-cased repo root is not recognized (Linux behavior)', () => {
+    expect(() =>
+      assertSafeToDelete({
+        candidate: '/Users/u/Repo',
+        storedPath: '/Users/u/Repo',
+        repoRoot: '/Users/u/repo'
+      })
+    ).not.toThrow()
+  })
+
+  it('refuses the repo root reached through a different case', () => {
+    expect(() =>
+      assertSafeToDelete({
+        candidate: '/Users/u/Repo',
+        storedPath: '/Users/u/Repo',
+        repoRoot: '/Users/u/repo',
+        canonical: fold
+      })
+    ).toThrow(/repo root/)
+  })
+
+  it('refuses the repo root reached through a symlinked prefix', () => {
+    expect(() =>
+      assertSafeToDelete({
+        candidate: '/tmp/repo',
+        storedPath: '/tmp/repo',
+        repoRoot: '/private/tmp/repo',
+        canonical: fold
+      })
+    ).toThrow(/repo root/)
+  })
+
+  it('refuses an ancestor of the repo root reached through a different case', () => {
+    expect(() =>
+      assertSafeToDelete({
+        candidate: '/USERS/u',
+        storedPath: '/USERS/u',
+        repoRoot: '/Users/u/repo',
+        canonical: fold
+      })
+    ).toThrow(/ancestor/)
+  })
+
+  it('still allows a genuine sibling worktree', () => {
+    expect(() =>
+      assertSafeToDelete({
+        candidate: '/Users/u/repo-wt',
+        storedPath: '/Users/u/repo-wt',
+        repoRoot: '/Users/u/repo',
+        canonical: fold
+      })
+    ).not.toThrow()
+  })
+})

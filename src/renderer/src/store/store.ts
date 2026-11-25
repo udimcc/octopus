@@ -33,6 +33,8 @@ import type {
 import type { EventDTO } from '../../../shared/events'
 import { type DisplayState, DISPLAY_RANK } from './display-state'
 import { leafIds, hasLeaf } from './split-layout'
+import { defaultKeybindings } from '../../../shared/keybindings'
+import { getPlatform } from '../platform'
 
 /** Normalized task record: task-level metadata + an ordered list of session ids. */
 export interface TaskEntry {
@@ -410,28 +412,19 @@ export interface StoreActions {
 
 export type Store = StoreData & StoreActions
 
-const DEFAULT_SETTINGS: SettingsDTO = {
-  worktree: { location: '' },
-  terminal: {},
-  defaultSessionTypeId: 'terminal',
-  groupTasksByRepo: true,
-  sessionNextKey: 'Ctrl+Shift+ArrowRight',
-  sessionPrevKey: 'Ctrl+Shift+ArrowLeft',
-  taskNextKey: 'Ctrl+Shift+ArrowDown',
-  taskPrevKey: 'Ctrl+Shift+ArrowUp',
-  newSessionKey: 'Ctrl+Shift+KeyN',
-  newTaskKey: 'Ctrl+Shift+KeyT',
-  closeSessionKey: 'Ctrl+Shift+KeyW',
-  searchKey: 'Ctrl+Shift+KeyF',
-  copyKey: 'Ctrl+Shift+KeyC',
-  pasteKey: 'Ctrl+Shift+KeyV',
-  issuesKey: 'Alt+Shift+KeyI',
-  splitRightKey: 'Ctrl+Shift+KeyE',
-  splitDownKey: 'Ctrl+Shift+KeyO',
-  focusPaneLeftKey: 'Ctrl+Shift+KeyH',
-  focusPaneRightKey: 'Ctrl+Shift+KeyL',
-  focusPaneUpKey: 'Ctrl+Shift+KeyK',
-  focusPaneDownKey: 'Ctrl+Shift+KeyJ'
+/**
+ * Pre-hydration settings (replaced by the backend's on `hydrate`). The chord defaults
+ * are the platform's (`shared/keybindings.ts`), the same table the settings adapter
+ * fills absent keys from, so the two never drift.
+ */
+function defaultSettings(): SettingsDTO {
+  return {
+    worktree: { location: '' },
+    terminal: {},
+    defaultSessionTypeId: 'terminal',
+    groupTasksByRepo: true,
+    ...defaultKeybindings(getPlatform())
+  }
 }
 
 /** The empty projection before hydration (also used to reset the store in tests). */
@@ -445,7 +438,7 @@ export function initialData(): StoreData {
     activeSessionByTask: {},
     groupsByTask: {},
     sessionTypes: [],
-    settings: DEFAULT_SETTINGS,
+    settings: defaultSettings(),
     version: 1,
     toasts: [],
     nextToastId: 1,

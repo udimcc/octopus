@@ -3,8 +3,8 @@
  * Settings are small and hand-editable, so JSON — not SQLite — per §6.3.
  *
  * Mirrors the pure-resolver / effectful-wrapper split of `env/paths.ts`:
- *   - `parseSettings` / `serializeSettings` / `mergeSettings` / `DEFAULT_SETTINGS`
- *     are pure and exhaustively unit-testable with no filesystem.
+ *   - `parseSettings` / `serializeSettings` / `mergeSettings` / `DEFAULT_SETTINGS` /
+ *     `defaultSettings` are pure and exhaustively unit-testable with no filesystem.
  *   - the class does the only I/O (read on load, atomic write on save).
  *
  * `worktree.location` defaults to '' (so the shape is always complete and the
@@ -45,32 +45,37 @@ import type {
   SettingsStore,
   UpdatesSettings
 } from '../../ports/settings-store'
+import { defaultKeybindings } from '../../shared/keybindings'
 
-/** Complete default settings; every key present so the shape is total. */
-export const DEFAULT_SETTINGS: Settings = Object.freeze({
-  worktree: Object.freeze({ location: '' }),
-  terminal: Object.freeze({}),
-  defaultSessionTypeId: 'terminal',
-  groupTasksByRepo: true,
-  sessionNextKey: 'Ctrl+Shift+ArrowRight',
-  sessionPrevKey: 'Ctrl+Shift+ArrowLeft',
-  taskNextKey: 'Ctrl+Shift+ArrowDown',
-  taskPrevKey: 'Ctrl+Shift+ArrowUp',
-  newSessionKey: 'Ctrl+Shift+KeyN',
-  newTaskKey: 'Ctrl+Shift+KeyT',
-  closeSessionKey: 'Ctrl+Shift+KeyW',
-  searchKey: 'Ctrl+Shift+KeyF',
-  copyKey: 'Ctrl+Shift+KeyC',
-  pasteKey: 'Ctrl+Shift+KeyV',
-  issuesKey: 'Alt+Shift+KeyI',
-  // Split panes (DESIGN §5.7).
-  splitRightKey: 'Ctrl+Shift+KeyE',
-  splitDownKey: 'Ctrl+Shift+KeyO',
-  focusPaneLeftKey: 'Ctrl+Shift+KeyH',
-  focusPaneRightKey: 'Ctrl+Shift+KeyL',
-  focusPaneUpKey: 'Ctrl+Shift+KeyK',
-  focusPaneDownKey: 'Ctrl+Shift+KeyJ'
-}) as Settings
+function buildDefaults(platform: string): Settings {
+  return Object.freeze({
+    worktree: Object.freeze({ location: '' }),
+    terminal: Object.freeze({}),
+    defaultSessionTypeId: 'terminal',
+    groupTasksByRepo: true,
+    ...defaultKeybindings(platform)
+  }) as Settings
+}
+
+/**
+ * The non-darwin (Linux / Windows) defaults — the historical constant, kept byte-
+ * identical (chords `Ctrl+Shift+…`, issues `Alt+Shift+KeyI`). The store itself uses
+ * `defaultSettings(platform)`; this name stays for existing importers and tests.
+ */
+export const DEFAULT_SETTINGS: Settings = buildDefaults('linux')
+
+const DARWIN_DEFAULT_SETTINGS: Settings = buildDefaults('darwin')
+
+/**
+ * Complete default settings for `platform`; every key present so the shape is total.
+ * The chord defaults come from `shared/keybindings.ts` (Cmd-based on darwin, the
+ * historical Ctrl-based strings everywhere else). Non-darwin returns the frozen
+ * `DEFAULT_SETTINGS` itself.
+ */
+export function defaultSettings(platform: string = process.platform): Settings {
+  if (platform !== 'darwin') return DEFAULT_SETTINGS
+  return DARWIN_DEFAULT_SETTINGS
+}
 
 /**
  * Parse raw settings.json text, reporting whether the WHOLE document was usable
@@ -82,7 +87,10 @@ export const DEFAULT_SETTINGS: Settings = Object.freeze({
  * is garbage" from "defaulted because the file simply doesn't exist" (DESIGN
  * §6.3 — see `loadFailed` on the `SettingsStore` port).
  */
-function tryParseSettings(raw: string): { ok: true; settings: Settings } | { ok: false } {
+function tryParseSettings(
+  raw: string,
+  defaults: Settings = DEFAULT_SETTINGS
+): { ok: true; settings: Settings } | { ok: false } {
   let obj: unknown
   try {
     obj = JSON.parse(raw)
@@ -92,7 +100,7 @@ function tryParseSettings(raw: string): { ok: true; settings: Settings } | { ok:
   if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) {
     return { ok: false }
   }
-  return { ok: true, settings: mergeSettings(DEFAULT_SETTINGS, obj as SettingsPatch) }
+  return { ok: true, settings: mergeSettings(defaults, obj as SettingsPatch) }
 }
 
 /**
@@ -103,9 +111,9 @@ function tryParseSettings(raw: string): { ok: true; settings: Settings } | { ok:
  * wrapper; `JsonSettingsStore` uses `tryParseSettings` directly when it needs to
  * know WHETHER the fallback happened, not just the fallback value.
  */
-export function parseSettings(raw: string): Settings {
-  const result = tryParseSettings(raw)
-  return result.ok ? result.settings : DEFAULT_SETTINGS
+export function parseSettings(raw: string, defaults: Settings = DEFAULT_SETTINGS): Settings {
+  const result = tryParseSettings(raw, defaults)
+  return result.ok ? result.settings : defaults
 }
 
 /** Serialize settings for on-disk storage (pretty, trailing newline). */
@@ -363,10 +371,13 @@ export class JsonSettingsStore implements SettingsStore {
   private cache: Settings
   /** See `loadFailed()`. Set by every `load()`; starts false (nothing loaded yet). */
   private failedLastLoad = false
+  /** Platform defaults (`defaultSettings`): what absent/invalid keys fall back to. */
+  private readonly defaults: Settings
 
-  constructor(path: string) {
+  constructor(path: string, platform: string = process.platform) {
     this.path = path
-    this.cache = DEFAULT_SETTINGS
+    this.defaults = defaultSettings(platform)
+    this.cache = this.defaults
   }
 
   /**
@@ -386,12 +397,12 @@ export class JsonSettingsStore implements SettingsStore {
       // doesn't mistake "I don't know what's in the real file" for "the real file
       // genuinely has no projects key yet" and clobber it (see `loadFailed`).
       this.failedLastLoad = !isEnoent(err)
-      this.cache = DEFAULT_SETTINGS
+      this.cache = this.defaults
       return this.cache
     }
-    const parsed = tryParseSettings(raw)
+    const parsed = tryParseSettings(raw, this.defaults)
     this.failedLastLoad = !parsed.ok
-    this.cache = parsed.ok ? parsed.settings : DEFAULT_SETTINGS
+    this.cache = parsed.ok ? parsed.settings : this.defaults
     return this.cache
   }
 
@@ -448,12 +459,12 @@ export class JsonSettingsStore implements SettingsStore {
       }
       return this.cache
     }
-    const parsed = tryParseSettings(raw)
+    const parsed = tryParseSettings(raw, this.defaults)
     if (parsed.ok) {
       return parsed.settings
     }
     this.backupCorrupt(raw)
-    return DEFAULT_SETTINGS
+    return this.defaults
   }
 
   /** Copy `raw` (known-corrupt on-disk settings.json text) to a timestamped backup. */

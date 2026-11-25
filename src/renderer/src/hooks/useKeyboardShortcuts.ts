@@ -94,14 +94,17 @@ import { matchesChord } from '../keybindings/chords'
 import { canSplit, neighbor, type PaneDirection } from '../store/split-layout'
 import { measurePane } from '../terminal/terminal-metrics'
 import type { SplitDirection } from '../../../shared/dto'
+import { debugOverlayChord } from '../../../shared/keybindings'
+import { getPlatform } from '../platform'
 
 /**
- * The FIXED chord that toggles the state-detection debug overlay (§11). Not a
- * user-configurable binding (it's a diagnostic, not a workflow action), so it lives
- * here as a constant rather than in `settings`. Guaranteed ≥1 modifier, so it never
- * shadows a bare terminal keystroke (§5.4).
+ * The FIXED chord that toggles the state-detection debug overlay (§11) on Linux /
+ * non-darwin. Not a user-configurable binding (it's a diagnostic, not a workflow
+ * action), so it lives here rather than in `settings`. Guaranteed ≥1 modifier, so it
+ * never shadows a bare terminal keystroke (§5.4). On macOS the hook uses
+ * `debugOverlayChord('darwin')` (Cmd+Shift+D) instead.
  */
-export const DEBUG_OVERLAY_CHORD = 'Ctrl+Shift+KeyD'
+export const DEBUG_OVERLAY_CHORD = debugOverlayChord('linux')
 
 export interface KeyboardShortcutHandlers {
   /** Open the New-Task modal (owned by `ProgressPanel`). */
@@ -390,7 +393,7 @@ export function useKeyboardShortcuts({ onNewTask, onSearch }: KeyboardShortcutHa
         return
       }
       // Fixed diagnostic chord (§11): toggle the state-detection debug overlay.
-      if (matchesChord(e, DEBUG_OVERLAY_CHORD)) {
+      if (matchesChord(e, debugOverlayChord(getPlatform()))) {
         e.preventDefault()
         store.toggleDebugOverlay()
         return

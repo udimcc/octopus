@@ -62,7 +62,12 @@ export class DaemonSessionManager implements SessionManager {
 
   createRuntime(ctx: SessionRuntimeContext): SessionRuntime {
     const settings = this.getSettings()
-    const shell = resolveShell(ctx.shell, settings.terminal.shell, process.env.SHELL)
+    const shell = resolveShell(
+      ctx.shell,
+      settings.terminal.shell,
+      process.env.SHELL,
+      process.platform
+    )
     // OSC 133 injection rides the `terminal.stateDetection` opt-out and only applies
     // to the default interactive login shell (a custom ctx.shell skips it, §12.1). The
     // daemon builds the child env from ITS process.env, so we forward only the

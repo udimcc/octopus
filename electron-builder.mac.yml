@@ -1,0 +1,35 @@
+# macOS packaging (dev/unofficial): `npm run build:unpack:mac` → release/<version>/mac-<arch>/Octopus.app
+#
+# Inherits everything from electron-builder.yml (files, asar smartUnpack, npmRebuild:false, …) and
+# only adds the mac target. The Linux config is untouched, so Linux builds stay byte-identical.
+extends: ./electron-builder.yml
+
+# Use the Electron.app that `npm ci` already put in node_modules/electron/dist (fetched from the
+# Artifactory mirror by electron's own install.js), so electron-builder downloads nothing.
+electronDist: node_modules/electron/dist
+
+# `octopus-cli` must be an exec'able file inside the bundle, so it cannot live in app.asar.
+# It goes to Contents/Resources/ (NOT Contents/MacOS/: non-Mach-O files there break the code
+# signature seal). extraResources is copied before signing, so the ad-hoc seal covers it.
+extraResources:
+  - from: resources/octopus-cli
+    to: octopus-cli
+
+mac:
+  target:
+    - dir
+  # Pre-rendered by scripts/mac-icns.mjs (run by `build:unpack:mac`) from build/icon.png. A .png
+  # here would make electron-builder download its icon converter from github.com.
+  icon: release/.mac-icon/icon.icns
+  category: public.app-category.developer-tools
+  # Ad-hoc signature (no Apple identity on dev machines). arm64 macOS refuses to run unsigned
+  # code, and electron-builder 26 does NOT fall back to ad-hoc on its own: `-` opts in.
+  identity: '-'
+  # Ad-hoc + hardened runtime would need disable-library-validation to load our .node files.
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  # Native modules must load from app.asar.unpacked. smartUnpack already extracts node-pty and
+  # better-sqlite3 whole; pinned explicitly for node-pty's `spawn-helper` (no .node suffix), which
+  # node-pty exec()s via the app.asar -> app.asar.unpacked path rewrite.
+  asarUnpack:
+    - '**/node_modules/node-pty/build/Release/**'

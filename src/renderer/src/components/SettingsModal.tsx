@@ -39,8 +39,12 @@ import {
   modifierPrefix,
   parseChord,
   chordLabel,
+  modifierPreviewLabel,
+  modifierRequiredHint,
   RESERVED_CHORDS
 } from '../keybindings/chords'
+import { getPlatform } from '../platform'
+import { defaultKeybindings, type KeybindingKey } from '../../../shared/keybindings'
 import type { SettingsPatchDTO } from '../../../shared/dto'
 
 export interface SettingsModalProps {
@@ -48,57 +52,32 @@ export interface SettingsModalProps {
 }
 
 /** The configurable chord settings, in display order. `key` is the `SettingsDTO` field. */
-type ChordKey =
-  | 'sessionNextKey'
-  | 'sessionPrevKey'
-  | 'taskNextKey'
-  | 'taskPrevKey'
-  | 'newSessionKey'
-  | 'newTaskKey'
-  | 'closeSessionKey'
-  | 'searchKey'
-  | 'copyKey'
-  | 'pasteKey'
-  | 'issuesKey'
-  | 'splitRightKey'
-  | 'splitDownKey'
-  | 'focusPaneLeftKey'
-  | 'focusPaneRightKey'
-  | 'focusPaneUpKey'
-  | 'focusPaneDownKey'
+type ChordKey = KeybindingKey
 
 interface ChordFieldDef {
   readonly key: ChordKey
   readonly label: string
-  readonly default: string
 }
 
+/** Defaults come from `defaultKeybindings(getPlatform())` (shared with the store/adapter). */
 const CHORD_FIELDS: ReadonlyArray<ChordFieldDef> = [
-  { key: 'sessionNextKey', label: 'Next session', default: 'Ctrl+Shift+ArrowRight' },
-  { key: 'sessionPrevKey', label: 'Previous session', default: 'Ctrl+Shift+ArrowLeft' },
-  { key: 'taskNextKey', label: 'Next task', default: 'Ctrl+Shift+ArrowDown' },
-  { key: 'taskPrevKey', label: 'Previous task', default: 'Ctrl+Shift+ArrowUp' },
-  { key: 'newSessionKey', label: 'New session', default: 'Ctrl+Shift+KeyN' },
-  { key: 'newTaskKey', label: 'New task', default: 'Ctrl+Shift+KeyT' },
-  { key: 'closeSessionKey', label: 'Close session', default: 'Ctrl+Shift+KeyW' },
-  { key: 'searchKey', label: 'Terminal search', default: 'Ctrl+Shift+KeyF' },
-  { key: 'copyKey', label: 'Copy', default: 'Ctrl+Shift+KeyC' },
-  { key: 'pasteKey', label: 'Paste', default: 'Ctrl+Shift+KeyV' },
-  { key: 'issuesKey', label: 'Toggle Issues', default: 'Alt+Shift+KeyI' },
-  { key: 'splitRightKey', label: 'Split pane right', default: 'Ctrl+Shift+KeyE' },
-  { key: 'splitDownKey', label: 'Split pane down', default: 'Ctrl+Shift+KeyO' },
-  {
-    key: 'focusPaneLeftKey',
-    label: 'Focus pane left',
-    default: 'Ctrl+Shift+KeyH'
-  },
-  {
-    key: 'focusPaneRightKey',
-    label: 'Focus pane right',
-    default: 'Ctrl+Shift+KeyL'
-  },
-  { key: 'focusPaneUpKey', label: 'Focus pane up', default: 'Ctrl+Shift+KeyK' },
-  { key: 'focusPaneDownKey', label: 'Focus pane down', default: 'Ctrl+Shift+KeyJ' }
+  { key: 'sessionNextKey', label: 'Next session' },
+  { key: 'sessionPrevKey', label: 'Previous session' },
+  { key: 'taskNextKey', label: 'Next task' },
+  { key: 'taskPrevKey', label: 'Previous task' },
+  { key: 'newSessionKey', label: 'New session' },
+  { key: 'newTaskKey', label: 'New task' },
+  { key: 'closeSessionKey', label: 'Close session' },
+  { key: 'searchKey', label: 'Terminal search' },
+  { key: 'copyKey', label: 'Copy' },
+  { key: 'pasteKey', label: 'Paste' },
+  { key: 'issuesKey', label: 'Toggle Issues' },
+  { key: 'splitRightKey', label: 'Split pane right' },
+  { key: 'splitDownKey', label: 'Split pane down' },
+  { key: 'focusPaneLeftKey', label: 'Focus pane left' },
+  { key: 'focusPaneRightKey', label: 'Focus pane right' },
+  { key: 'focusPaneUpKey', label: 'Focus pane up' },
+  { key: 'focusPaneDownKey', label: 'Focus pane down' }
 ]
 
 /** The settings categories, shown in the left sidebar in this order. */
@@ -131,15 +110,16 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
     settings.terminal.statusChangeNotifications !== false
   )
   // Current value of every configurable chord, keyed by its settings field.
-  const [chords, setChords] = useState<Record<ChordKey, string>>(() =>
-    CHORD_FIELDS.reduce(
+  const [chords, setChords] = useState<Record<ChordKey, string>>(() => {
+    const defaults = defaultKeybindings(getPlatform())
+    return CHORD_FIELDS.reduce(
       (acc, f) => {
-        acc[f.key] = settings[f.key] ?? f.default
+        acc[f.key] = settings[f.key] ?? defaults[f.key]
         return acc
       },
       {} as Record<ChordKey, string>
     )
-  )
+  })
   // Which chord field is currently capturing (null → none).
   const [capturing, setCapturing] = useState<ChordKey | null>(null)
   // The modifiers held so far during the active capture (live preview), e.g. `Ctrl+Shift`.
@@ -227,7 +207,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
       return
     }
     if (!hasModifier(e.nativeEvent)) {
-      setSwitchError('Add at least one modifier (Ctrl / Alt / Shift)')
+      setSwitchError(modifierRequiredHint())
       return
     }
     const chord = parseChord(e.nativeEvent)
@@ -583,7 +563,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
                       >
                         {active
                           ? preview
-                            ? `${preview}+…`
+                            ? modifierPreviewLabel(preview)
                             : 'Press a shortcut…'
                           : chordLabel(chords[f.key])}
                       </button>

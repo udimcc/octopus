@@ -16,6 +16,8 @@
  * fixed `switch` cases in `useKeyboardShortcuts.ts` — keep the two in sync.
  */
 
+import { getPlatform } from '../platform'
+
 /** True if the event carries at least one modifier — required for a bindable chord. */
 export function hasModifier(e: KeyboardEvent): boolean {
   return e.ctrlKey || e.altKey || e.shiftKey || e.metaKey
@@ -77,12 +79,49 @@ function codeLabel(code: string): string {
   return code // Tab, Escape, F5, … as-is
 }
 
-/** Human-readable label for a stored chord, e.g. `Ctrl+Shift+→` or `Alt+K`. */
-export function chordLabel(chord: string): string {
+/** macOS modifier glyphs. The canonical order Ctrl, Alt, Shift, Meta is Apple's ⌃⌥⇧⌘. */
+const MAC_MODIFIER_GLYPH: Readonly<Record<string, string>> = {
+  Ctrl: '⌃',
+  Alt: '⌥',
+  Shift: '⇧',
+  Meta: '⌘'
+}
+
+/**
+ * Human-readable label for a stored chord, e.g. `Ctrl+Shift+→` or `Alt+K`. On macOS
+ * it uses the native glyphs with no separators (`⇧⌘→`, `⌥K`).
+ */
+export function chordLabel(chord: string, platform: string = getPlatform()): string {
   if (!chord) return ''
   const parts = chord.split('+')
   const code = parts.pop() as string
+  if (platform === 'darwin') {
+    return parts.map((m) => MAC_MODIFIER_GLYPH[m] ?? m).join('') + codeLabel(code)
+  }
   return [...parts, codeLabel(code)].join('+')
+}
+
+/**
+ * Label for a partial chord while modifiers are held during capture (`modifierPrefix`
+ * output): `Ctrl+Shift+…` on Linux, `⇧⌘…` on macOS.
+ */
+export function modifierPreviewLabel(prefix: string, platform: string = getPlatform()): string {
+  if (platform === 'darwin') {
+    return (
+      prefix
+        .split('+')
+        .map((m) => MAC_MODIFIER_GLYPH[m] ?? m)
+        .join('') + '…'
+    )
+  }
+  return `${prefix}+…`
+}
+
+/** The "a chord needs a modifier" hint for the capture field. */
+export function modifierRequiredHint(platform: string = getPlatform()): string {
+  return platform === 'darwin'
+    ? 'Add at least one modifier (⌘ / ⌃ / ⌥ / ⇧)'
+    : 'Add at least one modifier (Ctrl / Alt / Shift)'
 }
 
 /** A fixed shortcut the hook owns, for conflict detection in settings. */

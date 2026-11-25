@@ -1,6 +1,13 @@
 import { describe, it, expect, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { createHttpsFetch, type HttpsFetchDeps } from './https-fetch'
+import {
+  createHttpsFetch,
+  DARWIN_KEYCHAINS,
+  readDarwinKeychainCas,
+  readSystemCaBundle,
+  type ExecFileText,
+  type HttpsFetchDeps
+} from './https-fetch'
 import type { request as httpsRequest } from 'node:https'
 
 /** A minimal fake `node:https` `ClientRequest`/response pair, driven manually by each test. */
@@ -161,5 +168,100 @@ describe('createHttpsFetch (DESIGN §13.7)', () => {
     const response = await promise
     expect(response.status).toBe(204)
     expect(await response.text()).toBe('')
+  })
+})
+
+const PEM_A = '-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----\n'
+const PEM_B = '-----BEGIN CERTIFICATE-----\nBBB\n-----END CERTIFICATE-----\n'
+
+describe('darwin keychain CA bundle', () => {
+  it('exports the System and system-roots keychains via /usr/bin/security and joins them', async () => {
+    const exec = vi.fn<ExecFileText>((_file, args) =>
+      Promise.resolve(args[3] === DARWIN_KEYCHAINS[0] ? PEM_A : PEM_B)
+    )
+    const bundle = await readDarwinKeychainCas(exec)
+    expect(exec).toHaveBeenCalledTimes(2)
+    for (const keychain of DARWIN_KEYCHAINS) {
+      expect(exec).toHaveBeenCalledWith('/usr/bin/security', [
+        'find-certificate',
+        '-a',
+        '-p',
+        keychain
+      ])
+    }
+    expect(bundle).toBe(`${PEM_A.trim()}\n${PEM_B.trim()}\n`)
+  })
+
+  it('skips a keychain that fails or has no certificates', async () => {
+    const exec = vi.fn<ExecFileText>((_file, args) =>
+      args[3] === DARWIN_KEYCHAINS[0] ? Promise.resolve(PEM_A) : Promise.reject(new Error('x'))
+    )
+    expect(await readDarwinKeychainCas(exec)).toBe(`${PEM_A.trim()}\n`)
+  })
+
+  it('yields undefined when nothing could be exported', async () => {
+    expect(await readDarwinKeychainCas(() => Promise.reject(new Error('no security')))).toBe(
+      undefined
+    )
+    expect(await readDarwinKeychainCas(() => Promise.resolve(''))).toBe(undefined)
+  })
+
+  it('readSystemCaBundle reads no file off Linux', () => {
+    expect(readSystemCaBundle('darwin')).toBeUndefined()
+  })
+
+  it('an async reader is awaited once and shared by concurrent fetches', async () => {
+    let release: (pem: string) => void = () => {}
+    const readCaBundle = vi.fn(
+      () =>
+        new Promise<string | undefined>((resolve) => {
+          release = resolve
+        })
+    )
+    const requests: FakeClientRequest[] = []
+    const requestFn = vi.fn(() => {
+      const req = new FakeClientRequest()
+      requests.push(req)
+      return req
+    }) as unknown as typeof httpsRequest
+    const fetch = createHttpsFetch({ request: requestFn, readCaBundle })
+
+    const first = fetch('https://example.invalid/one', init())
+    const second = fetch('https://example.invalid/two', init())
+    expect(readCaBundle).toHaveBeenCalledTimes(1)
+    expect(requestFn).not.toHaveBeenCalled()
+
+    release(PEM_A)
+    await vi.waitFor(() => expect(requests).toHaveLength(2))
+    for (const req of requests) {
+      const res = new FakeIncomingMessage()
+      req.emit('response', res)
+      res.emit('end')
+    }
+    expect((await first).status).toBe(200)
+    expect((await second).status).toBe(200)
+    expect(readCaBundle).toHaveBeenCalledTimes(1)
+  })
+
+  it('a signal aborted while the async CA bundle loads rejects without calling request()', async () => {
+    let release: (pem: string | undefined) => void = () => {}
+    const readCaBundle = (): Promise<string | undefined> =>
+      new Promise((resolve) => {
+        release = resolve
+      })
+    const requestFn = vi.fn() as unknown as typeof httpsRequest
+    const fetch = createHttpsFetch({ request: requestFn, readCaBundle })
+    const controller = new AbortController()
+    const promise = fetch('https://example.invalid/path', {
+      method: 'POST',
+      headers: {},
+      body: '{}',
+      signal: controller.signal
+    })
+    const reason = new DOMException('aborted', 'AbortError')
+    controller.abort(reason)
+    release(undefined)
+    await expect(promise).rejects.toBe(reason)
+    expect(requestFn).not.toHaveBeenCalled()
   })
 })

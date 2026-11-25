@@ -68,6 +68,10 @@ import type { EventDTO } from '../shared/events'
 const octopusAPI: OctopusAPI = {
   ping: () => ipcRenderer.invoke(CHANNELS.ping),
 
+  // Sandboxed preloads get Electron's limited `process` polyfill, which still carries
+  // `platform` (no `require('os')` needed).
+  getPlatform: () => process.platform,
+
   tasks: {
     create: (input: CreateTaskInput): Promise<CommandAck> =>
       ipcRenderer.invoke(CHANNELS.taskCreate, input),

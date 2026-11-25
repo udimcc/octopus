@@ -23,6 +23,9 @@ const h = vi.hoisted(() => {
     unicode: { activeVersion: string }
     onDataCb: ((d: string) => void) | null
     keyHandler: ((e: KeyboardEvent) => boolean) | null
+    options: Record<string, unknown>
+    getSelection: ReturnType<typeof vi.fn>
+    paste: ReturnType<typeof vi.fn>
     loadAddon: ReturnType<typeof vi.fn>
     open: ReturnType<typeof vi.fn>
     write: ReturnType<typeof vi.fn>
@@ -55,6 +58,9 @@ vi.mock('@xterm/xterm', () => ({
     unicode = { activeVersion: '6' }
     onDataCb: ((d: string) => void) | null = null
     keyHandler: ((e: KeyboardEvent) => boolean) | null = null
+    options: Record<string, unknown>
+    getSelection = vi.fn(() => 'selected text')
+    paste = vi.fn()
     loadAddon = vi.fn()
     open = vi.fn()
     write = vi.fn()
@@ -75,7 +81,8 @@ vi.mock('@xterm/xterm', () => ({
       this.onDataCb = cb
       return { dispose: h.onDataDispose }
     }
-    constructor() {
+    constructor(options: Record<string, unknown> = {}) {
+      this.options = options
       h.instances.push(this as unknown as (typeof h.instances)[number])
     }
   }
@@ -604,5 +611,116 @@ describe('<TerminalPane> wiring (§5.3/§6.1)', () => {
     })
     unmount()
     expect(measurePane('s1')).toBeUndefined()
+  })
+})
+
+describe('<TerminalPane> platform key routing and options (macOS support)', () => {
+  const key = (init: Partial<KeyboardEvent> & { code: string }): KeyboardEvent =>
+    ({ type: 'keydown', preventDefault: vi.fn(), ...init }) as unknown as KeyboardEvent
+
+  const install = (platform: string | undefined): void => {
+    h.instances.length = 0
+    vi.clearAllMocks()
+    window.octopusAPI = {
+      ...(platform && { getPlatform: () => platform }),
+      pty: { write: vi.fn(), resize: vi.fn() },
+      shell: { openExternal: vi.fn() },
+      clipboard: { read: vi.fn(() => Promise.resolve('pasted')), write: vi.fn() }
+    } as unknown as typeof window.octopusAPI
+    // Re-derive the pre-hydration (platform) defaults now that the bridge is in place.
+    useStore.setState(initialData())
+    Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, value: 800 })
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      value: 600
+    })
+  }
+
+  afterEach(() => {
+    cleanup()
+  })
+
+  it('Linux (and a bridge without getPlatform) keeps the historical xterm options', () => {
+    for (const platform of ['linux', undefined]) {
+      install(platform)
+      render(<TerminalPane sessionId="s1" visible={true} focused={true} />)
+      const opts = h.instances[0].options
+      expect(opts.fontFamily).toBe('monospace')
+      expect('macOptionIsMeta' in opts).toBe(false)
+      expect('macOptionClickForcesSelection' in opts).toBe(false)
+      cleanup()
+    }
+  })
+
+  it('darwin uses a real monospace face and Option-as-Meta', () => {
+    install('darwin')
+    render(<TerminalPane sessionId="s1" visible={true} focused={true} />)
+    const opts = h.instances[0].options
+    expect(opts.fontFamily).toBe("Menlo, 'SF Mono', Monaco, monospace")
+    expect(opts.macOptionIsMeta).toBe(true)
+    expect(opts.macOptionClickForcesSelection).toBe(true)
+  })
+
+  it('Linux: Ctrl+Shift+C/V copy/paste with preventDefault; Cmd (Meta) chords still reach xterm', async () => {
+    install('linux')
+    render(<TerminalPane sessionId="s1" visible={true} focused={true} />)
+    const term = h.instances[0]
+    const handler = term.keyHandler!
+    const copy = key({ code: 'KeyC', ctrlKey: true, shiftKey: true })
+    expect(handler(copy)).toBe(false)
+    expect(copy.preventDefault).toHaveBeenCalled()
+    expect(window.octopusAPI.clipboard.write).toHaveBeenCalledWith('selected text')
+    const paste = key({ code: 'KeyV', ctrlKey: true, shiftKey: true })
+    expect(handler(paste)).toBe(false)
+    expect(paste.preventDefault).toHaveBeenCalled()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(term.paste).toHaveBeenCalledTimes(1)
+    expect(term.paste).toHaveBeenCalledWith('pasted')
+    // Unchanged Linux behavior: an unbound Ctrl+Shift chord is dropped, a Meta chord isn't.
+    expect(handler(key({ code: 'KeyZ', ctrlKey: true, shiftKey: true }))).toBe(false)
+    expect(handler(key({ code: 'KeyZ', metaKey: true }))).toBe(true)
+    expect(handler(key({ code: 'KeyZ', metaKey: true, shiftKey: true }))).toBe(true)
+  })
+
+  it('darwin: Cmd+C/V copy/paste exactly once, preventing the native (menu) paste', async () => {
+    install('darwin')
+    render(<TerminalPane sessionId="s1" visible={true} focused={true} />)
+    const term = h.instances[0]
+    const handler = term.keyHandler!
+    const copy = key({ code: 'KeyC', metaKey: true })
+    expect(handler(copy)).toBe(false)
+    expect(copy.preventDefault).toHaveBeenCalled()
+    expect(window.octopusAPI.clipboard.write).toHaveBeenCalledWith('selected text')
+    const paste = key({ code: 'KeyV', metaKey: true })
+    expect(handler(paste)).toBe(false)
+    expect(paste.preventDefault).toHaveBeenCalled()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(term.paste).toHaveBeenCalledTimes(1)
+    // Ctrl+Shift+C/V are plain terminal input on macOS (no copy, no paste).
+    vi.mocked(window.octopusAPI.clipboard.write).mockClear()
+    expect(handler(key({ code: 'KeyC', ctrlKey: true, shiftKey: true }))).toBe(true)
+    expect(window.octopusAPI.clipboard.write).not.toHaveBeenCalled()
+  })
+
+  it('darwin: drops Cmd+Shift app chords and every other Cmd chord (without preventDefault), passes Ctrl chords', () => {
+    install('darwin')
+    render(<TerminalPane sessionId="s1" visible={true} focused={true} />)
+    const handler = h.instances[0].keyHandler!
+    // Default app chords (Cmd+Shift+T new task, Cmd+Shift+→ next session) never reach the PTY.
+    expect(handler(key({ code: 'KeyT', metaKey: true, shiftKey: true }))).toBe(false)
+    expect(handler(key({ code: 'ArrowRight', metaKey: true, shiftKey: true }))).toBe(false)
+    // Other Cmd chords (Cmd+Q, Cmd+W, Cmd+A) skip xterm but keep their default so the
+    // app menu's accelerators still run.
+    for (const code of ['KeyQ', 'KeyW', 'KeyA']) {
+      const e = key({ code, metaKey: true })
+      expect(handler(e)).toBe(false)
+      expect(e.preventDefault).not.toHaveBeenCalled()
+    }
+    // Ctrl chords are shell input on macOS, including Ctrl+Shift ones.
+    expect(handler(key({ code: 'KeyC', ctrlKey: true }))).toBe(true)
+    expect(handler(key({ code: 'KeyT', ctrlKey: true, shiftKey: true }))).toBe(true)
+    expect(handler(key({ code: 'KeyB', altKey: true }))).toBe(true)
   })
 })

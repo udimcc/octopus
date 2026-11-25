@@ -44,7 +44,7 @@ import type {
   RepoWorktree
 } from '../../ports/worktree-provider'
 import { validateWorktreePath, assertSafeToDelete, type PathProbe } from './path-safety'
-import { fsPathProbe } from './fs-path-probe'
+import { deleteSafetyCanonicalizer, fsPathProbe } from './fs-path-probe'
 import { computeWorktreePath } from './worktree-path'
 import { GIT, scriptEnv, firstNonEmptyLine, firstLine, gitIsDirty } from './worktree-support'
 
@@ -281,7 +281,8 @@ export class NativeGitWorktreeProvider implements WorktreeProvider {
     assertSafeToDelete({
       candidate: req.path,
       storedPath: req.path,
-      repoRoot: req.repoDir
+      repoRoot: req.repoDir,
+      canonical: deleteSafetyCanonicalizer()
     })
 
     // `--force` only when the user confirmed a dirty delete: git refuses to remove

@@ -39,7 +39,7 @@ export interface SessionRuntimeContext {
   readonly rows: number
   /** Base environment to sanitize + extend (OCTOPUS_* vars added by the adapter). */
   readonly env: Readonly<Record<string, string | undefined>>
-  /** Shell override (else $SHELL, else /bin/bash) (§6.1). */
+  /** Shell override (else $SHELL, else /bin/bash; /bin/zsh on macOS) (§6.1). */
   readonly shell?: string
   /**
    * Re-attach hint for a durable backend (§6.2). When true, a session already

@@ -1,10 +1,11 @@
 /**
  * State-detection debug overlay (DESIGN §11 observability). A keyboard-toggled
- * (`Ctrl+Shift+D`, see {@link DEBUG_OVERLAY_CHORD}) floating panel showing the last
- * N session-state transitions this window has seen — the newest at the top — with
- * the deciding signal's LAYER and REASON (and confidence). It is the on-screen twin
- * of the `state.log` file (§11): the same `sessionStateChanged` metadata, kept in a
- * capped renderer ring, for tuning the §9.3 thresholds without tailing a file.
+ * (`Ctrl+Shift+D`, `Cmd+Shift+D` on macOS, see {@link DEBUG_OVERLAY_CHORD}) floating
+ * panel showing the last N session-state transitions this window has seen — the
+ * newest at the top — with the deciding signal's LAYER and REASON (and confidence).
+ * It is the on-screen twin of the `state.log` file (§11): the same
+ * `sessionStateChanged` metadata, kept in a capped renderer ring, for tuning the §9.3
+ * thresholds without tailing a file.
  *
  * Purely a projection of `store.debugTransitions`; it dispatches nothing and holds
  * no state of its own. Rendered in BOTH window roles (main + secondary) so a

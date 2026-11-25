@@ -11,7 +11,7 @@
 /** Terminal session config. All fields optional; cwd defaults to the worktree. */
 export interface TerminalSessionConfig {
   readonly kind: 'terminal'
-  /** Override shell; else settings.terminal.shell, else $SHELL, else /bin/bash (§6.1). */
+  /** Override shell; else settings.terminal.shell, else $SHELL, else /bin/bash (/bin/zsh on macOS) (§6.1). */
   readonly shell?: string
   /** A command written to the PTY once the shell is ready. */
   readonly initialCommand?: string

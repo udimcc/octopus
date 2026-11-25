@@ -84,7 +84,7 @@ export interface DaemonSessionInfo {
   readonly sessionId: string
   readonly alive: boolean
   readonly pid: number
-  /** Current working directory (from /proc/<pid>/cwd), if resolvable. */
+  /** Current working directory (/proc/<pid>/cwd; lsof on macOS), if resolvable. */
   readonly cwd?: string
   readonly cols: number
   readonly rows: number

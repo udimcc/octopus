@@ -526,3 +526,35 @@ describe('<SettingsModal>', () => {
     })
   })
 })
+
+describe('<SettingsModal> on macOS', () => {
+  const withoutSessionChords = { ...seededState.settings }
+  delete (withoutSessionChords as { sessionNextKey?: string }).sessionNextKey
+  delete (withoutSessionChords as { sessionPrevKey?: string }).sessionPrevKey
+  const macState: WindowedWorkspaceStateDTO = { ...seededState, settings: withoutSessionChords }
+
+  beforeEach(() => {
+    installStubBridge({ state: macState, platform: 'darwin' })
+    useStore.setState(initialData())
+    useStore.getState().hydrate(macState)
+  })
+
+  it('falls back to the darwin defaults and labels chords with mac glyphs', () => {
+    render(<SettingsModal onClose={vi.fn()} />)
+    openKeyBindings()
+    // Absent → the darwin default (Cmd+Shift+→); a stored Linux chord renders in glyphs.
+    expect(screen.getByLabelText('next session shortcut')).toHaveTextContent('⇧⌘→')
+    expect(screen.getByLabelText('new task shortcut')).toHaveTextContent('⌃⇧T')
+  })
+
+  it('shows a glyph preview while capturing and the mac modifier hint', () => {
+    render(<SettingsModal onClose={vi.fn()} />)
+    openKeyBindings()
+    const nextBtn = screen.getByLabelText('next session shortcut')
+    fireEvent.click(nextBtn)
+    fireEvent.keyDown(nextBtn, { code: 'MetaLeft', metaKey: true, shiftKey: true })
+    expect(nextBtn).toHaveTextContent('⇧⌘…')
+    fireEvent.keyDown(nextBtn, { code: 'KeyA' })
+    expect(screen.getByRole('alert')).toHaveTextContent('Add at least one modifier (⌘ / ⌃ / ⌥ / ⇧)')
+  })
+})

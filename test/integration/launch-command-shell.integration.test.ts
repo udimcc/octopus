@@ -79,6 +79,17 @@ function skillCommandArg(prompt: string): string {
   return res.stdout
 }
 
+/**
+ * The temp file the recipe wrote, read back out of the generated line (`cat '<path>'`).
+ * Not derived from TMPDIR: macOS `mktemp` with no template ignores $TMPDIR and writes
+ * under its per-user `/var/folders/.../T/`, while GNU mktemp honours it.
+ */
+function tempFileOf(line: string): string {
+  const m = /cat '([^']+)'/.exec(line)
+  expect(m).not.toBeNull()
+  return m![1]
+}
+
 /** CLI parser -> production handler: the `launchCommand` that gets typed into the shell. */
 async function launchLineFor(prompt: string): Promise<string> {
   const parsed = parseCommand(['session', 'open', 't1', '--command', skillCommandArg(prompt)])
@@ -158,6 +169,7 @@ describe.skipIf(!hasBash)('launch command in a real shell', () => {
           expect(status).toBe(0)
           expect(argv).toEqual(['--', prompt])
           // One-shot: the temp file has been removed by the line itself.
+          expect(existsSync(tempFileOf(line))).toBe(false)
           expect(readdirSync(tmpDir)).toEqual([])
           expect(existsSync(canary)).toBe(false)
         }
@@ -181,7 +193,9 @@ describe.skipIf(!hasBash)('launch command in a real shell', () => {
   it('still runs claude with an empty argument if the temp file vanished first', async () => {
     const line = await launchLineFor('x')
     // Delete the file before the line runs: `cat` fails, claude gets "".
-    for (const f of readdirSync(tmpDir)) rmSync(join(tmpDir, f))
+    const file = tempFileOf(line)
+    expect(existsSync(file)).toBe(true)
+    rmSync(file)
     const { argv } = runInShell('bash', line)
     expect(argv).toEqual(['--', ''])
   })

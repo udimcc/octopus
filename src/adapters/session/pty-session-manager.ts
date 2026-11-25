@@ -59,7 +59,12 @@ export class PtySessionManager implements SessionManager {
 
   createRuntime(ctx: SessionRuntimeContext): SessionRuntime {
     const settings = this.getSettings()
-    const shell = resolveShell(ctx.shell, settings.terminal.shell, process.env.SHELL)
+    const shell = resolveShell(
+      ctx.shell,
+      settings.terminal.shell,
+      process.env.SHELL,
+      process.platform
+    )
     // OSC 133 injection rides the `terminal.stateDetection` opt-out (§12.1): a custom
     // ctx.shell arg (e.g. `-c` from a scripted session) also skips it — integration
     // only applies to the default interactive login shell. `shellSpawnPlan` returns
