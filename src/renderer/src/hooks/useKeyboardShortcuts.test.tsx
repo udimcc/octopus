@@ -6,6 +6,7 @@ import { useStore, initialData } from '../store/store'
 import { installStubBridge, makeStubBridge } from '../test-support/stub-bridge'
 import { registerPaneMetrics, _resetPaneMetrics } from '../terminal/terminal-metrics'
 import type { SessionDTO, TaskDTO, WindowDTO, SplitNode, GroupDTO } from '../../../shared/dto'
+import { defaultKeybindings } from '../../../shared/keybindings'
 
 /** A leaf node naming `sessionId` — `split-layout.ts` no longer exports this fixture. */
 function leaf(sessionId: string): SplitNode {
@@ -940,5 +941,83 @@ describe('useKeyboardShortcuts — session walk scoped to the window-view group 
 
     chord('ArrowRight')
     expect(window.octopusAPI.sessions.switch).toHaveBeenLastCalledWith({ sessionId: 's2' })
+  })
+})
+
+describe('useKeyboardShortcuts on macOS (Cmd-based defaults)', () => {
+  beforeEach(() => {
+    installStubBridge({ platform: 'darwin' })
+    useStore.setState(initialData())
+  })
+
+  function seedMac(tasks: TaskDTO[], activeTaskId?: string): void {
+    useStore.getState().hydrate({
+      tasks,
+      activeTaskId,
+      sessionTypes: [],
+      issues: [],
+      settings: {
+        worktree: { location: '' },
+        terminal: {},
+        defaultSessionTypeId: 'terminal',
+        groupTasksByRepo: true,
+        ...defaultKeybindings('darwin')
+      },
+      version: 1,
+      thisWindowId: 'main',
+      thisWindowRole: 'main',
+      windows: []
+    })
+  }
+
+  it('pre-hydration store defaults are the darwin chords', () => {
+    expect(useStore.getState().settings.taskNextKey).toBe('Shift+Meta+ArrowDown')
+    expect(useStore.getState().settings.pasteKey).toBe('Meta+KeyV')
+  })
+
+  it('Cmd+Shift+ArrowDown switches task; Ctrl+Shift+ArrowDown is left to the terminal', () => {
+    seedMac([task('t1'), task('t2', { position: 1 })], 't1')
+    render(<Host onNewTask={vi.fn()} />)
+    expect(fireEvent.keyDown(window, { code: 'ArrowDown', ctrlKey: true, shiftKey: true })).toBe(
+      true
+    )
+    expect(useStore.getState().activeTaskId).toBe('t1')
+    expect(fireEvent.keyDown(window, { code: 'ArrowDown', metaKey: true, shiftKey: true })).toBe(
+      false
+    )
+    expect(useStore.getState().activeTaskId).toBe('t2')
+  })
+
+  it('Cmd+Shift+T opens the New-Task modal', () => {
+    seedMac([task('t1')], 't1')
+    const onNewTask = vi.fn()
+    render(<Host onNewTask={onNewTask} />)
+    fireEvent.keyDown(window, { code: 'KeyT', metaKey: true, shiftKey: true })
+    expect(onNewTask).toHaveBeenCalledOnce()
+  })
+
+  it('toggles the debug overlay with Cmd+Shift+D, not Ctrl+Shift+D', () => {
+    seedMac([task('t1')], 't1')
+    render(<Host onNewTask={vi.fn()} />)
+    fireEvent.keyDown(window, { code: 'KeyD', ctrlKey: true, shiftKey: true })
+    expect(useStore.getState().debugOverlayOpen).toBe(false)
+    fireEvent.keyDown(window, { code: 'KeyD', metaKey: true, shiftKey: true })
+    expect(useStore.getState().debugOverlayOpen).toBe(true)
+  })
+})
+
+describe('useKeyboardShortcuts debug overlay chord on Linux', () => {
+  beforeEach(() => {
+    useStore.setState(initialData())
+    installStubBridge()
+  })
+
+  it('toggles with Ctrl+Shift+D and ignores Cmd+Shift+D', () => {
+    seed([task('t1')], 't1')
+    render(<Host onNewTask={vi.fn()} />)
+    fireEvent.keyDown(window, { code: 'KeyD', metaKey: true, shiftKey: true })
+    expect(useStore.getState().debugOverlayOpen).toBe(false)
+    chord('KeyD')
+    expect(useStore.getState().debugOverlayOpen).toBe(true)
   })
 })

@@ -18,7 +18,7 @@ export interface WorktreeSettings {
 }
 
 export interface TerminalSettings {
-  /** Preferred shell; else $SHELL, else /bin/bash (§6.1). */
+  /** Preferred shell; else $SHELL, else /bin/bash (/bin/zsh on macOS) (§6.1). */
   readonly shell?: string
   /**
    * Which session backend hosts PTYs (§6.2). `'daemon'` (default when unset) hosts

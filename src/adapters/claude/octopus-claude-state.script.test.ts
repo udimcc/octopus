@@ -14,7 +14,8 @@ import {
   existsSync,
   readdirSync,
   mkdirSync,
-  chmodSync
+  chmodSync,
+  symlinkSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -99,7 +100,9 @@ describe.skipIf(!hasPython)('octopus-claude-state.py', () => {
     expect(got.every((r) => typeof r.t === 'number' && (r.t as number) >= before - 1000)).toBe(true)
     const strip = (r: Record<string, unknown>): Record<string, unknown> => ({ ...r, t: 0 })
     expect(got.map(strip)).toEqual(golden.map(strip))
-  })
+    // 32 sequential python3 spawns; on macOS each hook also forks one `ps` for the
+    // nested-claude check, so this outgrows the 5 s default under a loaded full run.
+  }, 30_000)
 
   it('never prints on the hook path and exits 0 even on garbage input', () => {
     expect(hook('Stop', 'not json')).toBe('')
@@ -201,25 +204,85 @@ describe.skipIf(!hasPython)('octopus-claude-state.py', () => {
   })
 
   describe('nested claude detection', () => {
-    // A stand-in `claude` executable: a shell script's process comm is its file name.
-    // It runs its argv as a child (never exec), so it stays in the ancestry.
-    let fakeClaude: string
+    // A stand-in `claude` executable that runs its argv as a child (never exec), so it
+    // stays in the ancestry. On Linux a shell script's comm is its file name. On macOS
+    // `ps` reports a script's interpreter (`/bin/sh`) instead, and `ps -E` hides the
+    // environment of Apple platform binaries (bash, sh), so there the stand-in is a
+    // `claude` symlink to this (non-platform) node binary: comm = the exec'd path.
+    let fakeClaude: string[]
     beforeEach(() => {
       const bin = join(dir, 'bin')
       mkdirSync(bin)
-      fakeClaude = join(bin, 'claude')
-      writeFileSync(fakeClaude, '#!/bin/sh\n"$@"\nstatus=$?\nexit $status\n', 'utf8')
-      chmodSync(fakeClaude, 0o755)
+      const exe = join(bin, 'claude')
+      if (process.platform === 'darwin') {
+        symlinkSync(process.execPath, exe)
+        const js =
+          'const r = require("child_process").spawnSync(process.argv[1], process.argv.slice(2),' +
+          ' { stdio: "inherit" }); process.exit(r.status === null ? 1 : r.status)'
+        fakeClaude = [exe, '-e', js]
+      } else {
+        writeFileSync(exe, '#!/bin/sh\n"$@"\nstatus=$?\nexit $status\n', 'utf8')
+        chmodSync(exe, 0o755)
+        fakeClaude = [exe]
+      }
     })
 
     const viaClaude = (outerEnv: Record<string, string>, nested: boolean): void => {
       const argv = [PYTHON, scriptPath, 'hook', 'Stop']
-      const cmd = nested ? [fakeClaude, fakeClaude, ...argv] : [fakeClaude, ...argv]
+      const cmd = nested ? [...fakeClaude, ...fakeClaude, ...argv] : [...fakeClaude, ...argv]
       execFileSync(cmd[0], cmd.slice(1), {
         input: '{}',
         env: { PATH: process.env.PATH ?? '/usr/bin:/bin', ...outerEnv }
       })
     }
+
+    /** Import the script as a module and print the JSON of a python expression over it. */
+    const evalInScript = (expr: string): unknown => {
+      const code = [
+        'import importlib.util, json, sys',
+        'spec = importlib.util.spec_from_file_location("ocs", sys.argv[1])',
+        'm = importlib.util.module_from_spec(spec)',
+        'spec.loader.exec_module(m)',
+        `print(json.dumps(${expr}))`
+      ].join('\n')
+      return JSON.parse(execFileSync(PYTHON, ['-c', code, scriptPath], { encoding: 'utf8' }))
+    }
+
+    it('parses a ps snapshot: comm may hold spaces or a path; junk lines are skipped', () => {
+      const out =
+        '    1     0 /sbin/launchd\n' +
+        '  500     1 /Applications/Claude.app/Contents/MacOS/Claude Helper (Renderer)\n' +
+        '  600   500 claude\n' +
+        '  700   600 -zsh\n' +
+        'garbage\n' +
+        '  x   1 nope\n\n'
+      const table = evalInScript(
+        `{str(k): list(v) for k, v in m.parse_ps_snapshot(${JSON.stringify(out)}.encode()).items()}`
+      )
+      expect(table).toEqual({
+        '1': [0, 'launchd'],
+        '500': [1, 'Claude Helper (Renderer)'],
+        '600': [500, 'claude'],
+        '700': [600, '-zsh']
+      })
+    })
+
+    it('walks an in-memory ancestry: nested only for a second claude carrying the sid', () => {
+      const walk = (hasEnv: string): unknown =>
+        evalInScript(
+          'm.nested_walk(40, b"OCTOPUS_SESSION_ID=s", ' +
+            '{40: (30, "sh"), 30: (20, "claude"), 20: (10, "zsh"), 10: (1, "claude")}.get, ' +
+            `lambda pid, entry: ${hasEnv})`
+        )
+      expect(walk('pid == 10 and entry == b"OCTOPUS_SESSION_ID=s"')).toBe(true)
+      expect(walk('False')).toBe(false)
+      // Only one claude in the chain -> the hook's own claude -> not nested.
+      expect(
+        evalInScript(
+          'm.nested_walk(40, b"x", {40: (30, "sh"), 30: (1, "claude")}.get, lambda p, e: True)'
+        )
+      ).toBe(false)
+    })
 
     it('records a hook whose claude is the session’s own', () => {
       viaClaude(env, false)

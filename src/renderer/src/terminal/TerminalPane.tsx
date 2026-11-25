@@ -75,6 +75,7 @@ import { CanvasAddon } from '@xterm/addon-canvas'
 import '@xterm/xterm/css/xterm.css'
 import { useStore } from '../store/store'
 import { matchesChord } from '../keybindings/chords'
+import { isMac } from '../platform'
 import { isSafeExternalUrl } from '../../../shared/external-url'
 import { registerTerminalSink, unregisterTerminalSink } from '../pty/pty-router'
 import { registerSearchOpener, unregisterSearchOpener } from './terminal-search'
@@ -112,6 +113,16 @@ interface DisposableAddon {
 interface LoadedRenderer {
   addon: DisposableAddon
   kind: RendererKind
+}
+
+/**
+ * True for "primary modifier + Shift, nothing else": Ctrl+Shift on Linux (the
+ * historical check, unchanged), Cmd+Shift on macOS (so mac Ctrl+Shift chords still
+ * reach the PTY).
+ */
+function isPrimaryShiftOnly(e: KeyboardEvent, mac: boolean): boolean {
+  if (!e.shiftKey || e.altKey) return false
+  return mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
 }
 
 /**
@@ -244,11 +255,17 @@ export function TerminalPane({
     const host = hostRef.current
     if (!host) return
 
+    // macOS: the generic `monospace` resolves to Courier, so name the system monospace
+    // faces; Option acts as Meta (Alt-prefixed sequences for shells/Emacs, like Linux
+    // Alt) and Option+click forces a selection even when an app enabled mouse mode.
+    // Linux keeps exactly the historical options.
+    const mac = isMac()
     const term = new Terminal({
       scrollback: SCROLLBACK,
-      fontFamily: 'monospace',
+      fontFamily: mac ? "Menlo, 'SF Mono', Monaco, monospace" : 'monospace',
       allowProposedApi: true, // required by the Unicode11 addon
-      theme: terminalTheme
+      theme: terminalTheme,
+      ...(mac && { macOptionIsMeta: true, macOptionClickForcesSelection: true })
     })
     // BEFORE anything can write to this terminal: stop DECSET/DECRST 12 (cursor blink)
     // from becoming an xterm *option* write. Every option change rebuilds and reparses
@@ -278,10 +295,12 @@ export function TerminalPane({
 
     // Chords owned by the global shortcut layer (§5.4) — the fifteen free-form
     // configurable chords (including `issuesKey` and the six split-pane chords, §5.7)
-    // — must NOT reach the PTY. The blanket Ctrl+Shift drop is a safety net covering
-    // the Ctrl+Shift defaults; the explicit list also catches a rebind to any other
-    // modifier (e.g. `Alt+/`) AND `issuesKey`, whose default (`Alt+Shift+KeyI`) isn't
-    // Ctrl+Shift at all, so without the explicit entry the terminal would swallow it
+    // — must NOT reach the PTY. The blanket primary+Shift drop (Ctrl+Shift on Linux,
+    // Cmd+Shift on macOS, no other modifier) is a safety net covering the defaults; on
+    // macOS every other Cmd chord is dropped too (Cmd+C/V/Q/W/… are app/menu chords,
+    // never shell input), while Ctrl chords reach the PTY like a native terminal. The
+    // explicit list also catches a rebind to any other modifier (e.g. `Alt+/`) AND
+    // `issuesKey`, whose Linux default (`Alt+Shift+KeyI`) isn't Ctrl+Shift at all, so without the explicit entry the terminal would swallow it
     // before the global hook ever saw it. Returning false drops the key before xterm
     // turns it into `onData` output; the window listener's preventDefault alone is
     // unreliable (xterm's own textarea handler runs first). Settings live via
@@ -310,7 +329,7 @@ export function TerminalPane({
       } = useStore.getState().settings
       // Copy/paste act on THIS terminal's selection/buffer, so they're handled here
       // (with the live `term`) rather than in the global shortcut hook. Checked before
-      // the blanket Ctrl+Shift drop so a rebind to any other modifier still works.
+      // the blanket primary+Shift drop so a rebind to any other modifier still works.
       // `preventDefault()` is REQUIRED: returning false only tells xterm to skip the
       // key, it does NOT cancel the browser default — without it Ctrl+Shift+V's native
       // `paste` event still fires and xterm's textarea handler pastes a SECOND time
@@ -326,7 +345,10 @@ export function TerminalPane({
         void window.octopusAPI.clipboard.read().then((text) => term.paste(text))
         return false
       }
-      if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) return false
+      if (isPrimaryShiftOnly(e, mac)) return false
+      // Cmd chords on macOS: skip xterm but do NOT preventDefault, so the app menu's
+      // accelerators (Cmd+Q, Cmd+W, Cmd+A, …) still run.
+      if (mac && e.metaKey) return false
       const configurable = [
         sessionNextKey,
         sessionPrevKey,

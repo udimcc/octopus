@@ -152,10 +152,13 @@ export class DaemonServer {
         return
 
       case 'listSessions':
-        this.send(conn, {
-          type: 'sessions',
-          requestId: msg.requestId,
-          sessions: this.registry.list()
+        // Async: on macOS the roster's cwds come from one batched `lsof` (never a
+        // sync fork on this loop). Replies are matched by requestId, so a later
+        // request answered first is fine; a socket gone meanwhile is skipped.
+        void this.registry.list().then((sessions) => {
+          if (conn.socket.writable) {
+            this.send(conn, { type: 'sessions', requestId: msg.requestId, sessions })
+          }
         })
         return
 

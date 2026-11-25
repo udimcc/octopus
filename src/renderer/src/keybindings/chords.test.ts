@@ -6,6 +6,8 @@ import {
   parseChord,
   matchesChord,
   chordLabel,
+  modifierPreviewLabel,
+  modifierRequiredHint,
   RESERVED_CHORDS
 } from './chords'
 
@@ -130,6 +132,39 @@ describe('RESERVED_CHORDS', () => {
       'Ctrl+Shift+Tab'
     ]) {
       expect(RESERVED_CHORDS.find((r) => r.chord === chord)).toBeUndefined()
+    }
+  })
+})
+
+describe('chordLabel / capture hints on macOS', () => {
+  it('renders the native glyphs, in Apple order, without separators', () => {
+    expect(chordLabel('Shift+Meta+ArrowRight', 'darwin')).toBe('⇧⌘→')
+    expect(chordLabel('Meta+KeyV', 'darwin')).toBe('⌘V')
+    expect(chordLabel('Ctrl+Alt+Shift+Meta+KeyK', 'darwin')).toBe('⌃⌥⇧⌘K')
+    expect(chordLabel('', 'darwin')).toBe('')
+  })
+
+  it('keeps the Linux text form for non-darwin platforms and by default', () => {
+    expect(chordLabel('Ctrl+Shift+ArrowRight', 'linux')).toBe('Ctrl+Shift+→')
+    expect(chordLabel('Shift+Meta+KeyN', 'linux')).toBe('Shift+Meta+N')
+  })
+
+  it('formats the live modifier preview and the modifier-required hint per platform', () => {
+    expect(modifierPreviewLabel('Ctrl+Shift', 'linux')).toBe('Ctrl+Shift+…')
+    expect(modifierPreviewLabel('Shift+Meta', 'darwin')).toBe('⇧⌘…')
+    expect(modifierRequiredHint('linux')).toBe('Add at least one modifier (Ctrl / Alt / Shift)')
+    expect(modifierRequiredHint('darwin')).toBe('Add at least one modifier (⌘ / ⌃ / ⌥ / ⇧)')
+  })
+
+  it('reads the platform from the bridge, falling back to Linux when absent', () => {
+    const saved = window.octopusAPI
+    try {
+      window.octopusAPI = { getPlatform: () => 'darwin' } as unknown as typeof window.octopusAPI
+      expect(chordLabel('Meta+KeyC')).toBe('⌘C')
+      window.octopusAPI = {} as unknown as typeof window.octopusAPI
+      expect(chordLabel('Meta+KeyC')).toBe('Meta+C')
+    } finally {
+      window.octopusAPI = saved
     }
   })
 })

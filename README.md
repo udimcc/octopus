@@ -46,6 +46,34 @@ npm install     # pulls the Electron binary from the internal mirror, no GitHub
 | `npm run format` / `format:check` | Prettier write / check. |
 | `npm run test` | Vitest (unit + integration), node + jsdom projects. |
 
+## macOS (dev / unofficial)
+
+Linux is the supported platform. A Mac on the corporate network can build and run Octopus
+through `artifactory.final.co.il` (the `rt-isp` mirror in `.npmrc` / the lockfile is unreachable
+there, and TLS is intercepted).
+
+```bash
+brew install node@20 && export PATH="$(brew --prefix)/opt/node@20/bin:$PATH"
+scripts/bootstrap-mac.sh       # npm ci via the mac mirror + keychain CA bundle; --force to redo
+npm run dev                    # no extra env needed after bootstrap
+npm run build:unpack:mac       # → release/<version>/mac-<arch>/Octopus.app (ad-hoc signed)
+npm run release                # on a Mac → release/<version>/Octopus-<version>-darwin-<arch>.tar.gz
+```
+
+- `bootstrap-mac.sh` builds a CA bundle from the macOS keychains in
+  `~/Library/Caches/octopus-dev/`, points npm, node-gyp, Electron and the better-sqlite3 prebuild
+  at the mirror (`OCTOPUS_MAC_ARTIFACTORY` overrides the base), and fails if `package-lock.json`
+  changed.
+- `build:unpack:mac` downloads nothing. It reuses `node_modules/electron/dist` and renders the
+  `.icns` locally (`scripts/mac-icns.mjs`). Config: `electron-builder.mac.yml`, which extends
+  `electron-builder.yml`.
+- **Install:** `tar xzf Octopus-<v>-darwin-<arch>.tar.gz && cd octopus-<v> && ./install-mac.sh`.
+  This installs `~/Applications/Octopus.app`, strips quarantine, symlinks `~/.local/bin/octopus-cli`
+  and installs the Claude skill. `./uninstall-mac.sh` reverses it. Data stays in
+  `~/.local/share/octopus`.
+- **No self-update on macOS** (the in-app updater is Linux-only). Re-run `install-mac.sh` with a
+  newer release after quitting Octopus.
+
 ## Project layout
 
 ```

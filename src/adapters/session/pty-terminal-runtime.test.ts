@@ -278,9 +278,10 @@ describe('PtyTerminalRuntime.currentCwd (§6.1, "new terminal here")', () => {
     await expect(rt.currentCwd()).resolves.toBeUndefined()
   })
 
-  it('reads /proc/<pid>/cwd for a live pid (undefined when the pid is not a real process)', async () => {
-    // The fake pty reports pid 4242; procCwd reads the REAL /proc, which has no
-    // such process here, so the live path returns undefined without throwing.
+  it('resolves the real cwd of a live pid (undefined when the pid is not a real process)', async () => {
+    // The fake pty reports pid 4242; the resolver queries the REAL OS (/proc on Linux,
+    // lsof on macOS), which has no such process here, so the live path returns
+    // undefined without throwing. (A real pid's cwd is covered in proc-cwd.test.ts.)
     const h = harness()
     const rt = new PtyTerminalRuntime(h.ctx, { spawn: h.spawn, shell: '/bin/bash' })
     await rt.start()

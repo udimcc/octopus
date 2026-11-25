@@ -5,6 +5,9 @@
  * edges stay swappable — no other layer imports an adapter (boundary rule).
  *
  * Bootstrap order (V0 order preserved, extended):
+ *   0. darwin only: `applyLoginShellEnv()` merges the login shell's PATH/locale into
+ *      `process.env` (a Finder/Dock launch has a bare launchd PATH) before anything
+ *      inherits it — octopusd, PTYs, worktree scripts, the Claude hook install.
  *   1. `raiseFileLimit()` FIRST — child PTYs inherit the higher soft fd limit (§6.1).
  *   2. `ensureAppDirs()` — data + logs dirs exist before any store opens.
  *   3. Build adapters behind their ports (clock, ids, bus, settings, persistence,
@@ -32,6 +35,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { resolveProgramDir, resolveUpdateStagingDir } from '../adapters/env/paths'
 import { raiseFileLimit } from '../adapters/env/raise-file-limit'
+import { applyLoginShellEnv } from '../adapters/env/login-shell-env'
 import {
   ensureAppDirs,
   ensureWorktreeBase,
@@ -79,6 +83,7 @@ import { SafeStorageCredentials } from '../adapters/credentials/safe-storage-cre
 import { JIRA_API_KEY_REF } from '../ports/credentials-provider'
 import { app, BrowserWindow, safeStorage } from 'electron'
 import { FsUpdateSource } from '../adapters/update/fs-update-source'
+import { NullUpdateSource } from '../adapters/update/null-update-source'
 import { createUpdateChecker } from '../application/use-cases/check-for-updates'
 import { createUpdateInstaller } from '../application/use-cases/install-update'
 import { createUpdateScheduler, type UpdateScheduler } from './update-scheduler'
@@ -249,6 +254,15 @@ export function raiseWindow(win: BrowserWindow): void {
 }
 
 export function bootstrap(): AppContext {
+  // 0. darwin: adopt the login shell's PATH/locale (GUI launches get launchd's bare
+  // PATH). Must precede everything that spawns or snapshots `process.env` — notably
+  // the daemon (launched later by `warmupSessions`, inheriting this env) and the
+  // Claude hook install below. Best-effort; a no-op off darwin.
+  if (process.platform === 'darwin') {
+    const loginEnv = applyLoginShellEnv({ platform: process.platform, env: process.env })
+    console.log(`[octopus] login shell env: ${loginEnv.message}`)
+  }
+
   // 1. Raise the fd limit FIRST so child PTYs inherit the higher soft limit (§6.1).
   const rlimit = raiseFileLimit()
   console.log(`[octopus] RLIMIT_NOFILE: ${rlimit.message}`)
@@ -621,11 +635,18 @@ export function bootstrap(): AppContext {
     serverId: DEFAULT_JIRA_SERVER_ID
   })
 
-  const updateSource = new FsUpdateSource({
-    stagingRoot: resolveUpdateStagingDir(process.env, homedir()),
-    stageTimeoutMs: UPDATE_STAGE_TIMEOUT_MS,
-    runner: scriptRunner
-  })
+  // Self-update is Linux-only: releases are Linux tarballs whose `install.sh` must
+  // never run on a Mac, so darwin gets a source that never finds a candidate (the
+  // checker reports "up to date"; the installer has nothing to install), regardless
+  // of whether `/mnt/scratch` or a hidden `updates.dir` is reachable.
+  const updateSource =
+    process.platform === 'darwin'
+      ? new NullUpdateSource()
+      : new FsUpdateSource({
+          stagingRoot: resolveUpdateStagingDir(process.env, homedir()),
+          stageTimeoutMs: UPDATE_STAGE_TIMEOUT_MS,
+          runner: scriptRunner
+        })
   const updateChecker = createUpdateChecker({
     source: updateSource,
     settings,

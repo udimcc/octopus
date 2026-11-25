@@ -106,8 +106,8 @@ export const CHANNELS = {
   /**
    * A session's live current working directory (request/reply). A stateless
    * main-side QUERY — like `getState`, it does NOT go through the command loop
-   * (§6.5). Reads the live runtime's cwd (via `/proc/<pid>/cwd`); resolves to the
-   * path, or `null` if it can't be resolved (exited/non-terminal/non-Linux).
+   * (§6.5). Reads the live runtime's cwd (via `/proc/<pid>/cwd`; `lsof` on macOS);
+   * resolves to the path, or `null` if it can't be resolved (exited/non-terminal).
    */
   sessionCwd: 'session:cwd',
 
@@ -261,6 +261,14 @@ export interface PtyResizeInput {
 export interface OctopusAPI {
   /** Round-trip health check; resolves to 'pong'. */
   ping(): Promise<string>
+
+  /**
+   * The host OS as a `process.platform` id (`'linux'`, `'darwin'`, …). Synchronous
+   * and local to the preload (sandboxed preloads still expose `process.platform`), so
+   * no IPC round-trip and no channel. Drives platform-aware chord defaults, labels
+   * and terminal key routing (`shared/keybindings.ts`).
+   */
+  getPlatform(): string
 
   tasks: {
     create(input: CreateTaskInput): Promise<CommandAck>

@@ -15,6 +15,11 @@
 // package.json — the single source of truth, mirrored into `release/${version}` by
 // electron-builder.yml. This does NOT touch the feature-set version in
 // src/shared/version.ts (§10) — that is orthogonal.
+//
+// macOS (dev/unofficial, run on a Mac): the same command builds `build:unpack:mac` instead and
+// ships release/V/Octopus-V-darwin-<arch>.tar.gz, unpacking to `octopus-V/` with Octopus.app
+// (octopus-cli inside Contents/Resources) + install-mac.sh / uninstall-mac.sh. The Linux path
+// below is unchanged.
 
 import { spawnSync } from 'node:child_process'
 import { existsSync, cpSync, mkdirSync, rmSync, copyFileSync, chmodSync } from 'node:fs'
@@ -26,9 +31,17 @@ const require = createRequire(import.meta.url)
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 const { version } = require('../package.json')
-const ARCH = 'x86_64' // electron-builder.yml ships only the Linux x64 `dir` target.
+const IS_MAC = process.platform === 'darwin'
+// Linux: electron-builder.yml ships only the x64 `dir` target. macOS: the host's arch, which
+// electron-builder.mac.yml builds for (into `mac/` for x64, `mac-<arch>/` otherwise).
+const ARCH = IS_MAC ? `darwin-${process.arch}` : 'x86_64'
 const releaseDir = join(repoRoot, 'release', version)
 const unpackedDir = join(releaseDir, 'linux-unpacked')
+const macAppDir = join(
+  releaseDir,
+  process.arch === 'x64' ? 'mac' : `mac-${process.arch}`,
+  'Octopus.app'
+)
 const stageName = `octopus-${version}`
 const stageDir = join(releaseDir, stageName)
 const tarball = join(releaseDir, `Octopus-${version}-${ARCH}.tar.gz`)
@@ -96,6 +109,57 @@ function assertCliAssetsPresent() {
   }
 }
 
+function assertMacAssetsPresent() {
+  for (const rel of [
+    'node_modules/node-pty/build/Release/spawn-helper',
+    'install-mac.sh',
+    'uninstall-mac.sh'
+  ]) {
+    if (!existsSync(resolve(repoRoot, rel))) throw new Error(`missing ${rel}`)
+  }
+}
+
+// macOS: electron-builder.mac.yml builds + ad-hoc signs Octopus.app, with octopus-cli already
+// inside Contents/Resources (extraResources, so the signature seals it).
+function buildMac() {
+  run('build:unpack:mac (typecheck + bundle + electron-builder --mac --dir)', 'npm', [
+    'run',
+    'build:unpack:mac'
+  ])
+  for (const rel of ['Contents/MacOS/Octopus', 'Contents/Resources/octopus-cli']) {
+    if (!existsSync(join(macAppDir, rel))) {
+      throw new Error(`expected ${join(macAppDir, rel)} — did the build change?`)
+    }
+  }
+  run('codesign --verify', 'codesign', ['--verify', '--deep', '--strict', macAppDir])
+}
+
+function stageMac() {
+  rmSync(stageDir, { recursive: true, force: true })
+  mkdirSync(stageDir, { recursive: true })
+  // ditto, not cpSync: it keeps the framework symlinks relative and the bundle's signature valid.
+  run('ditto Octopus.app', 'ditto', [macAppDir, join(stageDir, 'Octopus.app')])
+  for (const f of ['install-mac.sh', 'uninstall-mac.sh']) {
+    const dest = join(stageDir, f)
+    copyFileSync(join(repoRoot, f), dest)
+    chmodSync(dest, 0o755)
+  }
+  // Claude Code skill; install-mac.sh copies it to ~/.claude/skills/octopus.
+  cpSync(join(repoRoot, 'resources', 'claude-skill'), join(stageDir, 'claude-skill'), {
+    recursive: true
+  })
+  if (existsSync(join(repoRoot, 'CHANGELOG.md'))) {
+    copyFileSync(join(repoRoot, 'CHANGELOG.md'), join(stageDir, 'CHANGELOG.md'))
+  }
+}
+
+function packMac() {
+  // COPYFILE_DISABLE: bsdtar would otherwise add AppleDouble `._*` files for extended attributes.
+  run('tar', 'tar', ['czf', tarball, '-C', releaseDir, stageName], {
+    env: { ...process.env, COPYFILE_DISABLE: '1' }
+  })
+}
+
 function build() {
   // typecheck + electron-vite build + electron-builder --dir → release/<version>/linux-unpacked
   run('build:unpack (typecheck + bundle + electron-builder --dir)', 'npm', ['run', 'build:unpack'])
@@ -143,11 +207,21 @@ try {
   assertNativesPresent()
   assertIconPresent()
   assertCliAssetsPresent()
-  build()
-  stage()
-  pack()
+  if (IS_MAC) {
+    assertMacAssetsPresent()
+    buildMac()
+    stageMac()
+    packMac()
+  } else {
+    build()
+    stage()
+    pack()
+  }
   process.stdout.write(`\nRelease ready: ${tarball}\n`)
-  process.stdout.write(`Install: tar xzf ${basename(tarball)} && cd ${stageName} && ./install.sh\n`)
+  const installer = IS_MAC ? 'install-mac.sh' : 'install.sh'
+  process.stdout.write(
+    `Install: tar xzf ${basename(tarball)} && cd ${stageName} && ./${installer}\n`
+  )
 } catch (err) {
   process.stderr.write(`\nRelease FAILED: ${err.message}\n`)
   process.exit(1)

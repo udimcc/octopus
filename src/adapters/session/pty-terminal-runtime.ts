@@ -21,7 +21,7 @@ import {
   type OutputBatcherOptions
 } from '../../shared/node/output-batcher'
 import { buildPtyEnv } from '../../shared/pty-env'
-import { procCwd } from '../../shared/node/proc-cwd'
+import { procCwdAsync } from '../../shared/node/proc-cwd'
 
 /** A disposable listener registration (node-pty's IDisposable shape). */
 export interface PtyDisposable {
@@ -125,7 +125,8 @@ export class PtyTerminalRuntime implements SessionRuntime {
           taskId: this.ctx.taskId,
           sessionId: this.ctx.sessionId,
           worktreePath: this.ctx.worktreePath,
-          controlSocketPath: this.controlSocketPath
+          controlSocketPath: this.controlSocketPath,
+          platform: process.platform
         }),
         ...this.envPatch
       }
@@ -211,15 +212,16 @@ export class PtyTerminalRuntime implements SessionRuntime {
   }
 
   /**
-   * Where the shell has `cd`'d to, via `/proc/<pid>/cwd` (§6.2). `undefined` once
-   * the process is gone (or never spawned) — the pid's /proc entry disappears.
+   * Where the shell has `cd`'d to (§6.2): `/proc/<pid>/cwd` on Linux, an async
+   * `lsof` on macOS (`proc-cwd.ts`). `undefined` once the process is gone (or never
+   * spawned) — the pid's /proc entry (or lsof record) disappears.
    */
   currentCwd(): Promise<string | undefined> {
     const pid = this.pty?.pid
     if (pid === undefined || this.exited) {
       return Promise.resolve(undefined)
     }
-    return Promise.resolve(procCwd(pid))
+    return procCwdAsync(pid)
   }
 
   private handleExit(exitCode: number, signal?: number): void {

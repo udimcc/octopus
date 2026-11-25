@@ -12,7 +12,15 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, chmodSync, existsSync, mkdirSync } from 'node:fs'
+import {
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  realpathSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ChildProcessScriptRunner } from '../../src/adapters/scripts/child-process-script-runner'
@@ -63,7 +71,9 @@ d('worktree providers (integration, §6.4)', () => {
   }
 
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), 'octopus-wt-'))
+    // realpath: on macOS tmpdir() is under the /var -> /private/var symlink, and git
+    // reports the resolved path.
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'octopus-wt-')))
     repoDir = join(root, 'repo')
     base = join(root, 'octopus_repos')
     mkdirSync(base, { recursive: true })

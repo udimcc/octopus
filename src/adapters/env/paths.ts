@@ -45,7 +45,7 @@ export interface AppPaths {
    * secrets; never readable by the DB/settings.json (I16).
    */
   credentialsDir: string
-  /** Control socket for `octopus-cli` (`<dataDir>/control.sock`); ~107-byte path limit applies. */
+  /** Control socket for `octopus-cli` (`<dataDir>/control.sock`); ~107-byte (darwin: 103) path limit applies. */
   controlSocketPath: string
 }
 

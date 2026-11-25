@@ -92,6 +92,9 @@ MAX_STR = 256
 MAX_PATH = 4096
 MAX_BG = 32
 MAX_ANCESTORS = 32
+PROC_SELF = "/proc/self"
+PS = "/bin/ps"
+PS_TIMEOUT = 2
 
 
 def cap(value, limit=MAX_STR):
@@ -198,6 +201,55 @@ def environ_has(pid, entry):
     return env is not None and entry in env.split(b"\\0")
 
 
+def parse_ps_snapshot(out):
+    """pid -> (ppid, comm) from \`ps -A -o pid=,ppid=,comm=\` output (bytes).
+
+    comm is the last column and may contain spaces (or be a full path), so split at
+    most twice and keep its basename. Unparseable lines are skipped.
+    """
+    table = {}
+    for line in out.split(b"\\n"):
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            pid, ppid = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        table[pid] = (ppid, os.path.basename(parts[2].strip().decode("utf-8", "replace")))
+    return table
+
+
+def run_ps(args):
+    try:
+        result = subprocess.run(
+            [PS] + args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=PS_TIMEOUT
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def ps_environ_has(pid, entry):
+    # \`ps -E\` (macOS) appends the process's initial environment to its command line.
+    out = run_ps(["-E", "-ww", "-o", "command=", "-p", str(pid)])
+    return out is not None and entry in out.split()
+
+
+def nested_walk(pid, entry, lookup, has_env):
+    seen_claude = False
+    for _ in range(MAX_ANCESTORS):
+        if pid is None or pid <= 1:
+            return False
+        ppid, comm = lookup(pid)
+        if comm == "claude":
+            if seen_claude and has_env(pid, entry):
+                return True
+            seen_claude = True
+        pid = ppid
+    return False
+
+
 def is_nested_claude(sid):
     """True when this hook's claude was itself started from inside the session's Claude.
 
@@ -205,20 +257,20 @@ def is_nested_claude(sid):
     its hooks would be recorded as the session's. Walk the process ancestry: the hook's
     own claude is the nearest \`claude\` ancestor; a further \`claude\` ancestor that also
     carries this OCTOPUS_SESSION_ID means we are nested. Any doubt -> not nested.
+
+    Linux reads /proc; without it (macOS) one \`ps\` snapshot is walked in memory and
+    the env of a candidate is read with \`ps -E\`.
     """
     entry = ("OCTOPUS_SESSION_ID=" + sid).encode("ascii")
-    seen_claude = False
-    pid = os.getppid()
-    for _ in range(MAX_ANCESTORS):
-        if pid is None or pid <= 1:
-            return False
-        ppid, comm = parent_and_comm(pid)
-        if comm == "claude":
-            if seen_claude and environ_has(pid, entry):
-                return True
-            seen_claude = True
-        pid = ppid
-    return False
+    if os.path.isdir(PROC_SELF):
+        return nested_walk(os.getppid(), entry, parent_and_comm, environ_has)
+    snapshot = run_ps(["-A", "-o", "pid=,ppid=,comm="])
+    if snapshot is None:
+        return False
+    table = parse_ps_snapshot(snapshot)
+    return nested_walk(
+        os.getppid(), entry, lambda pid: table.get(pid, (None, None)), ps_environ_has
+    )
 
 
 def append_line(sid, line):

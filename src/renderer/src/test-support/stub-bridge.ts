@@ -47,11 +47,13 @@ const EMPTY_STATE: WindowedWorkspaceStateDTO = {
  * Build a stub bridge. `ackImpl` (default `{ ok: true }`) backs every command mock
  * so a test can assert calls; pass a custom impl to exercise failure/dirty gates.
  * `state` seeds `app.getState`. `windowId` seeds the synchronous `app.getWindowId`.
+ * `platform` (default `'linux'`) seeds the synchronous `getPlatform`.
  */
 export function makeStubBridge(options?: {
   ack?: () => CommandAck | Promise<CommandAck>
   state?: WindowedWorkspaceStateDTO
   windowId?: string
+  platform?: string
 }): StubBridge {
   const listeners = new Set<(event: EventDTO) => void>()
   const ackImpl = options?.ack ?? (() => ({ ok: true }) as CommandAck)
@@ -68,6 +70,7 @@ export function makeStubBridge(options?: {
 
   const api: OctopusAPI = {
     ping: vi.fn().mockResolvedValue('pong'),
+    getPlatform: () => options?.platform ?? 'linux',
     tasks: {
       create: newAck(),
       delete: newAck(),

@@ -7,13 +7,15 @@
  *
  * Sessions are keyed by the domain `SessionId` string the client supplies on
  * `spawn` (I5: globally unique, needs no task context) — there is no separate
- * handle table. The registry also resolves each PTY's current cwd from
- * `/proc/<pid>/cwd` for the `listSessions` roster (§6.2, Linux VDI target).
+ * handle table. The registry also resolves each PTY's current cwd for the
+ * `listSessions` roster (§6.2): `/proc/<pid>/cwd` on Linux (the VDI target), one
+ * batched async `lsof` on macOS (see `proc-cwd.ts`; never a sync fork here, this
+ * runs on the loop that pumps every PTY's output).
  */
 
 import * as pty from 'node-pty'
 import { buildPtyEnv } from '../shared/pty-env'
-import { procCwd } from '../shared/node/proc-cwd'
+import { procCwds } from '../shared/node/proc-cwd'
 import type { DaemonSessionInfo, SpawnParams } from '../shared/node/daemon-protocol'
 import { DaemonPty, type DaemonPtySink, type DaemonPtySpawn } from './daemon-pty'
 
@@ -25,20 +27,23 @@ export interface PtyRegistryOptions {
   readonly spawn?: DaemonPtySpawn
   /** Server-side ring-buffer cap per session (default ~5 MB). */
   readonly bufferBytes?: number
-  /** cwd resolver (default reads /proc/<pid>/cwd); injectable for tests/portability. */
-  readonly resolveCwd?: (pid: number) => string | undefined
+  /**
+   * Batched cwd resolver, pid → cwd (default {@link procCwds}: /proc on Linux, lsof
+   * on macOS); injectable for tests/portability. Unresolvable pids are absent.
+   */
+  readonly resolveCwds?: (pids: readonly number[]) => Promise<Map<number, string>>
 }
 
 export class PtyRegistry {
   private readonly spawn: DaemonPtySpawn
   private readonly bufferBytes?: number
-  private readonly resolveCwd: (pid: number) => string | undefined
+  private readonly resolveCwds: (pids: readonly number[]) => Promise<Map<number, string>>
   private readonly ptys = new Map<string, DaemonPty>()
 
   constructor(opts: PtyRegistryOptions = {}) {
     this.spawn = opts.spawn ?? nodePtySpawn
     this.bufferBytes = opts.bufferBytes
-    this.resolveCwd = opts.resolveCwd ?? procCwd
+    this.resolveCwds = opts.resolveCwds ?? ((pids) => procCwds(pids))
   }
 
   has(sessionId: string): boolean {
@@ -62,7 +67,8 @@ export class PtyRegistry {
       ...buildPtyEnv(process.env, {
         taskId: params.taskId,
         sessionId: params.sessionId,
-        worktreePath: params.cwd
+        worktreePath: params.cwd,
+        platform: process.platform
       }),
       // Shell-integration env (§12.1), layered last so ZDOTDIR/OCTOPUS_USER_* win.
       ...(params.envPatch ?? {})
@@ -110,19 +116,32 @@ export class PtyRegistry {
   }
 
   /** The re-attach roster (§6.2): one entry per tracked session, with current cwd. */
-  list(): DaemonSessionInfo[] {
-    const out: DaemonSessionInfo[] = []
-    for (const [sessionId, dpty] of this.ptys) {
-      out.push({
-        sessionId,
-        alive: dpty.alive,
-        pid: dpty.pid,
-        cwd: dpty.alive ? this.resolveCwd(dpty.pid) : undefined,
-        cols: dpty.currentCols,
-        rows: dpty.currentRows
-      })
+  async list(): Promise<DaemonSessionInfo[]> {
+    // Snapshot first, then ONE resolver call for every live pid.
+    const rows = [...this.ptys].map(([sessionId, dpty]) => ({
+      sessionId,
+      alive: dpty.alive,
+      pid: dpty.pid,
+      cols: dpty.currentCols,
+      rows: dpty.currentRows
+    }))
+    const live = rows.filter((r) => r.alive).map((r) => r.pid)
+    let cwds = new Map<number, string>()
+    if (live.length > 0) {
+      try {
+        cwds = await this.resolveCwds(live)
+      } catch {
+        // Best-effort: an unresolvable cwd is simply absent.
+      }
     }
-    return out
+    return rows.map((r) => ({
+      sessionId: r.sessionId,
+      alive: r.alive,
+      pid: r.pid,
+      cwd: r.alive ? cwds.get(r.pid) : undefined,
+      cols: r.cols,
+      rows: r.rows
+    }))
   }
 
   /** All tracked session ids (for orphan reconciliation on the client side). */

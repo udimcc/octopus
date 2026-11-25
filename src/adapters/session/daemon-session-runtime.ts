@@ -191,8 +191,9 @@ export class DaemonSessionRuntime implements SessionRuntime {
 
   /**
    * Where the shell has `cd`'d to (§6.2). The daemon resolves each live PTY's cwd
-   * from `/proc/<pid>/cwd` for its roster, so we read it off `listSessions` rather
-   * than holding a pid locally. `undefined` once exited or if the roster lacks it.
+   * (`/proc/<pid>/cwd` on Linux, batched `lsof` on macOS) for its roster, so we
+   * read it off `listSessions` rather than holding a pid locally. `undefined` once
+   * exited or if the roster lacks it.
    */
   async currentCwd(): Promise<string | undefined> {
     if (this.exited) {

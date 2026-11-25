@@ -9,7 +9,7 @@
 
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { app, dialog, screen, BrowserWindow, Menu, powerMonitor } from 'electron'
+import { app, dialog, screen, Menu, powerMonitor } from 'electron'
 import { bootstrap, findWindow, raiseWindow, type AppContext } from './composition-root'
 import {
   createWindow,
@@ -19,9 +19,12 @@ import {
 } from './window'
 import { clampToDisplays, type Rect } from './window-bounds'
 import { MAIN_WINDOW_ID } from '../domain/ids'
-import type { WindowId } from '../domain/ids'
 import type { CreateWindowOptions } from './window'
 import { currentAppPaths } from '../adapters/env/paths'
+import { appMenuTemplate } from './app-menu'
+// Same asset as window.ts's window icon; on macOS the window icon is ignored and the
+// Dock shows the bundle's icon, which an unpackaged (dev) run doesn't have.
+import icon from '../../resources/icon.png?asset'
 
 // Dev-build lock isolation: `requestSingleInstanceLock` keys off `userData`
 // (default `~/.config/octopus`, shared by every build), so a dev run
@@ -104,22 +107,31 @@ app.on('second-instance', () => {
     raiseWindow(win)
     return
   }
-  // Main can be gone while the process is still alive — e.g. its close triggered
-  // `app.quit()` (window.ts's `wireCloseSemantics`) but `confirmQuitWhileBusy`'s
-  // dialog was cancelled, leaving `isQuitting` unset and no windows open. Re-open
-  // it from its persisted record (same as boot/the macOS `activate` fallback)
-  // before raising it, so relaunching always recovers a usable window.
+  reopenMain()
+})
+
+/** Main's persisted record as window options, else the default placement. */
+function mainWindowOptions(): CreateWindowOptions {
   const mainRecord = ctx.deps.persistence.loadWindows().find((w) => w.id === MAIN_WINDOW_ID)
-  restoreWindow(
-    mainRecord
-      ? optionsFromRecord(mainRecord)
-      : { windowId: MAIN_WINDOW_ID, role: 'main', bounds: { x: 0, y: 0, width: 1280, height: 800 } }
-  )
+  return mainRecord
+    ? optionsFromRecord(mainRecord)
+    : { windowId: MAIN_WINDOW_ID, role: 'main', bounds: { x: 0, y: 0, width: 1280, height: 800 } }
+}
+
+/**
+ * Main can be gone while the process is still alive — e.g. its close triggered
+ * `app.quit()` (window.ts's `wireCloseSemantics`) but `confirmQuitWhileBusy`'s
+ * dialog was cancelled, leaving `isQuitting` unset and no windows open. Re-open it
+ * from its persisted record (same as boot) and raise it, so a relaunch or a macOS
+ * Dock click always recovers a usable window.
+ */
+function reopenMain(): void {
+  restoreWindow(mainWindowOptions())
   const reopened = findWindow(ctx.windowIds, MAIN_WINDOW_ID)
   if (reopened) {
     raiseWindow(reopened)
   }
-})
+}
 
 /** Open one window and record its webContents.id → WindowId for hit-testing (§6.7). */
 function openWindow(opts: CreateWindowOptions): void {
@@ -149,9 +161,14 @@ function restoreWindow(opts: CreateWindowOptions): void {
 }
 
 void app.whenReady().then(async () => {
-  // Remove Electron's default application menu bar (File/Edit/View/Window/Help).
-  // Octopus has no use for it; the app is driven entirely through the renderer UI.
-  Menu.setApplicationMenu(null)
+  // Linux: remove Electron's default application menu bar (File/Edit/View/Window/
+  // Help); the app is driven entirely through the renderer UI. macOS: a minimal
+  // app/Edit/Window menu so Cmd+Q and the clipboard shortcuts work (app-menu.ts).
+  const menuTemplate = appMenuTemplate(process.platform, app.name)
+  Menu.setApplicationMenu(menuTemplate ? Menu.buildFromTemplate(menuTemplate) : null)
+  if (process.platform === 'darwin' && !app.isPackaged) {
+    app.dock?.setIcon(icon)
+  }
 
   // Daemon warmup BEFORE any window opens (§6.2): if the durable backend is enabled
   // and reachable, this swaps `deps.sessions` to it and seeds the re-attach roster,
@@ -173,12 +190,7 @@ void app.whenReady().then(async () => {
 
   // Main window first (it owns the progress panel). Fall back to a default record
   // if somehow absent (composition-root seeds it, so this is belt-and-suspenders).
-  const mainRecord = records.find((w) => w.id === MAIN_WINDOW_ID)
-  restoreWindow(
-    mainRecord
-      ? optionsFromRecord(mainRecord)
-      : { windowId: MAIN_WINDOW_ID, role: 'main', bounds: { x: 0, y: 0, width: 1280, height: 800 } }
-  )
+  restoreWindow(mainWindowOptions())
   bootOpenedMain = true
 
   // Then each persisted VIEW window (window-view feature), each pinned to one task,
@@ -239,15 +251,12 @@ void app.whenReady().then(async () => {
     app.quit()
   })
 
-  // macOS: re-create the main window when the dock icon is clicked and none are open.
+  // macOS Dock click: if main is gone (a cancelled busy-quit, see `reopenMain`),
+  // re-open it from its persisted record, like a relaunch does. While main is open,
+  // macOS's own activation handling applies. Never fires on Linux.
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      const mainId: WindowId = MAIN_WINDOW_ID
-      restoreWindow({
-        windowId: mainId,
-        role: 'main',
-        bounds: { x: 0, y: 0, width: 1280, height: 800 }
-      })
+    if (!findWindow(ctx.windowIds, MAIN_WINDOW_ID)) {
+      reopenMain()
     }
   })
 })

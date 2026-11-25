@@ -64,6 +64,15 @@ export interface DeleteSafetyInput {
   readonly storedPath: string
   /** $OCTOPUS_REPO_ROOT for this task. */
   readonly repoRoot: string
+  /**
+   * Maps a path to the form the structural guards compare (applied to both the
+   * candidate and the repo root, after normalization). Absent → identity, which
+   * is the Linux behavior. On macOS the real wrapper (`fsCanonicalPath`) resolves
+   * symlinks (`/tmp` → `/private/tmp`) and case-folds (APFS is case-insensitive
+   * by default) so `/Users/u/Repo` can't slip past the repo-root guard when git
+   * reports `/Users/u/repo`. Folding only ever adds refusals.
+   */
+  readonly canonical?: (path: string) => string
 }
 
 /**
@@ -71,7 +80,12 @@ export interface DeleteSafetyInput {
  * Order matters: identity with the stored path first (the strongest guarantee),
  * then the structural guards against `/`, the repo root, and repo-root ancestors.
  */
-export function assertSafeToDelete({ candidate, storedPath, repoRoot }: DeleteSafetyInput): void {
+export function assertSafeToDelete({
+  candidate,
+  storedPath,
+  repoRoot,
+  canonical
+}: DeleteSafetyInput): void {
   if (!isAbsolute(candidate)) {
     throw new Error(`refusing to delete non-absolute path: ${candidate}`)
   }
@@ -80,11 +94,11 @@ export function assertSafeToDelete({ candidate, storedPath, repoRoot }: DeleteSa
       `refusing to delete a path that differs from the stored worktree path (${candidate} !== ${storedPath})`
     )
   }
-  const c = canon(candidate)
+  const c = canon(candidate, canonical)
   if (c === sep) {
     throw new Error('refusing to delete the filesystem root')
   }
-  const root = canon(repoRoot)
+  const root = canon(repoRoot, canonical)
   if (c === root) {
     throw new Error(`refusing to delete the repo root: ${candidate}`)
   }
@@ -96,8 +110,12 @@ export function assertSafeToDelete({ candidate, storedPath, repoRoot }: DeleteSa
 }
 
 /** Normalize and strip a single trailing separator (but keep root `/`). */
-function canon(p: string): string {
-  const n = normalize(p)
+function canon(p: string, canonical?: (path: string) => string): string {
+  const n = trimSep(normalize(p))
+  return canonical ? trimSep(normalize(canonical(n))) : n
+}
+
+function trimSep(n: string): string {
   if (n.length > 1 && n.endsWith(sep)) {
     return n.slice(0, -1)
   }

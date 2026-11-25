@@ -7,12 +7,30 @@
 #
 # Packaging: this script cannot be exec'd from inside app.asar, so scripts/release.mjs
 # stages a copy NEXT TO the `octopus` binary (linux-unpacked/octopus-cli), and install.sh
-# copies that into the program dir and symlinks ~/.local/bin/octopus-cli to it.
+# copies that into the program dir and symlinks ~/.local/bin/octopus-cli to it. macOS: see the
+# Darwin branch below.
 #
 # Dev (no install): ELECTRON_RUN_AS_NODE=1 npx electron out/main/cli.js "$@"
 # (after `npm run build`).
 
 set -eu
+
+if [ "$(uname -s)" = Darwin ]; then
+  # macOS: this file is staged at Octopus.app/Contents/Resources/octopus-cli (by
+  # electron-builder.mac.yml's extraResources; Contents/MacOS may hold only Mach-O files or the
+  # code signature breaks), and install-mac.sh symlinks ~/.local/bin/octopus-cli to it. Resolve
+  # the symlink chain by hand: BSD readlink has no -f before macOS 12.3.
+  SELF=$0
+  while [ -L "$SELF" ]; do
+    LINK=$(readlink -- "$SELF")
+    case "$LINK" in
+      /*) SELF=$LINK ;;
+      *) SELF=$(dirname -- "$SELF")/$LINK ;;
+    esac
+  done
+  RESOURCES_DIR=$(CDPATH= cd -- "$(dirname -- "$SELF")" && pwd -P)
+  ELECTRON_RUN_AS_NODE=1 exec "$RESOURCES_DIR/../MacOS/Octopus" "$RESOURCES_DIR/app.asar/out/main/cli.js" "$@"
+fi
 
 # Follow the ~/.local/bin symlink to the real file (Linux: GNU readlink -f).
 SELF=$(readlink -f -- "$0")

@@ -35,8 +35,15 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 // Mirror bases (kept in sync with .npmrc). The Node headers disturl is also set
 // in .npmrc so a bare `node-gyp rebuild` works; we pass it explicitly too so this
 // script is self-contained.
-const NODE_DISTURL = 'https://rt-isp.israel.final/artifactory/nodejs-clients-remote'
+//
+// Both can be overridden from the environment for hosts on a different network
+// (e.g. macOS dev machines, see scripts/bootstrap-mac.sh); the defaults are the
+// air-gapped Linux mirror and must stay so.
+const NODE_DISTURL =
+  process.env.OCTOPUS_NODE_DISTURL ||
+  'https://rt-isp.israel.final/artifactory/nodejs-clients-remote'
 const BSQ3_BINARY_HOST =
+  process.env.OCTOPUS_BSQ3_BINARY_HOST ||
   'https://rt-isp.israel.final/artifactory/github-remote/WiseLibs/better-sqlite3/releases/download'
 
 // Electron's ABI is the single source of truth for the better-sqlite3 target.

@@ -81,7 +81,24 @@ export interface PtyEnvContext {
   readonly worktreePath: string
   /** Control socket path for `octopus-cli`; absent → `OCTOPUS_CONTROL_SOCKET` is not set. */
   readonly controlSocketPath?: string
+  /**
+   * Host platform (`process.platform`). Absent → treated as non-darwin, so callers
+   * that don't pass it keep the Linux behavior unchanged.
+   */
+  readonly platform?: string
 }
+
+/** Locale vars any one of which means "the user already chose a locale". */
+const LOCALE_VARS = ['LANG', 'LC_ALL', 'LC_CTYPE'] as const
+
+/**
+ * Locale given to a darwin PTY that inherited none of {@link LOCALE_VARS}. A
+ * Finder/Dock-launched mac app gets no `LANG` at all, which leaves shells and
+ * TUIs (Claude Code included) in the C locale: non-ASCII renders as `?`/escapes.
+ * macOS's Terminal.app sets this same default. Linux is untouched — its desktop
+ * session always provides a locale, and overriding a deliberate unset would be wrong.
+ */
+export const DARWIN_DEFAULT_LANG = 'en_US.UTF-8'
 
 /**
  * Build the child environment: sanitize the inherited env (drop multiplexer
@@ -111,20 +128,34 @@ export function buildPtyEnv(
   if (ctx.controlSocketPath !== undefined && ctx.controlSocketPath.length > 0) {
     env[OCTOPUS_CONTROL_SOCKET_ENV] = ctx.controlSocketPath
   }
+  if (ctx.platform === 'darwin' && !LOCALE_VARS.some((k) => (env[k] ?? '').length > 0)) {
+    env.LANG = DARWIN_DEFAULT_LANG
+  }
   return env
 }
 
 /**
+ * Last-resort shell when neither the override, the setting nor `$SHELL` names one:
+ * `/bin/zsh` on darwin (the macOS default login shell since 10.15), `/bin/bash`
+ * everywhere else.
+ */
+export function defaultShell(platform: string | undefined): string {
+  return platform === 'darwin' ? '/bin/zsh' : '/bin/bash'
+}
+
+/**
  * Resolve the shell to spawn (§6.1): explicit override, else the setting, else
- * $SHELL, else /bin/bash. Empty strings are treated as unset so a blank setting
- * doesn't yield an unspawnable "".
+ * $SHELL, else {@link defaultShell} (`/bin/bash`; `/bin/zsh` on darwin). Empty
+ * strings are treated as unset so a blank setting doesn't yield an unspawnable "".
+ * `platform` defaults to `'linux'` so existing callers keep `/bin/bash`.
  */
 export function resolveShell(
   override: string | undefined,
   settingShell: string | undefined,
-  envShell: string | undefined
+  envShell: string | undefined,
+  platform: string = 'linux'
 ): string {
-  return firstNonEmpty(override, settingShell, envShell) ?? '/bin/bash'
+  return firstNonEmpty(override, settingShell, envShell) ?? defaultShell(platform)
 }
 
 function firstNonEmpty(...values: (string | undefined)[]): string | undefined {
