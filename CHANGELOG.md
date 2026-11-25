@@ -36,8 +36,10 @@ Adds macOS (Apple Silicon) support. Linux behavior, defaults and the release tar
 
 ### Notes
 
-- In-app self-update is Linux-only; on macOS it never offers an update. Install new Mac releases
-  with `install-mac.sh`.
+- In-app self-update works on macOS. Mac builds look for releases in the Egnyte folder
+  `~/Library/CloudStorage/Egnyte-finalisrael/Shared/Installation/octopus` and Linux builds keep using `/mnt/scratch/octopus`. Each platform only offers its own
+  releases (Mac: `install-mac.sh` + `Octopus.app`; Linux: `install.sh` + `linux-unpacked/`). The
+  first install on a Mac is still manual: run `install-mac.sh`.
 - On macOS the data dir is `~/.local/share/octopus`, the same as on Linux.
 - No schema change.
 

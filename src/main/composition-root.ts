@@ -82,8 +82,11 @@ import { createHttpsFetch } from '../adapters/jira/https-fetch'
 import { SafeStorageCredentials } from '../adapters/credentials/safe-storage-credentials'
 import { JIRA_API_KEY_REF } from '../ports/credentials-provider'
 import { app, BrowserWindow, safeStorage } from 'electron'
-import { FsUpdateSource } from '../adapters/update/fs-update-source'
-import { NullUpdateSource } from '../adapters/update/null-update-source'
+import {
+  FsUpdateSource,
+  LINUX_RELEASE_MARKERS,
+  MAC_RELEASE_MARKERS
+} from '../adapters/update/fs-update-source'
 import { createUpdateChecker } from '../application/use-cases/check-for-updates'
 import { createUpdateInstaller } from '../application/use-cases/install-update'
 import { createUpdateScheduler, type UpdateScheduler } from './update-scheduler'
@@ -119,8 +122,23 @@ import { CURRENT_VERSION } from '../shared/version'
 import { registerIpcHandlers } from './ipc-handlers'
 import { createWindowRegistry, type WindowRegistry } from './window-registry'
 
-/** Where releases are published when `settings.updates.dir` is unset. */
-const DEFAULT_UPDATES_DIR = '/mnt/scratch/octopus'
+/**
+ * Where releases are published when `settings.updates.dir` is unset: the shared scratch
+ * mount on Linux, the synced Egnyte Installation folder on macOS.
+ */
+function defaultUpdatesDir(platform: NodeJS.Platform, home: string): string {
+  return platform === 'darwin'
+    ? join(
+        home,
+        'Library',
+        'CloudStorage',
+        'Egnyte-finalisrael',
+        'Shared',
+        'Installation',
+        'octopus'
+      )
+    : '/mnt/scratch/octopus'
+}
 /** Listing the (network) updates dir gives up after this long -> `unreachable`. */
 const UPDATE_CHECK_TIMEOUT_MS = 10_000
 /** Copying the (~300 MB) release to the local staging dir gives up after this long. */
@@ -635,24 +653,22 @@ export function bootstrap(): AppContext {
     serverId: DEFAULT_JIRA_SERVER_ID
   })
 
-  // Self-update is Linux-only: releases are Linux tarballs whose `install.sh` must
-  // never run on a Mac, so darwin gets a source that never finds a candidate (the
-  // checker reports "up to date"; the installer has nothing to install), regardless
-  // of whether `/mnt/scratch` or a hidden `updates.dir` is reachable.
-  const updateSource =
-    process.platform === 'darwin'
-      ? new NullUpdateSource()
-      : new FsUpdateSource({
-          stagingRoot: resolveUpdateStagingDir(process.env, homedir()),
-          stageTimeoutMs: UPDATE_STAGE_TIMEOUT_MS,
-          runner: scriptRunner
-        })
+  // Each platform only sees its own releases: a Linux release (install.sh +
+  // linux-unpacked/) is never a candidate on a Mac, nor a Mac one (install-mac.sh +
+  // Octopus.app) on Linux, even when both are published to the same dir.
+  const isMac = process.platform === 'darwin'
+  const updateSource = new FsUpdateSource({
+    stagingRoot: resolveUpdateStagingDir(process.env, homedir()),
+    stageTimeoutMs: UPDATE_STAGE_TIMEOUT_MS,
+    runner: scriptRunner,
+    markers: isMac ? MAC_RELEASE_MARKERS : LINUX_RELEASE_MARKERS
+  })
   const updateChecker = createUpdateChecker({
     source: updateSource,
     settings,
     clock,
     currentVersion: app.getVersion(),
-    defaultDir: DEFAULT_UPDATES_DIR,
+    defaultDir: defaultUpdatesDir(process.platform, homedir()),
     timeoutMs: UPDATE_CHECK_TIMEOUT_MS
   })
   const programDir = resolveProgramDir(process.env, homedir())
@@ -660,6 +676,20 @@ export function bootstrap(): AppContext {
     source: updateSource,
     scriptRunner,
     programDir,
+    // install-mac.sh installs to ~/Applications/Octopus.app (its default; no OCTOPUS_APPS_DIR).
+    ...(isMac
+      ? {
+          installScript: 'install-mac.sh',
+          executablePath: join(
+            homedir(),
+            'Applications',
+            'Octopus.app',
+            'Contents',
+            'MacOS',
+            'Octopus'
+          )
+        }
+      : {}),
     timeoutMs: UPDATE_INSTALL_TIMEOUT_MS,
     relauncher: {
       relaunch: (execPath) => {

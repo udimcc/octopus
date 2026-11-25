@@ -1,7 +1,8 @@
 /**
  * `UpdateSource` over the local/network filesystem (DESIGN: update check). A
- * candidate is a subdirectory holding both `install.sh` and
- * `linux-unpacked/octopus`; names are returned unparsed. The directory read is
+ * candidate is a subdirectory holding every file in `markers` (default: the Linux
+ * layout, `install.sh` + `linux-unpacked/octopus`; macOS passes `MAC_RELEASE_MARKERS`),
+ * so a Linux build never offers a Mac release and vice versa. Names are returned unparsed. The directory read is
  * raced against a timeout so a hung network mount reports `unreachable` instead
  * of blocking startup. An abandoned read is kept per dir and reused by the next
  * check instead of starting another readdir, so a hung mount pins at most one libuv
@@ -25,6 +26,14 @@ const TIMEOUT = Symbol('timeout')
 const STAGE_PREFIX = 'octopus-update-'
 const STDERR_TAIL_CHARS = 2000
 
+/** Files (relative to the release dir) that mark a Linux release. */
+export const LINUX_RELEASE_MARKERS: readonly string[] = ['install.sh', 'linux-unpacked/octopus']
+/** Files (relative to the release dir) that mark a macOS release (`scripts/release.mjs`). */
+export const MAC_RELEASE_MARKERS: readonly string[] = [
+  'install-mac.sh',
+  'Octopus.app/Contents/MacOS/Octopus'
+]
+
 async function isFile(path: string): Promise<boolean> {
   try {
     return (await stat(path)).isFile()
@@ -44,6 +53,8 @@ export interface FsUpdateSourceOptions {
   readonly stageTimeoutMs: number
   /** Runs the `cp -a` / `rm -rf` child processes. */
   readonly runner: ScriptRunner
+  /** Files a release dir must contain to be a candidate (default `LINUX_RELEASE_MARKERS`). */
+  readonly markers?: readonly string[]
 }
 
 export class FsUpdateSource implements UpdateSource {
@@ -91,14 +102,20 @@ export class FsUpdateSource implements UpdateSource {
         continue
       }
       const path = join(dir, entry.name)
-      if (
-        (await isFile(join(path, 'install.sh'))) &&
-        (await isFile(join(path, 'linux-unpacked', 'octopus')))
-      ) {
+      if (await this.hasMarkers(path)) {
         found.push({ name: entry.name, path })
       }
     }
     return found
+  }
+
+  private async hasMarkers(path: string): Promise<boolean> {
+    for (const marker of this.options.markers ?? LINUX_RELEASE_MARKERS) {
+      if (!(await isFile(join(path, ...marker.split('/'))))) {
+        return false
+      }
+    }
+    return true
   }
 
   async stageToTemp(releasePath: string): Promise<string> {

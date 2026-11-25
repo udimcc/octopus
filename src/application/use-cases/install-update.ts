@@ -1,7 +1,7 @@
 /**
- * Update installer. Stages the release dir to local temp, runs its `install.sh`
- * via `sh` (argv, no shell string), and on success relaunches into the freshly
- * installed binary. Never throws: every failure maps to `{ ok: false, error }`.
+ * Update installer. Stages the release dir to local temp, runs its install script
+ * (`install.sh`, or `install-mac.sh` on macOS) via `sh` (argv, no shell string), and on
+ * success relaunches into the freshly installed binary. Never throws: every failure maps to `{ ok: false, error }`.
  * The temp dir is always cleaned up. One install at a time.
  */
 
@@ -14,6 +14,10 @@ export interface InstallUpdateDeps {
   readonly relauncher: AppRelauncher
   /** Directory install.sh installs into; the app binary is `<programDir>/octopus`. */
   readonly programDir: string
+  /** Install script at the release root (default `install.sh`). */
+  readonly installScript?: string
+  /** Binary to relaunch after a successful install (default `<programDir>/octopus`). */
+  readonly executablePath?: string
   readonly timeoutMs: number
 }
 
@@ -37,17 +41,21 @@ export function createUpdateInstaller(deps: InstallUpdateDeps): UpdateInstaller 
     let tmp: string | undefined
     try {
       tmp = await deps.source.stageToTemp(releasePath)
-      const res = await deps.scriptRunner.run('sh', [`${tmp}/install.sh`], {
-        cwd: tmp,
-        timeoutMs: deps.timeoutMs,
-        killProcessGroup: true
-      })
+      const res = await deps.scriptRunner.run(
+        'sh',
+        [`${tmp}/${deps.installScript ?? 'install.sh'}`],
+        {
+          cwd: tmp,
+          timeoutMs: deps.timeoutMs,
+          killProcessGroup: true
+        }
+      )
       if (res.exitCode === 0 && !res.timedOut) {
         // Clean up BEFORE relaunching: relaunch quits the app, so a `finally` would not run.
         const staged = tmp
         tmp = undefined
         await deps.source.cleanup(staged).catch(() => undefined)
-        deps.relauncher.relaunch(`${deps.programDir}/octopus`)
+        deps.relauncher.relaunch(deps.executablePath ?? `${deps.programDir}/octopus`)
         return { ok: true }
       }
       const reason = res.timedOut

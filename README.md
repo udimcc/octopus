@@ -71,8 +71,12 @@ npm run release                # on a Mac → release/<version>/Octopus-<version
   This installs `~/Applications/Octopus.app`, strips quarantine, symlinks `~/.local/bin/octopus-cli`
   and installs the Claude skill. `./uninstall-mac.sh` reverses it. Data stays in
   `~/.local/share/octopus`.
-- **No self-update on macOS** (the in-app updater is Linux-only). Re-run `install-mac.sh` with a
-  newer release after quitting Octopus.
+- **Self-update on macOS** reads releases from the Egnyte folder `~/Library/CloudStorage/Egnyte-finalisrael/Shared/Installation/octopus`
+  (a Linux build keeps using `/mnt/scratch/octopus`). A Mac release dir must contain
+  `install-mac.sh` and `Octopus.app/Contents/MacOS/Octopus`. Linux and Mac releases never match
+  each other. The updater runs `install-mac.sh` and relaunches `~/Applications/Octopus.app`.
+  To publish, extract the tarball under `<that folder>/.incoming/`, then `mv` the
+  `octopus-X.Y.Z/` dir up one level. Dot-dirs are ignored, so a half-synced copy is never offered.
 
 ## Project layout
 

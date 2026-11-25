@@ -23,7 +23,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 })
 
 import * as fsp from 'node:fs/promises'
-import { FsUpdateSource } from './fs-update-source'
+import { FsUpdateSource, MAC_RELEASE_MARKERS } from './fs-update-source'
 import { ChildProcessScriptRunner } from '../scripts/child-process-script-runner'
 import type { ScriptResult, ScriptRunner } from '../../ports/script-runner'
 
@@ -71,6 +71,32 @@ describe('FsUpdateSource', () => {
         kind: 'ok',
         candidates: [{ name: 'octopus-1.2.0', path: join(rel, 'octopus-1.2.0') }]
       })
+    })
+
+    it('with MAC_RELEASE_MARKERS lists only Mac releases (install-mac.sh + Octopus.app)', async () => {
+      const rel = join(root, 'rel')
+      mkdirSync(rel)
+      makeRelease(rel, 'octopus-1.2.0') // a Linux release: never offered on a Mac
+      const mac = join(rel, 'octopus-1.3.0')
+      mkdirSync(join(mac, 'Octopus.app', 'Contents', 'MacOS'), { recursive: true })
+      writeFileSync(join(mac, 'install-mac.sh'), '#!/bin/sh\n')
+      writeFileSync(join(mac, 'Octopus.app', 'Contents', 'MacOS', 'Octopus'), 'bin')
+      const noScript = join(rel, 'octopus-1.4.0')
+      mkdirSync(join(noScript, 'Octopus.app', 'Contents', 'MacOS'), { recursive: true })
+      writeFileSync(join(noScript, 'Octopus.app', 'Contents', 'MacOS', 'Octopus'), 'bin')
+      const macSrc = new FsUpdateSource({
+        stagingRoot: staging,
+        stageTimeoutMs: 5000,
+        runner: realRunner,
+        markers: MAC_RELEASE_MARKERS
+      })
+      expect(await macSrc.listCandidates(rel, 2000)).toEqual({
+        kind: 'ok',
+        candidates: [{ name: 'octopus-1.3.0', path: mac }]
+      })
+      // ...and the default (Linux) source ignores the Mac release.
+      const linux = await src.listCandidates(rel, 2000)
+      expect(linux.kind === 'ok' && linux.candidates.map((c) => c.name)).toEqual(['octopus-1.2.0'])
     })
 
     it("returns names unparsed (malformed names are the caller's concern)", async () => {

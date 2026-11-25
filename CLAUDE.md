@@ -137,7 +137,11 @@ editing it.
 **Publishing.** Extract the release under `/mnt/scratch/octopus/.incoming/`, then `mv` the
 `octopus-X.Y.Z/` dir to `/mnt/scratch/octopus/octopus-X.Y.Z` (an atomic rename on the same
 filesystem, so a running app never sees a half-copied release; dot-dirs are ignored by the
-checker). It must contain `install.sh` and `linux-unpacked/octopus`. Running apps find it from there. A hidden `updates.dir` key in `settings.json` overrides that
+checker). It must contain `install.sh` and `linux-unpacked/octopus`. Running apps find it from there.
+**On macOS** the same convention applies in the Egnyte folder `~/Library/CloudStorage/Egnyte-finalisrael/Shared/Installation/octopus`, and a Mac release dir must
+contain `install-mac.sh` and `Octopus.app/Contents/MacOS/Octopus`. Each platform only sees its own
+releases (`LINUX_RELEASE_MARKERS` / `MAC_RELEASE_MARKERS` in `fs-update-source.ts`). Mac installs
+run `install-mac.sh` and relaunch `~/Applications/Octopus.app`. A hidden `updates.dir` key in `settings.json` overrides that
 directory (no UI; used for testing against a temp dir).
 
 **In-app self-update.** Main checks the updates dir at boot and hourly (`update-scheduler.ts`); a

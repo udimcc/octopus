@@ -5,14 +5,16 @@
 #
 # What it does:
 #   - copies Octopus.app to ~/Applications/Octopus.app (atomic replace),
-#   - strips the com.apple.quarantine attribute (the app is ad-hoc signed, not notarized, so
-#     Gatekeeper would otherwise refuse a downloaded copy),
+#   - clears the bundle's extended attributes, incl. com.apple.quarantine (the app is ad-hoc
+#     signed, not notarized, so Gatekeeper would otherwise refuse a downloaded copy), and
+#     verifies its signature before replacing the live install,
 #   - symlinks ~/.local/bin/octopus-cli to Octopus.app/Contents/Resources/octopus-cli, and
 #   - copies the Claude Code skill to ~/.claude/skills/octopus (replace-in-place).
 #
 # It deliberately does NOT touch your DATA dir (~/.local/share/octopus): tasks, sessions and
-# settings survive install, upgrade and uninstall. No root required. There is no in-app
-# self-update on macOS: re-run this script with a newer release to upgrade (quit Octopus first).
+# settings survive install, upgrade and uninstall. No root required. The in-app updater runs this
+# script non-interactively (no TTY) from a staged copy of a newer release, then relaunches
+# ~/Applications/Octopus.app. Keep its flags, exit codes and layout stable, as for install.sh.
 #
 # The replace is atomic, as in install.sh: the app is staged into "Octopus.app.new", the live
 # bundle is renamed to ".old", ".new" is renamed into place and ".old" is deleted. A failure
@@ -77,11 +79,20 @@ rm -rf "$NEW_DIR" "$OLD_DIR"
 mkdir -p "$APPS_DIR"
 # ditto preserves the bundle's symlinks, modes and code signature.
 ditto "$PAYLOAD" "$NEW_DIR"
-# Best-effort: a quarantined, non-notarized app is blocked by Gatekeeper ("damaged").
-xattr -dr com.apple.quarantine "$NEW_DIR" 2>/dev/null || true
+# Clear every extended attribute: com.apple.quarantine (a quarantined, non-notarized app is
+# blocked by Gatekeeper as "damaged") and the FinderInfo / fileprovider attributes a synced
+# folder (Egnyte) adds, which make the bundle fail its signature check. Best-effort.
+xattr -cr "$NEW_DIR" 2>/dev/null || true
 
 if [ ! -x "$NEW_DIR/Contents/MacOS/Octopus" ]; then
   echo "error: staged copy is missing $NEW_DIR/Contents/MacOS/Octopus; install aborted, existing install untouched." >&2
+  exit 1
+fi
+
+# A bundle damaged in transit (e.g. a sync that dropped the framework symlinks) must never
+# replace a working install.
+if ! codesign --verify --deep --strict "$NEW_DIR" 2>&1; then
+  echo "error: $NEW_DIR fails its signature check (incomplete or damaged copy); install aborted, existing install untouched." >&2
   exit 1
 fi
 

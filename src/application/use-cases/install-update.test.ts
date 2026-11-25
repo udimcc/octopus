@@ -11,7 +11,14 @@ const okResult: ScriptResult = {
   timedOut: false
 }
 
-function setup(opts: { run?: () => Promise<ScriptResult>; stage?: () => Promise<string> } = {}) {
+function setup(
+  opts: {
+    run?: () => Promise<ScriptResult>
+    stage?: () => Promise<string>
+    installScript?: string
+    executablePath?: string
+  } = {}
+) {
   const calls: string[] = []
   const source: UpdateSource = {
     listCandidates: vi.fn(),
@@ -38,6 +45,8 @@ function setup(opts: { run?: () => Promise<ScriptResult>; stage?: () => Promise<
     scriptRunner,
     relauncher,
     programDir: '/prog',
+    ...(opts.installScript !== undefined ? { installScript: opts.installScript } : {}),
+    ...(opts.executablePath !== undefined ? { executablePath: opts.executablePath } : {}),
     timeoutMs: 999
   })
   return { installer, source, run, relauncher, calls }
@@ -56,6 +65,20 @@ describe('createUpdateInstaller', () => {
     expect(relauncher.relaunch).toHaveBeenCalledWith('/prog/octopus')
     expect(calls).toEqual(['stage', 'run', 'cleanup', 'relaunch'])
     expect(source.cleanup).toHaveBeenCalledTimes(1)
+  })
+
+  it('macOS: runs the configured install script and relaunches the configured binary', async () => {
+    const { installer, run, relauncher } = setup({
+      installScript: 'install-mac.sh',
+      executablePath: '/Apps/Octopus.app/Contents/MacOS/Octopus'
+    })
+    expect(await installer.install('/rel/octopus-1.3.0')).toEqual({ ok: true })
+    expect(run).toHaveBeenCalledWith('sh', ['/tmp/stage/install-mac.sh'], {
+      cwd: '/tmp/stage',
+      timeoutMs: 999,
+      killProcessGroup: true
+    })
+    expect(relauncher.relaunch).toHaveBeenCalledWith('/Apps/Octopus.app/Contents/MacOS/Octopus')
   })
 
   it('non-zero exit: error includes exit code and stderr tail, cleans up, no relaunch', async () => {
