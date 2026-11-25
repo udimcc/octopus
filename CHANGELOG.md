@@ -4,6 +4,43 @@ All notable changes to Octopus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0]
+
+Adds macOS (Apple Silicon) support. Linux behavior, defaults and the release tarball are unchanged.
+
+### Added
+
+- **macOS build and release.** `scripts/bootstrap-mac.sh` installs dependencies through the Mac
+  Artifactory mirror (with a CA bundle exported from the keychain). `npm run build:unpack:mac`
+  builds an ad-hoc signed `Octopus.app`, and `npm run release` on a Mac produces
+  `Octopus-<version>-darwin-arm64.tar.gz` with `install-mac.sh` / `uninstall-mac.sh`.
+- **`octopus-cli` on macOS.** The launcher understands the `.app` layout; `install-mac.sh` links
+  it into `~/.local/bin`.
+- **Mac app menu.** Cmd+C/V/X/A/Z work in text fields, and Cmd+Q/H/M quit, hide and minimize.
+  Cmd+Q goes through the usual busy-sessions prompt.
+- **Mac keyboard defaults.** App shortcuts use Cmd+Shift instead of Ctrl+Shift, terminal
+  copy/paste is Cmd+C / Cmd+V, and shortcuts are labelled with ⌘⇧⌥⌃. Option acts as Meta in the
+  terminal and the terminal font is Menlo.
+
+### Fixed (macOS)
+
+- **Finder/Dock launches see your shell's PATH and locale.** The app reads PATH from your login
+  shell at boot, so Homebrew tools, `claude` and `python3` are found. Sessions default to
+  `LANG=en_US.UTF-8` and `/bin/zsh` when unset.
+- **Session working directory tracked on macOS.** It is read with `lsof` instead of `/proc`.
+- **Nested `claude -p` runs no longer pollute session state on macOS.** Detection uses `ps`
+  instead of `/proc`.
+- **Jira import trusts the corporate CAs in the System keychain.**
+- **Worktree delete guard hardened.** Symlinked (`/tmp` → `/private/tmp`) or differently-cased
+  paths can no longer slip past the "never delete the repo root" check.
+
+### Notes
+
+- In-app self-update is Linux-only; on macOS it never offers an update. Install new Mac releases
+  with `install-mac.sh`.
+- On macOS the data dir is `~/.local/share/octopus`, the same as on Linux.
+- No schema change.
+
 ## [1.2.2]
 
 Fixes terminal history being lost across restarts.
