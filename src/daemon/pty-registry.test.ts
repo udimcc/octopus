@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
 import { PtyRegistry } from './pty-registry'
 import type { DaemonPtyProcess, DaemonPtySpawn } from './daemon-pty'
+import { osProfile } from '../shared/os'
+
+const os = osProfile('linux')
 
 /** Minimal fake node-pty: a fixed pid and a test-driven exit. */
 function fakeSpawn(): { spawn: DaemonPtySpawn; exit: (pid: number) => void } {
@@ -40,7 +43,7 @@ describe('PtyRegistry.list', () => {
     const resolveCwds = vi.fn(async (pids: readonly number[]) => {
       return new Map(pids.map((p) => [p, `/cwd/${p}`] as [number, string]))
     })
-    const reg = new PtyRegistry({ spawn: f.spawn, resolveCwds })
+    const reg = new PtyRegistry({ os, spawn: f.spawn, resolveCwds })
     reg.spawnSession(params('a'))
     reg.spawnSession(params('b'))
     reg.spawnSession(params('c'))
@@ -61,7 +64,7 @@ describe('PtyRegistry.list', () => {
     const resolveCwds = vi.fn(async () => {
       throw new Error('lsof exploded')
     })
-    const reg = new PtyRegistry({ spawn: f.spawn, resolveCwds })
+    const reg = new PtyRegistry({ os, spawn: f.spawn, resolveCwds })
     await expect(reg.list()).resolves.toEqual([])
     expect(resolveCwds).not.toHaveBeenCalled()
 

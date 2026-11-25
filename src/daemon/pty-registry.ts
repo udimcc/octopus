@@ -16,6 +16,7 @@
 import * as pty from 'node-pty'
 import { buildPtyEnv } from '../shared/pty-env'
 import { procCwds } from '../shared/node/proc-cwd'
+import type { OsProfile } from '../shared/os'
 import type { DaemonSessionInfo, SpawnParams } from '../shared/node/daemon-protocol'
 import { DaemonPty, type DaemonPtySink, type DaemonPtySpawn } from './daemon-pty'
 
@@ -28,10 +29,12 @@ export interface PtyRegistryOptions {
   /** Server-side ring-buffer cap per session (default ~5 MB). */
   readonly bufferBytes?: number
   /**
-   * Batched cwd resolver, pid → cwd (default {@link procCwds}: /proc on Linux, lsof
-   * on macOS); injectable for tests/portability. Unresolvable pids are absent.
+   * Batched cwd resolver, pid → cwd (default {@link procCwds} with the profile's
+   * `proc.cwdProbe`); injectable for tests/portability. Unresolvable pids are absent.
    */
   readonly resolveCwds?: (pids: readonly number[]) => Promise<Map<number, string>>
+  /** Host OS profile (child LANG, default cwd probe). */
+  readonly os: OsProfile
 }
 
 export class PtyRegistry {
@@ -39,11 +42,13 @@ export class PtyRegistry {
   private readonly bufferBytes?: number
   private readonly resolveCwds: (pids: readonly number[]) => Promise<Map<number, string>>
   private readonly ptys = new Map<string, DaemonPty>()
+  private readonly os: OsProfile
 
-  constructor(opts: PtyRegistryOptions = {}) {
+  constructor(opts: PtyRegistryOptions) {
     this.spawn = opts.spawn ?? nodePtySpawn
     this.bufferBytes = opts.bufferBytes
-    this.resolveCwds = opts.resolveCwds ?? ((pids) => procCwds(pids))
+    this.os = opts.os
+    this.resolveCwds = opts.resolveCwds ?? ((pids) => procCwds(pids, opts.os.proc.cwdProbe))
   }
 
   has(sessionId: string): boolean {
@@ -68,7 +73,7 @@ export class PtyRegistry {
         taskId: params.taskId,
         sessionId: params.sessionId,
         worktreePath: params.cwd,
-        platform: process.platform
+        os: this.os
       }),
       // Shell-integration env (§12.1), layered last so ZDOTDIR/OCTOPUS_USER_* win.
       ...(params.envPatch ?? {})

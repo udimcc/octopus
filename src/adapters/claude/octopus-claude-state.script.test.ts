@@ -19,12 +19,24 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import {
+  OCTOPUS_CLAUDE_STATE_SCRIPT,
   ensureClaudeStateScript,
   CLAUDE_STATE_DIR_NAME,
   ORIGINAL_STATUSLINE_FILE,
   EVENTS_FILE_SUFFIX
 } from './octopus-claude-state.script'
+
+// Characterization: the generated script text is OS-independent (it probes /proc vs
+// `ps -E` at runtime). Pinned so the OS-layer refactor provably leaves it unchanged.
+describe('OCTOPUS_CLAUDE_STATE_SCRIPT text', () => {
+  it('is byte-identical to the pinned version', () => {
+    expect(createHash('sha256').update(OCTOPUS_CLAUDE_STATE_SCRIPT).digest('hex')).toBe(
+      'e14e99d6e2f3eedc50d141b419fc0500da05d0b04b22d26c292d801be8e719af'
+    )
+  })
+})
 
 const PYTHON = '/usr/bin/python3'
 const hasPython = ((): boolean => {
@@ -214,7 +226,8 @@ describe.skipIf(!hasPython)('octopus-claude-state.py', () => {
       const bin = join(dir, 'bin')
       mkdirSync(bin)
       const exe = join(bin, 'claude')
-      if (process.platform === 'darwin') {
+      // The script itself picks /proc when present (Linux), else `ps` (macOS).
+      if (!existsSync('/proc/self')) {
         symlinkSync(process.execPath, exe)
         const js =
           'const r = require("child_process").spawnSync(process.argv[1], process.argv.slice(2),' +

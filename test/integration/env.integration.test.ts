@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ensureAppDirs, resolveAppPaths } from '../../src/adapters/env/paths'
+import { osProfile } from '../../src/shared/os'
 
 describe('ensureAppDirs (integration)', () => {
   let tmpHome: string
@@ -19,7 +20,7 @@ describe('ensureAppDirs (integration)', () => {
     const dataHome = join(tmpHome, 'xdg-data')
     const paths = resolveAppPaths({
       env: { XDG_DATA_HOME: dataHome },
-      platform: 'linux',
+      os: osProfile('linux'),
       home: tmpHome
     })
 
@@ -36,7 +37,7 @@ describe('ensureAppDirs (integration)', () => {
   it('is idempotent (a second call does not throw)', () => {
     const paths = resolveAppPaths({
       env: { XDG_DATA_HOME: join(tmpHome, 'xdg-data') },
-      platform: 'linux',
+      os: osProfile('linux'),
       home: tmpHome
     })
     ensureAppDirs(paths)

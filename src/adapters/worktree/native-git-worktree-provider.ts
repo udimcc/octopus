@@ -45,6 +45,7 @@ import type {
 } from '../../ports/worktree-provider'
 import { validateWorktreePath, assertSafeToDelete, type PathProbe } from './path-safety'
 import { deleteSafetyCanonicalizer, fsPathProbe } from './fs-path-probe'
+import type { PathCanonical } from '../../shared/os'
 import { computeWorktreePath } from './worktree-path'
 import { GIT, scriptEnv, firstNonEmptyLine, firstLine, gitIsDirty } from './worktree-support'
 
@@ -152,6 +153,8 @@ export interface NativeGitWorktreeProviderDeps {
   readonly resolveBase: () => string
   /** Path probe for validation; defaults to the real fs probe. */
   readonly probe?: PathProbe
+  /** Host profile's `fs.pathCanonical` (delete-safety path compares, §6.4). */
+  readonly pathCanonical: PathCanonical
   /** Sink for the non-fatal "doesn't look like a worktree" warning (§6.4). */
   readonly onWarning?: (message: string) => void
 }
@@ -161,6 +164,7 @@ export class NativeGitWorktreeProvider implements WorktreeProvider {
   private readonly getSettings: () => Settings
   private readonly resolveBase: () => string
   private readonly probe: PathProbe
+  private readonly pathCanonical: PathCanonical
   private readonly onWarning?: (message: string) => void
 
   constructor(deps: NativeGitWorktreeProviderDeps) {
@@ -168,6 +172,7 @@ export class NativeGitWorktreeProvider implements WorktreeProvider {
     this.getSettings = deps.getSettings
     this.resolveBase = deps.resolveBase
     this.probe = deps.probe ?? fsPathProbe
+    this.pathCanonical = deps.pathCanonical
     this.onWarning = deps.onWarning
   }
 
@@ -282,7 +287,7 @@ export class NativeGitWorktreeProvider implements WorktreeProvider {
       candidate: req.path,
       storedPath: req.path,
       repoRoot: req.repoDir,
-      canonical: deleteSafetyCanonicalizer()
+      canonical: deleteSafetyCanonicalizer(this.pathCanonical)
     })
 
     // `--force` only when the user confirmed a dirty delete: git refuses to remove

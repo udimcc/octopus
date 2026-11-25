@@ -26,12 +26,13 @@ import { existsSync, cpSync, mkdirSync, rmSync, copyFileSync, chmodSync } from '
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { basename, dirname, resolve, join } from 'node:path'
+import { isMacHost } from './lib/host.mjs'
 
 const require = createRequire(import.meta.url)
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 const { version } = require('../package.json')
-const IS_MAC = process.platform === 'darwin'
+const IS_MAC = isMacHost()
 // Linux: electron-builder.yml ships only the x64 `dir` target. macOS: the host's arch, which
 // electron-builder.mac.yml builds for (into `mac/` for x64, `mac-<arch>/` otherwise).
 const ARCH = IS_MAC ? `darwin-${process.arch}` : 'x86_64'

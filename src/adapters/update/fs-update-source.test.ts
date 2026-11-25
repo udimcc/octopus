@@ -23,7 +23,10 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 })
 
 import * as fsp from 'node:fs/promises'
-import { FsUpdateSource, MAC_RELEASE_MARKERS } from './fs-update-source'
+import { FsUpdateSource } from './fs-update-source'
+import { osProfile } from '../../shared/os'
+
+const LINUX_MARKERS = osProfile('linux').update.releaseMarkers
 import { ChildProcessScriptRunner } from '../scripts/child-process-script-runner'
 import type { ScriptResult, ScriptRunner } from '../../ports/script-runner'
 
@@ -50,7 +53,12 @@ describe('FsUpdateSource', () => {
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'octo-upd-'))
     staging = join(root, 'staging')
-    src = new FsUpdateSource({ stagingRoot: staging, stageTimeoutMs: 5000, runner: realRunner })
+    src = new FsUpdateSource({
+      stagingRoot: staging,
+      stageTimeoutMs: 5000,
+      runner: realRunner,
+      markers: LINUX_MARKERS
+    })
     vi.mocked(fsp.readdir).mockImplementation(realReaddir)
   })
   afterEach(() => {
@@ -73,7 +81,7 @@ describe('FsUpdateSource', () => {
       })
     })
 
-    it('with MAC_RELEASE_MARKERS lists only Mac releases (install-mac.sh + Octopus.app)', async () => {
+    it('with the darwin markers lists only Mac releases (install-mac.sh + Octopus.app)', async () => {
       const rel = join(root, 'rel')
       mkdirSync(rel)
       makeRelease(rel, 'octopus-1.2.0') // a Linux release: never offered on a Mac
@@ -88,7 +96,7 @@ describe('FsUpdateSource', () => {
         stagingRoot: staging,
         stageTimeoutMs: 5000,
         runner: realRunner,
-        markers: MAC_RELEASE_MARKERS
+        markers: osProfile('darwin').update.releaseMarkers
       })
       expect(await macSrc.listCandidates(rel, 2000)).toEqual({
         kind: 'ok',
@@ -229,7 +237,12 @@ describe('FsUpdateSource', () => {
           })
         }
       }
-      const slow = new FsUpdateSource({ stagingRoot: staging, stageTimeoutMs: 30, runner: hungCp })
+      const slow = new FsUpdateSource({
+        stagingRoot: staging,
+        stageTimeoutMs: 30,
+        runner: hungCp,
+        markers: LINUX_MARKERS
+      })
       await expect(slow.stageToTemp(root)).rejects.toThrow(/timed out/)
       await expect(slow.stageToTemp(root)).rejects.toThrow(/still in progress/)
       finish()
@@ -239,7 +252,8 @@ describe('FsUpdateSource', () => {
       const ok = new FsUpdateSource({
         stagingRoot: staging,
         stageTimeoutMs: 5000,
-        runner: realRunner
+        runner: realRunner,
+        markers: LINUX_MARKERS
       })
       const tmp = await ok.stageToTemp(rel)
       expect(tmp.startsWith(staging)).toBe(true)
@@ -262,7 +276,8 @@ describe('FsUpdateSource', () => {
       const s2 = new FsUpdateSource({
         stagingRoot: staging,
         stageTimeoutMs: 5000,
-        runner: timedOut
+        runner: timedOut,
+        markers: LINUX_MARKERS
       })
       await expect(s2.stageToTemp(makeRelease(root, 'octopus-1.2.0'))).rejects.toThrow(/timed out/)
       expect(readdirSync(staging)).toEqual([])

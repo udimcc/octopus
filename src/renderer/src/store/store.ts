@@ -34,7 +34,7 @@ import type { EventDTO } from '../../../shared/events'
 import { type DisplayState, DISPLAY_RANK } from './display-state'
 import { leafIds, hasLeaf } from './split-layout'
 import { defaultKeybindings } from '../../../shared/keybindings'
-import { getPlatform } from '../platform'
+import { rendererOs } from '../platform'
 
 /** Normalized task record: task-level metadata + an ordered list of session ids. */
 export interface TaskEntry {
@@ -423,7 +423,7 @@ function defaultSettings(): SettingsDTO {
     terminal: {},
     defaultSessionTypeId: 'terminal',
     groupTasksByRepo: true,
-    ...defaultKeybindings(getPlatform())
+    ...defaultKeybindings(rendererOs())
   }
 }
 

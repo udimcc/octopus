@@ -21,6 +21,7 @@ Three source-of-truth docs govern all work — read the relevant one before chan
 @.claude/rules/modals-and-overlays.md
 @.claude/rules/jira-import.md
 @.claude/rules/control-socket.md
+@.claude/rules/os-layer.md
 
 ## Current status: V0 (foundation only)
 
@@ -137,7 +138,8 @@ editing it.
 **Publishing.** Extract the release under `/mnt/scratch/octopus/.incoming/`, then `mv` the
 `octopus-X.Y.Z/` dir to `/mnt/scratch/octopus/octopus-X.Y.Z` (an atomic rename on the same
 filesystem, so a running app never sees a half-copied release; dot-dirs are ignored by the
-checker). It must contain `install.sh` and `linux-unpacked/octopus`. Running apps find it from there.
+checker). It must contain the host profile's `update.releaseMarkers` (`src/shared/os/`): Linux
+`install.sh` + `linux-unpacked/octopus`, macOS `install-mac.sh` + `Octopus.app/Contents/MacOS/Octopus`. Running apps find it from there.
 **On macOS** the same convention applies in the Egnyte folder `~/Library/CloudStorage/Egnyte-finalisrael/Shared/Installation/octopus`, and a Mac release dir must
 contain `install-mac.sh` and `Octopus.app/Contents/MacOS/Octopus`. Each platform only sees its own
 releases (`LINUX_RELEASE_MARKERS` / `MAC_RELEASE_MARKERS` in `fs-update-source.ts`). Mac installs
@@ -181,11 +183,14 @@ restores the `.bak`. See `CHANGELOG.md` and `DESIGN §6.3`.
 
 ## Conventions
 
+- **OS layer** (`.claude/rules/os-layer.md`): every Linux/macOS/Windows difference is `OsProfile` data in
+  `src/shared/os/`. Only `hostOs()`/`hostProfile()` (`src/shared/node/os/host.ts`), `rendererOs()` and
+  `scripts/lib/host.mjs` read the platform. Lint rejects `process.platform` and OS-name comparisons elsewhere.
 - Prettier: no semicolons, single quotes, `printWidth` 100, no trailing commas, 2-space indent. ESLint config
   is flat (ESLint 9) and `eslint-config-prettier` is last so formatting rules don't conflict.
 - Data locations (`DESIGN §6.3`) are resolved in `src/adapters/env/paths.ts` to `$XDG_DATA_HOME/octopus/`
   (Linux) / `%APPDATA%\octopus\` (Windows) — **deliberately not** Electron's `app.getPath('userData')` (the XDG
-  *config* dir). The resolver is a pure function of `(env, platform, home)` so it is unit-testable without
+  *config* dir). The resolver is a pure function of `(env, os, home)` so it is unit-testable without
   Electron; the side-effecting `ensureAppDirs` is separate. Follow this pure-resolver / effectful-wrapper split. `paths.ts` also resolves `controlSocketPath`
   (`<dataDir>/control.sock`, §14).
 - **Single instance** (`src/main/index.ts`): a relaunch only raises main. Electron keys the lock on `userData`,

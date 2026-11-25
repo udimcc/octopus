@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { debugOverlayChord, defaultKeybindings, primaryModifier } from './keybindings'
+import { osProfile } from './os'
 
 /** The pre-mac literal defaults — Linux must keep producing exactly these. */
 const LEGACY_LINUX = {
@@ -40,23 +41,49 @@ const MAC_SYSTEM_CHORDS = [
   'Alt+Meta+KeyI' // devtools
 ]
 
+// Characterization: the exact darwin defaults (values and key order) before the OS layer.
+const LEGACY_DARWIN = {
+  sessionNextKey: 'Shift+Meta+ArrowRight',
+  sessionPrevKey: 'Shift+Meta+ArrowLeft',
+  taskNextKey: 'Shift+Meta+ArrowDown',
+  taskPrevKey: 'Shift+Meta+ArrowUp',
+  newSessionKey: 'Shift+Meta+KeyN',
+  newTaskKey: 'Shift+Meta+KeyT',
+  closeSessionKey: 'Shift+Meta+KeyW',
+  searchKey: 'Shift+Meta+KeyF',
+  copyKey: 'Meta+KeyC',
+  pasteKey: 'Meta+KeyV',
+  issuesKey: 'Shift+Meta+KeyI',
+  splitRightKey: 'Shift+Meta+KeyE',
+  splitDownKey: 'Shift+Meta+KeyO',
+  focusPaneLeftKey: 'Shift+Meta+KeyH',
+  focusPaneRightKey: 'Shift+Meta+KeyL',
+  focusPaneUpKey: 'Shift+Meta+KeyK',
+  focusPaneDownKey: 'Shift+Meta+KeyJ'
+}
+
 describe('primaryModifier', () => {
   it('is Meta (Cmd) on darwin and Ctrl elsewhere', () => {
-    expect(primaryModifier('darwin')).toBe('Meta')
-    expect(primaryModifier('linux')).toBe('Ctrl')
-    expect(primaryModifier('win32')).toBe('Ctrl')
+    expect(primaryModifier(osProfile('darwin'))).toBe('Meta')
+    expect(primaryModifier(osProfile('linux'))).toBe('Ctrl')
+    expect(primaryModifier(osProfile('win32'))).toBe('Ctrl')
   })
 })
 
 describe('defaultKeybindings', () => {
   it('reproduces the legacy Linux literals exactly, in the same key order', () => {
-    expect(defaultKeybindings('linux')).toEqual(LEGACY_LINUX)
-    expect(Object.keys(defaultKeybindings('linux'))).toEqual(Object.keys(LEGACY_LINUX))
-    expect(defaultKeybindings('win32')).toEqual(LEGACY_LINUX)
+    expect(defaultKeybindings(osProfile('linux'))).toEqual(LEGACY_LINUX)
+    expect(Object.keys(defaultKeybindings(osProfile('linux')))).toEqual(Object.keys(LEGACY_LINUX))
+    expect(defaultKeybindings(osProfile('win32'))).toEqual(LEGACY_LINUX)
+  })
+
+  it('reproduces the legacy darwin literals exactly, in the same key order', () => {
+    expect(defaultKeybindings(osProfile('darwin'))).toEqual(LEGACY_DARWIN)
+    expect(Object.keys(defaultKeybindings(osProfile('darwin')))).toEqual(Object.keys(LEGACY_DARWIN))
   })
 
   it('maps every Ctrl+Shift default to canonical Shift+Meta on darwin', () => {
-    const mac = defaultKeybindings('darwin')
+    const mac = defaultKeybindings(osProfile('darwin'))
     for (const [key, linux] of Object.entries(LEGACY_LINUX)) {
       if (!linux.startsWith('Ctrl+Shift+') || key === 'copyKey' || key === 'pasteKey') continue
       expect(mac[key as keyof typeof mac]).toBe(linux.replace('Ctrl+Shift+', 'Shift+Meta+'))
@@ -67,7 +94,7 @@ describe('defaultKeybindings', () => {
   })
 
   it('darwin defaults are unique, use Cmd, avoid Ctrl, and avoid macOS system chords', () => {
-    const values = Object.values(defaultKeybindings('darwin'))
+    const values = Object.values(defaultKeybindings(osProfile('darwin')))
     expect(new Set(values).size).toBe(values.length)
     for (const chord of values) {
       expect(chord).toContain('Meta')
@@ -79,8 +106,10 @@ describe('defaultKeybindings', () => {
 
 describe('debugOverlayChord', () => {
   it('is Ctrl+Shift+D on Linux and Cmd+Shift+D on darwin', () => {
-    expect(debugOverlayChord('linux')).toBe('Ctrl+Shift+KeyD')
-    expect(debugOverlayChord('darwin')).toBe('Shift+Meta+KeyD')
-    expect(Object.values(defaultKeybindings('darwin'))).not.toContain(debugOverlayChord('darwin'))
+    expect(debugOverlayChord(osProfile('linux'))).toBe('Ctrl+Shift+KeyD')
+    expect(debugOverlayChord(osProfile('darwin'))).toBe('Shift+Meta+KeyD')
+    expect(Object.values(defaultKeybindings(osProfile('darwin')))).not.toContain(
+      debugOverlayChord(osProfile('darwin'))
+    )
   })
 })

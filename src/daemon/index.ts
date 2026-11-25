@@ -21,6 +21,7 @@
  */
 
 import { PtyRegistry } from './pty-registry'
+import { hostProfile } from '../shared/node/os/host'
 import { DaemonServer } from './server'
 import { acquireSingleton } from './singleton-lock'
 import { controlSocketPath, ensureDaemonDir, currentUid } from '../shared/node/daemon-paths'
@@ -38,7 +39,7 @@ async function main(): Promise<void> {
   // State detection is no longer a daemon concern (§9.6): the Claude hook recorder
   // appends to each session's events log (keyed by OCTOPUS_SESSION_ID) and a single
   // app-side watcher feeds the Application. The daemon only owns PTY lifecycle.
-  const registry = new PtyRegistry()
+  const registry = new PtyRegistry({ os: hostProfile() })
 
   let idleTimer: ReturnType<typeof setTimeout> | null = null
 

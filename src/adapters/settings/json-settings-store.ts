@@ -46,35 +46,41 @@ import type {
   UpdatesSettings
 } from '../../ports/settings-store'
 import { defaultKeybindings } from '../../shared/keybindings'
+import { PROFILES, type OsProfile, type PrimaryModifier } from '../../shared/os'
 
-function buildDefaults(platform: string): Settings {
+function buildDefaults(os: OsProfile): Settings {
   return Object.freeze({
     worktree: Object.freeze({ location: '' }),
     terminal: Object.freeze({}),
     defaultSessionTypeId: 'terminal',
     groupTasksByRepo: true,
-    ...defaultKeybindings(platform)
+    ...defaultKeybindings(os)
   }) as Settings
 }
 
 /**
- * The non-darwin (Linux / Windows) defaults — the historical constant, kept byte-
- * identical (chords `Ctrl+Shift+…`, issues `Alt+Shift+KeyI`). The store itself uses
- * `defaultSettings(platform)`; this name stays for existing importers and tests.
+ * The Linux defaults — the historical constant, kept byte-identical (chords
+ * `Ctrl+Shift+…`, issues `Alt+Shift+KeyI`). The store itself uses
+ * `defaultSettings(os)`; this name stays for existing importers and tests.
  */
-export const DEFAULT_SETTINGS: Settings = buildDefaults('linux')
-
-const DARWIN_DEFAULT_SETTINGS: Settings = buildDefaults('darwin')
+export const DEFAULT_SETTINGS: Settings = buildDefaults(PROFILES.linux)
 
 /**
- * Complete default settings for `platform`; every key present so the shape is total.
- * The chord defaults come from `shared/keybindings.ts` (Cmd-based on darwin, the
- * historical Ctrl-based strings everywhere else). Non-darwin returns the frozen
- * `DEFAULT_SETTINGS` itself.
+ * Defaults depend on the OS only through the primary modifier, so they are built once
+ * per modifier and every `Ctrl` OS shares the frozen `DEFAULT_SETTINGS` itself.
  */
-export function defaultSettings(platform: string = process.platform): Settings {
-  if (platform !== 'darwin') return DEFAULT_SETTINGS
-  return DARWIN_DEFAULT_SETTINGS
+const DEFAULTS_BY_MODIFIER: Readonly<Record<PrimaryModifier, Settings>> = {
+  Ctrl: DEFAULT_SETTINGS,
+  Meta: buildDefaults(PROFILES.darwin)
+}
+
+/**
+ * Complete default settings for `os`; every key present so the shape is total. The
+ * chord defaults come from `shared/keybindings.ts` (Cmd-based on macOS, the historical
+ * Ctrl-based strings everywhere else).
+ */
+export function defaultSettings(os: OsProfile): Settings {
+  return DEFAULTS_BY_MODIFIER[os.keyboard.primaryModifier]
 }
 
 /**
@@ -371,12 +377,12 @@ export class JsonSettingsStore implements SettingsStore {
   private cache: Settings
   /** See `loadFailed()`. Set by every `load()`; starts false (nothing loaded yet). */
   private failedLastLoad = false
-  /** Platform defaults (`defaultSettings`): what absent/invalid keys fall back to. */
+  /** OS defaults (`defaultSettings`): what absent/invalid keys fall back to. */
   private readonly defaults: Settings
 
-  constructor(path: string, platform: string = process.platform) {
+  constructor(path: string, os: OsProfile) {
     this.path = path
-    this.defaults = defaultSettings(platform)
+    this.defaults = defaultSettings(os)
     this.cache = this.defaults
   }
 

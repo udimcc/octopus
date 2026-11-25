@@ -22,6 +22,7 @@
 
 import { execFile } from 'node:child_process'
 import { readlinkSync } from 'node:fs'
+import type { CwdProbe } from '../os'
 
 const LSOF = '/usr/sbin/lsof'
 const LSOF_TIMEOUT_MS = 1000
@@ -79,30 +80,36 @@ function lsofCwds(pids: readonly number[]): Promise<Map<number, string>> {
 
 /**
  * Resolve the cwd of many pids at once (pid → cwd; unresolvable pids are absent).
- * macOS uses one batched `lsof`; everywhere else (Linux) reads `/proc` per pid.
+ * `probe` is the OS profile's `proc.cwdProbe`: one batched `lsof` (macOS), a `/proc`
+ * read per pid (Linux), or nothing (an OS with no implementation).
  */
 export async function procCwds(
   pids: readonly number[],
-  platform: NodeJS.Platform = process.platform
+  probe: CwdProbe
 ): Promise<Map<number, string>> {
   const valid = [...new Set(pids)].filter((p) => Number.isInteger(p) && p > 0)
   if (valid.length === 0) {
     return new Map()
   }
-  if (platform === 'darwin') {
-    return lsofCwds(valid)
-  }
-  const out = new Map<number, string>()
-  for (const pid of valid) {
-    const cwd = procCwd(pid)
-    if (cwd !== undefined) {
-      out.set(pid, cwd)
+  switch (probe) {
+    case 'lsof':
+      return lsofCwds(valid)
+    case 'proc': {
+      const out = new Map<number, string>()
+      for (const pid of valid) {
+        const cwd = procCwd(pid)
+        if (cwd !== undefined) {
+          out.set(pid, cwd)
+        }
+      }
+      return out
     }
+    case 'none':
+      return new Map()
   }
-  return out
 }
 
 /** Async single-pid convenience over {@link procCwds}. */
-export async function procCwdAsync(pid: number): Promise<string | undefined> {
-  return (await procCwds([pid])).get(pid)
+export async function procCwdAsync(pid: number, probe: CwdProbe): Promise<string | undefined> {
+  return (await procCwds([pid], probe)).get(pid)
 }

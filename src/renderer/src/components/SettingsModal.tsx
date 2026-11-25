@@ -43,7 +43,7 @@ import {
   modifierRequiredHint,
   RESERVED_CHORDS
 } from '../keybindings/chords'
-import { getPlatform } from '../platform'
+import { rendererOs } from '../platform'
 import { defaultKeybindings, type KeybindingKey } from '../../../shared/keybindings'
 import type { SettingsPatchDTO } from '../../../shared/dto'
 
@@ -59,7 +59,7 @@ interface ChordFieldDef {
   readonly label: string
 }
 
-/** Defaults come from `defaultKeybindings(getPlatform())` (shared with the store/adapter). */
+/** Defaults come from `defaultKeybindings(rendererOs())` (shared with the store/adapter). */
 const CHORD_FIELDS: ReadonlyArray<ChordFieldDef> = [
   { key: 'sessionNextKey', label: 'Next session' },
   { key: 'sessionPrevKey', label: 'Previous session' },
@@ -111,7 +111,7 @@ export function SettingsModal({ onClose }: SettingsModalProps): React.JSX.Elemen
   )
   // Current value of every configurable chord, keyed by its settings field.
   const [chords, setChords] = useState<Record<ChordKey, string>>(() => {
-    const defaults = defaultKeybindings(getPlatform())
+    const defaults = defaultKeybindings(rendererOs())
     return CHORD_FIELDS.reduce(
       (acc, f) => {
         acc[f.key] = settings[f.key] ?? defaults[f.key]

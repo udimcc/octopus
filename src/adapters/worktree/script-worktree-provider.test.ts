@@ -57,7 +57,13 @@ function provider(
   probe: PathProbe = goodProbe,
   onWarning?: (m: string) => void
 ) {
-  return new ScriptWorktreeProvider({ runner, getSettings: () => SETTINGS, probe, onWarning })
+  return new ScriptWorktreeProvider({
+    runner,
+    getSettings: () => SETTINGS,
+    probe,
+    pathCanonical: 'exact',
+    onWarning
+  })
 }
 
 const createReq = {

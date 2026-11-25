@@ -4,7 +4,7 @@ import {
   createHttpsFetch,
   DARWIN_KEYCHAINS,
   readDarwinKeychainCas,
-  readSystemCaBundle,
+  systemCaBundleReader,
   type ExecFileText,
   type HttpsFetchDeps
 } from './https-fetch'
@@ -206,8 +206,8 @@ describe('darwin keychain CA bundle', () => {
     expect(await readDarwinKeychainCas(() => Promise.resolve(''))).toBe(undefined)
   })
 
-  it('readSystemCaBundle reads no file off Linux', () => {
-    expect(readSystemCaBundle('darwin')).toBeUndefined()
+  it("the 'none' CA source reads nothing (Node's bundled roots alone)", () => {
+    expect(systemCaBundleReader('none')()).toBeUndefined()
   })
 
   it('an async reader is awaited once and shared by concurrent fetches', async () => {

@@ -45,8 +45,9 @@ function setup(
     scriptRunner,
     relauncher,
     programDir: '/prog',
-    ...(opts.installScript !== undefined ? { installScript: opts.installScript } : {}),
-    ...(opts.executablePath !== undefined ? { executablePath: opts.executablePath } : {}),
+    // Linux values unless a test overrides them (the composition root passes the host profile's).
+    installScript: opts.installScript ?? 'install.sh',
+    executablePath: opts.executablePath ?? '/prog/octopus',
     timeoutMs: 999
   })
   return { installer, source, run, relauncher, calls }

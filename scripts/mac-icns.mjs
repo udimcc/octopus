@@ -10,6 +10,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
+import { isMacHost } from './lib/host.mjs'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const src = join(repoRoot, 'build', 'icon.png')
@@ -23,7 +24,7 @@ function run(bin, args) {
 }
 
 try {
-  if (process.platform !== 'darwin') throw new Error('mac-icns.mjs runs on macOS only')
+  if (!isMacHost()) throw new Error('mac-icns.mjs runs on macOS only')
   if (!existsSync(src)) throw new Error(`missing ${src} — run \`npm run render:icon\` first`)
   rmSync(outDir, { recursive: true, force: true })
   mkdirSync(iconset, { recursive: true })

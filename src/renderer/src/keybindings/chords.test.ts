@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { osProfile } from '../../../shared/os'
 import {
   hasModifier,
   isModifierCode,
@@ -138,22 +139,26 @@ describe('RESERVED_CHORDS', () => {
 
 describe('chordLabel / capture hints on macOS', () => {
   it('renders the native glyphs, in Apple order, without separators', () => {
-    expect(chordLabel('Shift+Meta+ArrowRight', 'darwin')).toBe('⇧⌘→')
-    expect(chordLabel('Meta+KeyV', 'darwin')).toBe('⌘V')
-    expect(chordLabel('Ctrl+Alt+Shift+Meta+KeyK', 'darwin')).toBe('⌃⌥⇧⌘K')
-    expect(chordLabel('', 'darwin')).toBe('')
+    expect(chordLabel('Shift+Meta+ArrowRight', osProfile('darwin'))).toBe('⇧⌘→')
+    expect(chordLabel('Meta+KeyV', osProfile('darwin'))).toBe('⌘V')
+    expect(chordLabel('Ctrl+Alt+Shift+Meta+KeyK', osProfile('darwin'))).toBe('⌃⌥⇧⌘K')
+    expect(chordLabel('', osProfile('darwin'))).toBe('')
   })
 
   it('keeps the Linux text form for non-darwin platforms and by default', () => {
-    expect(chordLabel('Ctrl+Shift+ArrowRight', 'linux')).toBe('Ctrl+Shift+→')
-    expect(chordLabel('Shift+Meta+KeyN', 'linux')).toBe('Shift+Meta+N')
+    expect(chordLabel('Ctrl+Shift+ArrowRight', osProfile('linux'))).toBe('Ctrl+Shift+→')
+    expect(chordLabel('Shift+Meta+KeyN', osProfile('linux'))).toBe('Shift+Meta+N')
   })
 
   it('formats the live modifier preview and the modifier-required hint per platform', () => {
-    expect(modifierPreviewLabel('Ctrl+Shift', 'linux')).toBe('Ctrl+Shift+…')
-    expect(modifierPreviewLabel('Shift+Meta', 'darwin')).toBe('⇧⌘…')
-    expect(modifierRequiredHint('linux')).toBe('Add at least one modifier (Ctrl / Alt / Shift)')
-    expect(modifierRequiredHint('darwin')).toBe('Add at least one modifier (⌘ / ⌃ / ⌥ / ⇧)')
+    expect(modifierPreviewLabel('Ctrl+Shift', osProfile('linux'))).toBe('Ctrl+Shift+…')
+    expect(modifierPreviewLabel('Shift+Meta', osProfile('darwin'))).toBe('⇧⌘…')
+    expect(modifierRequiredHint(osProfile('linux'))).toBe(
+      'Add at least one modifier (Ctrl / Alt / Shift)'
+    )
+    expect(modifierRequiredHint(osProfile('darwin'))).toBe(
+      'Add at least one modifier (⌘ / ⌃ / ⌥ / ⇧)'
+    )
   })
 
   it('reads the platform from the bridge, falling back to Linux when absent', () => {

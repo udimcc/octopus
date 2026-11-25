@@ -36,6 +36,7 @@ import { existsFile } from '../../src/adapters/fs/file-exists'
 import { computeWorktreePath } from '../../src/adapters/worktree/worktree-path'
 import type { Settings } from '../../src/ports/settings-store'
 import { asTaskId } from '../../src/domain/ids'
+import { hostProfile } from '../../src/shared/node/os/host'
 
 const gitAvailable = spawnSync('git', ['--version']).status === 0
 const d = gitAvailable ? describe : describe.skip
@@ -132,7 +133,12 @@ d('worktree providers (integration, §6.4)', () => {
   }
 
   function scriptProvider(): ScriptWorktreeProvider {
-    return new ScriptWorktreeProvider({ runner, getSettings: () => settings, probe: fsPathProbe })
+    return new ScriptWorktreeProvider({
+      runner,
+      getSettings: () => settings,
+      probe: fsPathProbe,
+      pathCanonical: hostProfile().fs.pathCanonical
+    })
   }
 
   function nativeProvider(): NativeGitWorktreeProvider {
@@ -140,7 +146,8 @@ d('worktree providers (integration, §6.4)', () => {
       runner,
       getSettings: () => settings,
       resolveBase: () => base,
-      probe: fsPathProbe
+      probe: fsPathProbe,
+      pathCanonical: hostProfile().fs.pathCanonical
     })
   }
 

@@ -13,6 +13,7 @@
  *     command reply (§6.5).
  */
 
+import type { OsId } from './os'
 import type {
   WindowedWorkspaceStateDTO,
   CommandAck,
@@ -263,12 +264,13 @@ export interface OctopusAPI {
   ping(): Promise<string>
 
   /**
-   * The host OS as a `process.platform` id (`'linux'`, `'darwin'`, …). Synchronous
-   * and local to the preload (sandboxed preloads still expose `process.platform`), so
-   * no IPC round-trip and no channel. Drives platform-aware chord defaults, labels
-   * and terminal key routing (`shared/keybindings.ts`).
+   * The host OS id (`'linux'`, `'darwin'`, `'win32'`; anything else reports `'linux'`).
+   * Synchronous and local to the preload (sandboxed preloads still expose
+   * `process.platform`), so no IPC round-trip and no channel. The renderer turns it into
+   * an `OsProfile` (`renderer/src/platform.ts`) for chord defaults, labels and terminal
+   * key routing.
    */
-  getPlatform(): string
+  getPlatform(): OsId
 
   tasks: {
     create(input: CreateTaskInput): Promise<CommandAck>

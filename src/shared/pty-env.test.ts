@@ -1,10 +1,15 @@
 import { describe, it, expect } from 'vitest'
 import { buildPtyEnv, resolveShell, sessionScopedEnv } from './pty-env'
+import { osProfile } from './os'
+
+const linux = osProfile('linux')
+const darwin = osProfile('darwin')
 
 const ctx = {
   taskId: 't1',
   sessionId: 's1',
-  worktreePath: '/wt/t1'
+  worktreePath: '/wt/t1',
+  os: linux
 }
 
 describe('buildPtyEnv (§6.1)', () => {
@@ -66,41 +71,41 @@ describe('buildPtyEnv (§6.1)', () => {
   })
 
   it('defaults LANG to en_US.UTF-8 on darwin when no locale var is inherited', () => {
-    expect(buildPtyEnv({ PATH: '/bin' }, { ...ctx, platform: 'darwin' }).LANG).toBe('en_US.UTF-8')
-    expect(buildPtyEnv({ LANG: '' }, { ...ctx, platform: 'darwin' }).LANG).toBe('en_US.UTF-8')
+    expect(buildPtyEnv({ PATH: '/bin' }, { ...ctx, os: darwin }).LANG).toBe('en_US.UTF-8')
+    expect(buildPtyEnv({ LANG: '' }, { ...ctx, os: darwin }).LANG).toBe('en_US.UTF-8')
   })
 
   it('keeps a user-chosen locale on darwin (LANG, LC_ALL or LC_CTYPE)', () => {
-    const d = { ...ctx, platform: 'darwin' }
+    const d = { ...ctx, os: darwin }
     expect(buildPtyEnv({ LANG: 'he_IL.UTF-8' }, d).LANG).toBe('he_IL.UTF-8')
     expect(buildPtyEnv({ LC_ALL: 'C' }, d).LANG).toBeUndefined()
     expect(buildPtyEnv({ LC_CTYPE: 'UTF-8' }, d).LANG).toBeUndefined()
   })
 
-  it('never invents a LANG on linux (or with no platform)', () => {
+  it('never invents a LANG on linux (or win32)', () => {
     expect('LANG' in buildPtyEnv({}, ctx)).toBe(false)
-    expect('LANG' in buildPtyEnv({}, { ...ctx, platform: 'linux' })).toBe(false)
+    expect('LANG' in buildPtyEnv({}, { ...ctx, os: osProfile('win32') })).toBe(false)
   })
 })
 
 describe('resolveShell (§6.1)', () => {
   it('prefers the explicit override', () => {
-    expect(resolveShell('/bin/zsh', '/bin/fish', '/bin/dash')).toBe('/bin/zsh')
+    expect(resolveShell('/bin/zsh', '/bin/fish', '/bin/dash', linux)).toBe('/bin/zsh')
   })
   it('falls back to the setting, then $SHELL, then /bin/bash', () => {
-    expect(resolveShell(undefined, '/bin/fish', '/bin/dash')).toBe('/bin/fish')
-    expect(resolveShell(undefined, undefined, '/bin/dash')).toBe('/bin/dash')
-    expect(resolveShell(undefined, undefined, undefined)).toBe('/bin/bash')
+    expect(resolveShell(undefined, '/bin/fish', '/bin/dash', linux)).toBe('/bin/fish')
+    expect(resolveShell(undefined, undefined, '/bin/dash', linux)).toBe('/bin/dash')
+    expect(resolveShell(undefined, undefined, undefined, linux)).toBe('/bin/bash')
   })
   it('treats empty strings as unset (a blank setting never yields "")', () => {
-    expect(resolveShell('', '', '')).toBe('/bin/bash')
-    expect(resolveShell('', '/bin/fish', '')).toBe('/bin/fish')
+    expect(resolveShell('', '', '', linux)).toBe('/bin/bash')
+    expect(resolveShell('', '/bin/fish', '', linux)).toBe('/bin/fish')
   })
   it('falls back to /bin/zsh on darwin, /bin/bash elsewhere', () => {
-    expect(resolveShell(undefined, undefined, undefined, 'darwin')).toBe('/bin/zsh')
-    expect(resolveShell('', '', '', 'darwin')).toBe('/bin/zsh')
-    expect(resolveShell(undefined, undefined, undefined, 'linux')).toBe('/bin/bash')
-    expect(resolveShell(undefined, undefined, '/bin/bash', 'darwin')).toBe('/bin/bash')
+    expect(resolveShell(undefined, undefined, undefined, darwin)).toBe('/bin/zsh')
+    expect(resolveShell('', '', '', darwin)).toBe('/bin/zsh')
+    expect(resolveShell(undefined, undefined, undefined, linux)).toBe('/bin/bash')
+    expect(resolveShell(undefined, undefined, '/bin/bash', darwin)).toBe('/bin/bash')
   })
 })
 

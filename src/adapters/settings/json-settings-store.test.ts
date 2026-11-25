@@ -12,6 +12,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { osProfile } from '../../shared/os'
 import {
   JsonSettingsStore,
   parseSettings,
@@ -488,23 +489,23 @@ describe('JsonSettingsStore (I16 — no secrets, atomic write)', () => {
   })
 
   it('loads defaults without creating a file on first run', () => {
-    const store = new JsonSettingsStore(path, 'linux')
+    const store = new JsonSettingsStore(path, osProfile('linux'))
     expect(store.load()).toEqual(DEFAULT_SETTINGS)
     expect(existsSync(path)).toBe(false)
   })
 
   it('persists a save and reloads it from disk', () => {
-    const store = new JsonSettingsStore(path, 'linux')
+    const store = new JsonSettingsStore(path, osProfile('linux'))
     store.load()
     const saved = store.save({ worktree: { location: '/opt/worktrees' } })
     expect(saved.worktree.location).toBe('/opt/worktrees')
 
-    const reopened = new JsonSettingsStore(path, 'linux')
+    const reopened = new JsonSettingsStore(path, osProfile('linux'))
     expect(reopened.load().worktree.location).toBe('/opt/worktrees')
   })
 
   it('merges successive saves without dropping earlier keys', () => {
-    const store = new JsonSettingsStore(path, 'linux')
+    const store = new JsonSettingsStore(path, osProfile('linux'))
     store.load()
     store.save({ worktree: { location: '/opt/worktrees' } })
     store.save({ terminal: { shell: '/bin/zsh' } })
@@ -514,7 +515,7 @@ describe('JsonSettingsStore (I16 — no secrets, atomic write)', () => {
   })
 
   it('persists a split-pane chord save and reloads it from disk (§5.7)', () => {
-    const store = new JsonSettingsStore(path, 'linux')
+    const store = new JsonSettingsStore(path, osProfile('linux'))
     store.load()
     const saved = store.save({ splitRightKey: 'Alt+KeyR', focusPaneDownKey: 'Alt+KeyJ' })
     expect(saved.splitRightKey).toBe('Alt+KeyR')
@@ -522,7 +523,7 @@ describe('JsonSettingsStore (I16 — no secrets, atomic write)', () => {
     // Untouched split-pane keys keep their default.
     expect(saved.splitDownKey).toBe('Ctrl+Shift+KeyO')
 
-    const reopened = new JsonSettingsStore(path, 'linux')
+    const reopened = new JsonSettingsStore(path, osProfile('linux'))
     const loaded = reopened.load()
     expect(loaded.splitRightKey).toBe('Alt+KeyR')
     expect(loaded.focusPaneDownKey).toBe('Alt+KeyJ')
@@ -530,7 +531,7 @@ describe('JsonSettingsStore (I16 — no secrets, atomic write)', () => {
 
   it('degrades a corrupt file to defaults on load', () => {
     writeFileSync(path, '{ this is not json', 'utf8')
-    const store = new JsonSettingsStore(path, 'linux')
+    const store = new JsonSettingsStore(path, osProfile('linux'))
     expect(store.load()).toEqual(DEFAULT_SETTINGS)
   })
 
@@ -541,7 +542,7 @@ describe('JsonSettingsStore (I16 — no secrets, atomic write)', () => {
   })
 
   it('save({}) keeps the existing projects untouched', () => {
-    const store = new JsonSettingsStore(path, 'linux')
+    const store = new JsonSettingsStore(path, osProfile('linux'))
     store.load()
     store.save({ projects: [{ path: '/repo/a' }] })
     const saved = store.save({})
@@ -549,12 +550,12 @@ describe('JsonSettingsStore (I16 — no secrets, atomic write)', () => {
   })
 
   it('persists a patched issuesKey and reloads it from disk', () => {
-    const store = new JsonSettingsStore(path, 'linux')
+    const store = new JsonSettingsStore(path, osProfile('linux'))
     store.load()
     const saved = store.save({ issuesKey: 'Alt+Shift+KeyJ' })
     expect(saved.issuesKey).toBe('Alt+Shift+KeyJ')
 
-    const reopened = new JsonSettingsStore(path, 'linux')
+    const reopened = new JsonSettingsStore(path, osProfile('linux'))
     expect(reopened.load().issuesKey).toBe('Alt+Shift+KeyJ')
   })
 
@@ -564,7 +565,7 @@ describe('JsonSettingsStore (I16 — no secrets, atomic write)', () => {
       JSON.stringify({ worktree: { location: '/wt' }, pasteKey: 'Ctrl+Shift+KeyV' }),
       'utf8'
     )
-    const store = new JsonSettingsStore(path, 'linux')
+    const store = new JsonSettingsStore(path, osProfile('linux'))
     const loaded = store.load()
     expect(loaded.issuesKey).toBe('Alt+Shift+KeyI')
     expect(loaded.worktree.location).toBe('/wt')
@@ -586,47 +587,47 @@ describe('JsonSettingsStore.loadFailed (§6.3)', () => {
   })
 
   it('is false before any load() (nothing attempted yet)', () => {
-    const store = new JsonSettingsStore(path, 'linux')
+    const store = new JsonSettingsStore(path, osProfile('linux'))
     expect(store.loadFailed()).toBe(false)
   })
 
   it('is false for ENOENT (first run / unconfigured install)', () => {
-    const store = new JsonSettingsStore(path, 'linux')
+    const store = new JsonSettingsStore(path, osProfile('linux'))
     store.load()
     expect(store.loadFailed()).toBe(false)
   })
 
   it('is false for a valid file', () => {
     writeFileSync(path, serializeSettings(DEFAULT_SETTINGS), 'utf8')
-    const store = new JsonSettingsStore(path, 'linux')
+    const store = new JsonSettingsStore(path, osProfile('linux'))
     store.load()
     expect(store.loadFailed()).toBe(false)
   })
 
   it('is true for an unparseable file', () => {
     writeFileSync(path, '{ not json', 'utf8')
-    const store = new JsonSettingsStore(path, 'linux')
+    const store = new JsonSettingsStore(path, osProfile('linux'))
     store.load()
     expect(store.loadFailed()).toBe(true)
   })
 
   it('is true for a top-level JSON array', () => {
     writeFileSync(path, '[1, 2, 3]', 'utf8')
-    const store = new JsonSettingsStore(path, 'linux')
+    const store = new JsonSettingsStore(path, osProfile('linux'))
     store.load()
     expect(store.loadFailed()).toBe(true)
   })
 
   it('is true when settings.json is a directory (EISDIR, a non-ENOENT read error)', () => {
     mkdirSync(path)
-    const store = new JsonSettingsStore(path, 'linux')
+    const store = new JsonSettingsStore(path, osProfile('linux'))
     store.load()
     expect(store.loadFailed()).toBe(true)
   })
 
   it('reflects only the MOST RECENT load() — recovers once the file is fixed', () => {
     writeFileSync(path, '{ not json', 'utf8')
-    const store = new JsonSettingsStore(path, 'linux')
+    const store = new JsonSettingsStore(path, osProfile('linux'))
     store.load()
     expect(store.loadFailed()).toBe(true)
 
@@ -653,7 +654,7 @@ describe('JsonSettingsStore.save re-reads disk before merging (§6.3)', () => {
   })
 
   it('merges over a fresh parse when the on-disk file still parses, surviving a hand repair', () => {
-    const store = new JsonSettingsStore(path, 'linux')
+    const store = new JsonSettingsStore(path, osProfile('linux'))
     store.load() // ENOENT; cache = DEFAULT_SETTINGS
 
     // The user hand-repairs the file (adds a field `save` has never seen in its
@@ -672,7 +673,7 @@ describe('JsonSettingsStore.save re-reads disk before merging (§6.3)', () => {
   })
 
   it('backs up a corrupt file (mode 0o600) and merges the patch over defaults', () => {
-    const store = new JsonSettingsStore(path, 'linux')
+    const store = new JsonSettingsStore(path, osProfile('linux'))
     // Seed a non-default in-memory cache first, so "merged over DEFAULT_SETTINGS"
     // below can be told apart from "merged over the stale cache" (both would
     // otherwise look identical, since a fresh store's cache IS DEFAULT_SETTINGS).
@@ -703,7 +704,7 @@ describe('JsonSettingsStore.save re-reads disk before merging (§6.3)', () => {
   })
 
   it('merges over the in-memory cache on ENOENT (nothing fresh on disk to prefer)', () => {
-    const store = new JsonSettingsStore(path, 'linux')
+    const store = new JsonSettingsStore(path, osProfile('linux'))
     store.load()
     store.save({ worktree: { location: '/cached' } }) // writes the file once
 
@@ -725,7 +726,7 @@ describe('JsonSettingsStore.save re-reads disk before merging (§6.3)', () => {
         serializeSettings(mergeSettings(DEFAULT_SETTINGS, { worktree: { location: '/cached' } })),
         'utf8'
       )
-      const store = new JsonSettingsStore(path, 'linux')
+      const store = new JsonSettingsStore(path, osProfile('linux'))
       store.load()
       chmodSync(path, 0o000)
       try {

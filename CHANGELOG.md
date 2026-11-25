@@ -4,6 +4,19 @@ All notable changes to Octopus are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1]
+
+Internal refactor; no user-visible behavior change on Linux or macOS.
+
+### Changed
+
+- **One OS layer.** Every Linux/macOS/Windows difference now lives in per-OS profiles under
+  `src/shared/os/` (paths, keyboard, terminal, process inspection, filesystem, TLS, app menu,
+  self-update). Only `src/shared/node/os/host.ts` (and `scripts/lib/host.mjs` for build scripts)
+  reads the host OS; ESLint rejects OS-name checks anywhere else. See `.claude/rules/os-layer.md`.
+- On macOS, the startup log line for the open-file limit now reads
+  `skipped: not supported on this OS`.
+
 ## [1.3.0]
 
 Adds macOS (Apple Silicon) support. Linux behavior, defaults and the release tarball are unchanged.

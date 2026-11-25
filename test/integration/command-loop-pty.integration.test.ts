@@ -41,6 +41,7 @@ import {
 } from '../../src/application/use-cases/test-fakes'
 import type { EventDTO } from '../../src/shared/events'
 import type { DomainEvent } from '../../src/ports/event-bus'
+import { hostProfile } from '../../src/shared/node/os/host'
 
 const ptyOk = ((): boolean => {
   try {
@@ -98,7 +99,11 @@ d('CommandLoop over the real PTY stack (integration, §6.6/§6.1)', () => {
         groupTasksByRepo: true
       }),
       worktrees,
-      sessions: new PtySessionManager({ getSettings: () => deps.settings.load(), graceMs: 500 }),
+      sessions: new PtySessionManager({
+        getSettings: () => deps.settings.load(),
+        graceMs: 500,
+        os: hostProfile()
+      }),
       registry,
       runtimes: new MapRuntimeRegistry(),
       bus,

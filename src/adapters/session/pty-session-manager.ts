@@ -19,6 +19,7 @@ import type {
 import type { Settings } from '../../ports/settings-store'
 import { PtyTerminalRuntime, type PtySpawn } from './pty-terminal-runtime'
 import { resolveShell } from '../../shared/pty-env'
+import type { OsProfile } from '../../shared/os'
 import { shellSpawnPlan, type ShellIntegrationFiles } from '../../shared/node/shell-integration'
 
 export interface PtySessionManagerDeps {
@@ -39,6 +40,8 @@ export interface PtySessionManagerDeps {
    * `octopus-cli` inside a terminal finds this instance (control socket design).
    */
   readonly controlSocketPath?: string
+  /** Host OS profile (default shell, LANG, cwd probe). */
+  readonly os: OsProfile
 }
 
 /** node-pty's spawn narrowed to the runtime's contract (structural match). */
@@ -49,22 +52,19 @@ export class PtySessionManager implements SessionManager {
   private readonly graceMs?: number
   private readonly shellIntegration?: ShellIntegrationFiles
   private readonly controlSocketPath?: string
+  private readonly os: OsProfile
 
   constructor(deps: PtySessionManagerDeps) {
     this.getSettings = deps.getSettings
     this.graceMs = deps.graceMs
     this.shellIntegration = deps.shellIntegration
     this.controlSocketPath = deps.controlSocketPath
+    this.os = deps.os
   }
 
   createRuntime(ctx: SessionRuntimeContext): SessionRuntime {
     const settings = this.getSettings()
-    const shell = resolveShell(
-      ctx.shell,
-      settings.terminal.shell,
-      process.env.SHELL,
-      process.platform
-    )
+    const shell = resolveShell(ctx.shell, settings.terminal.shell, process.env.SHELL, this.os)
     // OSC 133 injection rides the `terminal.stateDetection` opt-out (§12.1): a custom
     // ctx.shell arg (e.g. `-c` from a scripted session) also skips it — integration
     // only applies to the default interactive login shell. `shellSpawnPlan` returns
@@ -80,7 +80,8 @@ export class PtySessionManager implements SessionManager {
       args: plan?.args,
       envPatch: plan?.envPatch,
       controlSocketPath: this.controlSocketPath,
-      graceMs: this.graceMs
+      graceMs: this.graceMs,
+      os: this.os
     })
   }
 }

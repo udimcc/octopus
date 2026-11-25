@@ -7,6 +7,7 @@ import { installStubBridge, makeStubBridge } from '../test-support/stub-bridge'
 import { registerPaneMetrics, _resetPaneMetrics } from '../terminal/terminal-metrics'
 import type { SessionDTO, TaskDTO, WindowDTO, SplitNode, GroupDTO } from '../../../shared/dto'
 import { defaultKeybindings } from '../../../shared/keybindings'
+import { osProfile } from '../../../shared/os'
 
 /** A leaf node naming `sessionId` — `split-layout.ts` no longer exports this fixture. */
 function leaf(sessionId: string): SplitNode {
@@ -961,7 +962,7 @@ describe('useKeyboardShortcuts on macOS (Cmd-based defaults)', () => {
         terminal: {},
         defaultSessionTypeId: 'terminal',
         groupTasksByRepo: true,
-        ...defaultKeybindings('darwin')
+        ...defaultKeybindings(osProfile('darwin'))
       },
       version: 1,
       thisWindowId: 'main',

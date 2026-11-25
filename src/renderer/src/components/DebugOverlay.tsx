@@ -1,6 +1,6 @@
 /**
  * State-detection debug overlay (DESIGN §11 observability). A keyboard-toggled
- * (`Ctrl+Shift+D`, `Cmd+Shift+D` on macOS, see {@link DEBUG_OVERLAY_CHORD}) floating
+ * (`Ctrl+Shift+D`, `Cmd+Shift+D` on macOS, see `debugOverlayChord` in `shared/keybindings.ts`) floating
  * panel showing the last N session-state transitions this window has seen — the
  * newest at the top — with the deciding signal's LAYER and REASON (and confidence).
  * It is the on-screen twin of the `state.log` file (§11): the same

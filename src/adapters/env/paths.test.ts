@@ -8,6 +8,7 @@ import {
   resolveDefaultWorktreeBase,
   ensureAppDirs
 } from './paths'
+import { osProfile } from '../../shared/os'
 
 // Keep `node:fs` real by default; individual tests override `chmodSync` with
 // `vi.mocked(chmodSync).mockImplementation(...)` where needed, then restore it.
@@ -20,7 +21,7 @@ describe('resolveAppPaths', () => {
   it('honours XDG_DATA_HOME on Linux when set to an absolute path', () => {
     const paths = resolveAppPaths({
       env: { XDG_DATA_HOME: '/custom/data' },
-      platform: 'linux',
+      os: osProfile('linux'),
       home: '/home/dev'
     })
     expect(paths.dataDir).toBe('/custom/data/octopus')
@@ -35,14 +36,14 @@ describe('resolveAppPaths', () => {
   })
 
   it('falls back to ~/.local/share on Linux when XDG_DATA_HOME is unset', () => {
-    const paths = resolveAppPaths({ env: {}, platform: 'linux', home: '/home/dev' })
+    const paths = resolveAppPaths({ env: {}, os: osProfile('linux'), home: '/home/dev' })
     expect(paths.dataDir).toBe('/home/dev/.local/share/octopus')
   })
 
   it('ignores a non-absolute XDG_DATA_HOME (per the XDG spec)', () => {
     const paths = resolveAppPaths({
       env: { XDG_DATA_HOME: 'relative/path' },
-      platform: 'linux',
+      os: osProfile('linux'),
       home: '/home/dev'
     })
     expect(paths.dataDir).toBe('/home/dev/.local/share/octopus')
@@ -51,7 +52,7 @@ describe('resolveAppPaths', () => {
   it('uses %APPDATA% on Windows when set', () => {
     const paths = resolveAppPaths({
       env: { APPDATA: 'C:\\Users\\dev\\AppData\\Roaming' },
-      platform: 'win32',
+      os: osProfile('win32'),
       home: 'C:\\Users\\dev'
     })
     expect(paths.dataDir).toContain('octopus')
@@ -59,7 +60,7 @@ describe('resolveAppPaths', () => {
   })
 
   it('falls back to AppData/Roaming on Windows when APPDATA is unset', () => {
-    const paths = resolveAppPaths({ env: {}, platform: 'win32', home: 'C:\\Users\\dev' })
+    const paths = resolveAppPaths({ env: {}, os: osProfile('win32'), home: 'C:\\Users\\dev' })
     expect(paths.dataDir).toContain('Roaming')
     expect(paths.dataDir).toContain('octopus')
   })
@@ -71,7 +72,7 @@ describe('ensureAppDirs', () => {
     try {
       const paths = resolveAppPaths({
         env: { XDG_DATA_HOME: base },
-        platform: 'linux',
+        os: osProfile('linux'),
         home: '/home/dev'
       })
       ensureAppDirs(paths)
@@ -90,7 +91,7 @@ describe('ensureAppDirs', () => {
     try {
       const paths = resolveAppPaths({
         env: { XDG_DATA_HOME: base },
-        platform: 'linux',
+        os: osProfile('linux'),
         home: '/home/dev'
       })
       ensureAppDirs(paths)
@@ -106,7 +107,7 @@ describe('ensureAppDirs', () => {
     try {
       const paths = resolveAppPaths({
         env: { XDG_DATA_HOME: base },
-        platform: 'linux',
+        os: osProfile('linux'),
         home: '/home/dev'
       })
       vi.mocked(chmodSync).mockImplementationOnce(() => {

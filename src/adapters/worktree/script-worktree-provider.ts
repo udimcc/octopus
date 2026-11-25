@@ -41,6 +41,7 @@ import type {
 } from '../../ports/worktree-provider'
 import { validateWorktreePath, assertSafeToDelete, type PathProbe } from './path-safety'
 import { deleteSafetyCanonicalizer, fsPathProbe } from './fs-path-probe'
+import type { PathCanonical } from '../../shared/os'
 import { scriptEnv, firstNonEmptyLine, firstLine, gitIsDirty } from './worktree-support'
 
 /** The repo-local script file names the selector probes for (§6.4). */
@@ -53,6 +54,8 @@ export interface ScriptWorktreeProviderDeps {
   readonly getSettings: () => Settings
   /** Path probe for validation; defaults to the real fs probe. */
   readonly probe?: PathProbe
+  /** Host profile's `fs.pathCanonical` (delete-safety path compares, §6.4). */
+  readonly pathCanonical: PathCanonical
   /** Sink for the non-fatal "doesn't look like a worktree" warning (§6.4). */
   readonly onWarning?: (message: string) => void
 }
@@ -61,12 +64,14 @@ export class ScriptWorktreeProvider implements WorktreeProvider {
   private readonly runner: ScriptRunner
   private readonly getSettings: () => Settings
   private readonly probe: PathProbe
+  private readonly pathCanonical: PathCanonical
   private readonly onWarning?: (message: string) => void
 
   constructor(deps: ScriptWorktreeProviderDeps) {
     this.runner = deps.runner
     this.getSettings = deps.getSettings
     this.probe = deps.probe ?? fsPathProbe
+    this.pathCanonical = deps.pathCanonical
     this.onWarning = deps.onWarning
   }
 
@@ -123,7 +128,7 @@ export class ScriptWorktreeProvider implements WorktreeProvider {
       candidate: req.path,
       storedPath: req.path,
       repoRoot: req.repoDir,
-      canonical: deleteSafetyCanonicalizer()
+      canonical: deleteSafetyCanonicalizer(this.pathCanonical)
     })
 
     // Resolve regardless of exit code — the user asked to delete, so the record

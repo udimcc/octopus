@@ -14,10 +14,10 @@ export interface InstallUpdateDeps {
   readonly relauncher: AppRelauncher
   /** Directory install.sh installs into; the app binary is `<programDir>/octopus`. */
   readonly programDir: string
-  /** Install script at the release root (default `install.sh`). */
-  readonly installScript?: string
-  /** Binary to relaunch after a successful install (default `<programDir>/octopus`). */
-  readonly executablePath?: string
+  /** Install script at the release root (host profile `update.installScript`). */
+  readonly installScript: string
+  /** Binary to relaunch after a successful install (host profile `update.relaunchExecutable`). */
+  readonly executablePath: string
   readonly timeoutMs: number
 }
 
@@ -41,21 +41,17 @@ export function createUpdateInstaller(deps: InstallUpdateDeps): UpdateInstaller 
     let tmp: string | undefined
     try {
       tmp = await deps.source.stageToTemp(releasePath)
-      const res = await deps.scriptRunner.run(
-        'sh',
-        [`${tmp}/${deps.installScript ?? 'install.sh'}`],
-        {
-          cwd: tmp,
-          timeoutMs: deps.timeoutMs,
-          killProcessGroup: true
-        }
-      )
+      const res = await deps.scriptRunner.run('sh', [`${tmp}/${deps.installScript}`], {
+        cwd: tmp,
+        timeoutMs: deps.timeoutMs,
+        killProcessGroup: true
+      })
       if (res.exitCode === 0 && !res.timedOut) {
         // Clean up BEFORE relaunching: relaunch quits the app, so a `finally` would not run.
         const staged = tmp
         tmp = undefined
         await deps.source.cleanup(staged).catch(() => undefined)
-        deps.relauncher.relaunch(deps.executablePath ?? `${deps.programDir}/octopus`)
+        deps.relauncher.relaunch(deps.executablePath)
         return { ok: true }
       }
       const reason = res.timedOut

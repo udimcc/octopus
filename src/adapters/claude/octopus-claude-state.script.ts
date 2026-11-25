@@ -26,6 +26,12 @@
  *     installed so upgrading never rewrites the user's statusLine setting.
  *   - anything else  — a no-op.
  *
+ * ## OS differences (exempt from the OS layer)
+ * The embedded python runs inside Claude's hook process, not in Octopus, so it cannot
+ * receive an `OsProfile`: it probes at runtime instead (`/proc/self` present ⇒ Linux
+ * `/proc` reads, else one `ps` snapshot on macOS). The script text is therefore
+ * OS-independent, and its hash is pinned by the characterization test.
+ *
  * ## Record (`v:1`, compact ASCII JSON, ≤ 8 KiB; see `HookEvent` in the fold)
  * Common: `t` (epoch ms), `ev`, `sid` (Claude session_id), `aid` (agent_id; absent ⇒
  * the lead), `prm` (prompt_id). Per event: SessionStart `src`,`tp`; SessionEnd `rsn`;

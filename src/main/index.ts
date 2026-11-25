@@ -22,9 +22,13 @@ import { MAIN_WINDOW_ID } from '../domain/ids'
 import type { CreateWindowOptions } from './window'
 import { currentAppPaths } from '../adapters/env/paths'
 import { appMenuTemplate } from './app-menu'
+import { hostProfile } from '../shared/node/os/host'
 // Same asset as window.ts's window icon; on macOS the window icon is ignored and the
 // Dock shows the bundle's icon, which an unpackaged (dev) run doesn't have.
 import icon from '../../resources/icon.png?asset'
+
+/** The host OS profile: the one place main learns which OS it runs on (os-layer rule). */
+const os = hostProfile()
 
 // Dev-build lock isolation: `requestSingleInstanceLock` keys off `userData`
 // (default `~/.config/octopus`, shared by every build), so a dev run
@@ -38,7 +42,7 @@ import icon from '../../resources/icon.png?asset'
 // installed app. Packaged builds are unaffected (`isPackaged` is false only for
 // `electron .`/`electron-vite dev`).
 if (!app.isPackaged) {
-  const devUserData = join(currentAppPaths().dataDir, 'electron-dev')
+  const devUserData = join(currentAppPaths(os).dataDir, 'electron-dev')
   mkdirSync(devUserData, { recursive: true }) // setPath requires an existing dir
   app.setPath('userData', devUserData)
 }
@@ -76,7 +80,7 @@ app.commandLine.appendSwitch('enable-unsafe-swiftshader')
 // non-zero rather than crashing with an unhandled exception and no explanation.
 let ctx: AppContext
 try {
-  ctx = bootstrap()
+  ctx = bootstrap(os)
 } catch (err) {
   const message = err instanceof Error ? err.message : String(err)
   console.error(`[octopus] startup failed: ${message}`)
@@ -164,9 +168,9 @@ void app.whenReady().then(async () => {
   // Linux: remove Electron's default application menu bar (File/Edit/View/Window/
   // Help); the app is driven entirely through the renderer UI. macOS: a minimal
   // app/Edit/Window menu so Cmd+Q and the clipboard shortcuts work (app-menu.ts).
-  const menuTemplate = appMenuTemplate(process.platform, app.name)
+  const menuTemplate = appMenuTemplate(os.app.appMenu, app.name)
   Menu.setApplicationMenu(menuTemplate ? Menu.buildFromTemplate(menuTemplate) : null)
-  if (process.platform === 'darwin' && !app.isPackaged) {
+  if (os.app.devDockIcon && !app.isPackaged) {
     app.dock?.setIcon(icon)
   }
 

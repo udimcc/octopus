@@ -75,7 +75,8 @@ import { CanvasAddon } from '@xterm/addon-canvas'
 import '@xterm/xterm/css/xterm.css'
 import { useStore } from '../store/store'
 import { matchesChord } from '../keybindings/chords'
-import { isMac } from '../platform'
+import { rendererOs } from '../platform'
+import type { PrimaryModifier } from '../../../shared/os'
 import { isSafeExternalUrl } from '../../../shared/external-url'
 import { registerTerminalSink, unregisterTerminalSink } from '../pty/pty-router'
 import { registerSearchOpener, unregisterSearchOpener } from './terminal-search'
@@ -120,9 +121,9 @@ interface LoadedRenderer {
  * historical check, unchanged), Cmd+Shift on macOS (so mac Ctrl+Shift chords still
  * reach the PTY).
  */
-function isPrimaryShiftOnly(e: KeyboardEvent, mac: boolean): boolean {
+function isPrimaryShiftOnly(e: KeyboardEvent, primary: PrimaryModifier): boolean {
   if (!e.shiftKey || e.altKey) return false
-  return mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
+  return primary === 'Meta' ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
 }
 
 /**
@@ -255,17 +256,19 @@ export function TerminalPane({
     const host = hostRef.current
     if (!host) return
 
-    // macOS: the generic `monospace` resolves to Courier, so name the system monospace
-    // faces; Option acts as Meta (Alt-prefixed sequences for shells/Emacs, like Linux
-    // Alt) and Option+click forces a selection even when an app enabled mouse mode.
-    // Linux keeps exactly the historical options.
-    const mac = isMac()
+    // Font and Option-as-Meta come from the OS profile (macOS: system monospace faces,
+    // Option sends Alt-prefixed sequences and Option+click forces a selection even when
+    // an app enabled mouse mode). Linux keeps exactly the historical options.
+    const os = rendererOs()
     const term = new Terminal({
       scrollback: SCROLLBACK,
-      fontFamily: mac ? "Menlo, 'SF Mono', Monaco, monospace" : 'monospace',
+      fontFamily: os.terminal.fontFamily,
       allowProposedApi: true, // required by the Unicode11 addon
       theme: terminalTheme,
-      ...(mac && { macOptionIsMeta: true, macOptionClickForcesSelection: true })
+      ...(os.terminal.optionIsMeta && {
+        macOptionIsMeta: true,
+        macOptionClickForcesSelection: true
+      })
     })
     // BEFORE anything can write to this terminal: stop DECSET/DECRST 12 (cursor blink)
     // from becoming an xterm *option* write. Every option change rebuilds and reparses
@@ -345,10 +348,10 @@ export function TerminalPane({
         void window.octopusAPI.clipboard.read().then((text) => term.paste(text))
         return false
       }
-      if (isPrimaryShiftOnly(e, mac)) return false
+      if (isPrimaryShiftOnly(e, os.keyboard.primaryModifier)) return false
       // Cmd chords on macOS: skip xterm but do NOT preventDefault, so the app menu's
       // accelerators (Cmd+Q, Cmd+W, Cmd+A, …) still run.
-      if (mac && e.metaKey) return false
+      if (os.terminal.metaChordsSkipPty && e.metaKey) return false
       const configurable = [
         sessionNextKey,
         sessionPrevKey,

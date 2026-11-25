@@ -26,6 +26,7 @@ import type {
 import type { Settings } from '../../src/ports/settings-store'
 import { PtySessionManager } from '../../src/adapters/session/pty-session-manager'
 import { asTaskId, asSessionId } from '../../src/domain/ids'
+import { hostProfile } from '../../src/shared/node/os/host'
 
 // Synchronous probe at collection time: can we load node-pty AND spawn a child?
 const ptyOk = ((): boolean => {
@@ -77,7 +78,8 @@ d('PtySessionManager (integration, §6.1)', () => {
   function spawnRuntime(overrides: Partial<SessionRuntimeContext> = {}): Live {
     const manager: SessionManager = new PtySessionManager({
       getSettings: () => SETTINGS,
-      graceMs: 500
+      graceMs: 500,
+      os: hostProfile()
     })
     let buf = ''
     let resolveExit!: (e: { code?: number; signal?: number }) => void

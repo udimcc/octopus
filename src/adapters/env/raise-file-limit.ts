@@ -24,9 +24,13 @@ export interface RaiseFileLimitResult {
   message: string
 }
 
-export function raiseFileLimit(): RaiseFileLimitResult {
-  if (process.platform !== 'linux') {
-    return { attempted: false, message: `skipped: not Linux (${process.platform})` }
+/**
+ * @param enabled the host profile's `proc.raiseFileLimit` (true only where `prlimit`
+ *   exists, i.e. Linux); when false this is a logged no-op.
+ */
+export function raiseFileLimit(enabled: boolean): RaiseFileLimitResult {
+  if (!enabled) {
+    return { attempted: false, message: 'skipped: not supported on this OS' }
   }
 
   try {

@@ -9,6 +9,7 @@
  * typed functions cross the bridge (§5.5).
  */
 
+import { hostOs } from '../shared/node/os/host'
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import { CHANNELS, type OctopusAPI, type PtyWriteInput, type PtyResizeInput } from '../shared/ipc'
 import type {
@@ -69,8 +70,8 @@ const octopusAPI: OctopusAPI = {
   ping: () => ipcRenderer.invoke(CHANNELS.ping),
 
   // Sandboxed preloads get Electron's limited `process` polyfill, which still carries
-  // `platform` (no `require('os')` needed).
-  getPlatform: () => process.platform,
+  // `platform` (no `require('os')` needed); `hostOs` reads only that global.
+  getPlatform: () => hostOs(),
 
   tasks: {
     create: (input: CreateTaskInput): Promise<CommandAck> =>

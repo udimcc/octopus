@@ -23,6 +23,7 @@ import type {
 } from '../../ports/session-runtime'
 import type { Settings } from '../../ports/settings-store'
 import { resolveShell, sessionScopedEnv } from '../../shared/pty-env'
+import type { OsProfile } from '../../shared/os'
 import { shellSpawnPlan, type ShellIntegrationFiles } from '../../shared/node/shell-integration'
 import { DaemonClient } from './daemon-client'
 import { OCTOPUS_CONTROL_SOCKET_ENV } from '../../shared/data-paths'
@@ -45,6 +46,8 @@ export interface DaemonSessionManagerDeps {
    * `octopus-cli` inside a terminal finds this instance (control socket design).
    */
   readonly controlSocketPath?: string
+  /** Host OS profile (default shell, LANG, cwd probe). */
+  readonly os: OsProfile
 }
 
 export class DaemonSessionManager implements SessionManager {
@@ -52,22 +55,19 @@ export class DaemonSessionManager implements SessionManager {
   private readonly getSettings: () => Settings
   private readonly shellIntegration?: ShellIntegrationFiles
   private readonly controlSocketPath?: string
+  private readonly os: OsProfile
 
   constructor(deps: DaemonSessionManagerDeps) {
     this.client = deps.client
     this.getSettings = deps.getSettings
     this.shellIntegration = deps.shellIntegration
     this.controlSocketPath = deps.controlSocketPath
+    this.os = deps.os
   }
 
   createRuntime(ctx: SessionRuntimeContext): SessionRuntime {
     const settings = this.getSettings()
-    const shell = resolveShell(
-      ctx.shell,
-      settings.terminal.shell,
-      process.env.SHELL,
-      process.platform
-    )
+    const shell = resolveShell(ctx.shell, settings.terminal.shell, process.env.SHELL, this.os)
     // OSC 133 injection rides the `terminal.stateDetection` opt-out and only applies
     // to the default interactive login shell (a custom ctx.shell skips it, §12.1). The
     // daemon builds the child env from ITS process.env, so we forward only the

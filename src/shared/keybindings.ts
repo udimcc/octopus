@@ -9,16 +9,16 @@
  * a macOS "Cmd+Shift+N" is stored as `Shift+Meta+KeyN` (NOT `Meta+Shift+KeyN`, which
  * `matchesChord` would never match).
  *
- * Non-darwin platforms get exactly the historical Linux strings (byte-identical: they
- * are what existing settings.json files and the Linux tests carry). On darwin the
- * primary modifier is Cmd (`Meta`), which leaves Ctrl chords free for the shell, and
+ * The OS decides only the primary modifier (`OsProfile.keyboard.primaryModifier`).
+ * `Ctrl` OSes get exactly the historical Linux strings (byte-identical: they
+ * are what existing settings.json files and the Linux tests carry). With a `Meta`
+ * primary modifier (macOS Cmd), which leaves Ctrl chords free for the shell, and
  * copy/paste are the native `Cmd+C` / `Cmd+V`. None of the darwin defaults are macOS
  * system chords (Cmd+Q/W/H/M/Tab/`/Space/,, Cmd+Shift+3/4/5/Q//), and Toggle Issues
  * (`Cmd+Shift+I`) does not collide with the devtools chord `Cmd+Alt+I`.
  */
 
-/** `process.platform`-style platform id (`'linux'`, `'darwin'`, `'win32'`, …). */
-export type PlatformId = string
+import type { OsProfile, PrimaryModifier } from './os'
 
 /** The settings keys that hold a configurable chord. */
 export type KeybindingKey =
@@ -42,24 +42,20 @@ export type KeybindingKey =
 
 export type Keybindings = { readonly [K in KeybindingKey]: string }
 
-export function isDarwin(platform: PlatformId): boolean {
-  return platform === 'darwin'
-}
-
 /** The modifier app chords are built on: `Meta` (Cmd) on macOS, `Ctrl` elsewhere. */
-export function primaryModifier(platform: PlatformId): 'Meta' | 'Ctrl' {
-  return isDarwin(platform) ? 'Meta' : 'Ctrl'
+export function primaryModifier(os: OsProfile): PrimaryModifier {
+  return os.keyboard.primaryModifier
 }
 
 /** Canonical `<primary>+Shift+<code>` chord (`Ctrl+Shift+X` / `Shift+Meta+X`). */
-function primaryShift(platform: PlatformId, code: string): string {
-  return isDarwin(platform) ? `Shift+Meta+${code}` : `Ctrl+Shift+${code}`
+function primaryShift(os: OsProfile, code: string): string {
+  return primaryModifier(os) === 'Meta' ? `Shift+Meta+${code}` : `Ctrl+Shift+${code}`
 }
 
-/** The default chord for every configurable binding on `platform`. */
-export function defaultKeybindings(platform: PlatformId): Keybindings {
-  const mac = isDarwin(platform)
-  const ps = (code: string): string => primaryShift(platform, code)
+/** The default chord for every configurable binding on `os`. */
+export function defaultKeybindings(os: OsProfile): Keybindings {
+  const mac = primaryModifier(os) === 'Meta'
+  const ps = (code: string): string => primaryShift(os, code)
   return {
     sessionNextKey: ps('ArrowRight'),
     sessionPrevKey: ps('ArrowLeft'),
@@ -83,6 +79,6 @@ export function defaultKeybindings(platform: PlatformId): Keybindings {
 }
 
 /** The fixed state-detection debug-overlay chord (§11): `Ctrl+Shift+D` / `Cmd+Shift+D`. */
-export function debugOverlayChord(platform: PlatformId): string {
-  return primaryShift(platform, 'KeyD')
+export function debugOverlayChord(os: OsProfile): string {
+  return primaryShift(os, 'KeyD')
 }

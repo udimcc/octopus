@@ -4,6 +4,7 @@ import {
   resolveControlSocketPath,
   type IssuesGetResult
 } from '../shared/control-protocol'
+import { hostProfile } from '../shared/node/os/host'
 import { parseCommand } from './args'
 import { issueToMarkdown } from './format'
 import {
@@ -36,7 +37,7 @@ async function run(argv: readonly string[]): Promise<CliOutcome> {
 
   const socketPath =
     process.env[OCTOPUS_CONTROL_SOCKET_ENV] ||
-    resolveControlSocketPath({ env: process.env, platform: process.platform, home: homedir() })
+    resolveControlSocketPath({ env: process.env, os: hostProfile(), home: homedir() })
   const res = await sendRequest(socketPath, buildRequest(cmd.method, params))
   if (!('reply' in res)) return failureToOutcome(res.failure)
   if (cmd.output === 'markdown' && res.reply.ok) {

@@ -57,6 +57,7 @@ function provider(
     getSettings: () => SETTINGS,
     resolveBase: () => BASE,
     probe,
+    pathCanonical: 'exact',
     onWarning
   })
 }

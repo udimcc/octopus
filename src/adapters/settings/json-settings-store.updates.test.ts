@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { osProfile } from '../../shared/os'
 import {
   JsonSettingsStore,
   parseSettings,
@@ -57,13 +58,13 @@ describe('JsonSettingsStore updates persistence', () => {
   it('persists dismissedVersion to disk and reloads it, keeping dir', () => {
     const path = join(dir, 'settings.json')
     writeFileSync(path, JSON.stringify({ updates: { dir: '/mnt/x' } }))
-    const store = new JsonSettingsStore(path, 'linux')
+    const store = new JsonSettingsStore(path, osProfile('linux'))
     store.save({ updates: { dismissedVersion: '1.4.0' } })
     expect(JSON.parse(readFileSync(path, 'utf8')).updates).toEqual({
       dir: '/mnt/x',
       dismissedVersion: '1.4.0'
     })
-    expect(new JsonSettingsStore(path, 'linux').load().updates).toEqual({
+    expect(new JsonSettingsStore(path, osProfile('linux')).load().updates).toEqual({
       dir: '/mnt/x',
       dismissedVersion: '1.4.0'
     })
@@ -72,6 +73,6 @@ describe('JsonSettingsStore updates persistence', () => {
   it('absent updates group loads as undefined', () => {
     const path = join(dir, 'settings.json')
     writeFileSync(path, '{}')
-    expect(new JsonSettingsStore(path, 'linux').load().updates).toBeUndefined()
+    expect(new JsonSettingsStore(path, osProfile('linux')).load().updates).toBeUndefined()
   })
 })

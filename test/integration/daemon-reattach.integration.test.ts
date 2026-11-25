@@ -25,6 +25,7 @@ import { join } from 'node:path'
 import { DaemonServer } from '../../src/daemon/server'
 import { PtyRegistry } from '../../src/daemon/pty-registry'
 import { DaemonClient, type DaemonSessionSink } from '../../src/adapters/session/daemon-client'
+import { hostProfile } from '../../src/shared/node/os/host'
 
 // Synchronous probe at collection time: can we load node-pty AND spawn a child?
 const ptyOk = ((): boolean => {
@@ -93,7 +94,7 @@ d('octopusd re-attach (integration, §6.2)', () => {
   async function startServer(): Promise<{ socketPath: string; registry: PtyRegistry }> {
     dir = realpathSync(mkdtempSync(join(tmpdir(), 'octopus-daemon-')))
     const socketPath = join(dir, 'octopusd.sock')
-    const registry = new PtyRegistry()
+    const registry = new PtyRegistry({ os: hostProfile() })
     server = new DaemonServer({ registry, socketPath, daemonVersion: 'test' })
     await server.listen()
     return { socketPath, registry }

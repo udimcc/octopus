@@ -9,6 +9,9 @@ import {
 import type { BatcherTimers } from '../../shared/node/output-batcher'
 import type { SessionRuntimeContext } from '../../ports/session-runtime'
 import { asTaskId, asSessionId } from '../../domain/ids'
+import { osProfile } from '../../shared/os'
+
+const os = osProfile('linux')
 
 /** A fake IPty recording writes/resizes/kills and letting the test drive callbacks. */
 class FakePty implements PtyProcess {
@@ -99,7 +102,7 @@ function harness(): Harness {
 describe('PtyTerminalRuntime.start (§6.1)', () => {
   it('spawns a login shell at the worktree cwd with the built env', async () => {
     const h = harness()
-    const rt = new PtyTerminalRuntime(h.ctx, { spawn: h.spawn, shell: '/bin/zsh' })
+    const rt = new PtyTerminalRuntime(h.ctx, { os, spawn: h.spawn, shell: '/bin/zsh' })
     await rt.start()
 
     expect(h.spawned).toHaveLength(1)
@@ -120,6 +123,7 @@ describe('PtyTerminalRuntime.start (§6.1)', () => {
   it('honours custom args and layers envPatch onto the built env (§12.1 injection)', async () => {
     const h = harness()
     const rt = new PtyTerminalRuntime(h.ctx, {
+      os,
       spawn: h.spawn,
       shell: '/bin/bash',
       args: ['--rcfile', '/data/octopus.bashrc', '-i'],
@@ -140,14 +144,14 @@ describe('PtyTerminalRuntime.start (§6.1)', () => {
     const spawn: PtySpawn = () => {
       throw new Error('spawn boom')
     }
-    const rt = new PtyTerminalRuntime(h.ctx, { spawn, shell: '/bin/bash' })
+    const rt = new PtyTerminalRuntime(h.ctx, { os, spawn, shell: '/bin/bash' })
     await expect(rt.start()).rejects.toThrow(/spawn boom/)
   })
 
   it('batches PTY output through to ctx.onData (leading edge + trailing coalesce)', async () => {
     const timers = manualTimers()
     const h = harness()
-    const rt = new PtyTerminalRuntime(h.ctx, { spawn: h.spawn, shell: '/bin/bash', timers })
+    const rt = new PtyTerminalRuntime(h.ctx, { os, spawn: h.spawn, shell: '/bin/bash', timers })
     await rt.start()
 
     h.fakePty.emitData('foo') // idle buffer → flushed immediately (§11 <5 ms)
@@ -161,7 +165,7 @@ describe('PtyTerminalRuntime.start (§6.1)', () => {
 describe('PtyTerminalRuntime.write / resize', () => {
   it('forwards writes to the pty', async () => {
     const h = harness()
-    const rt = new PtyTerminalRuntime(h.ctx, { spawn: h.spawn, shell: '/bin/bash' })
+    const rt = new PtyTerminalRuntime(h.ctx, { os, spawn: h.spawn, shell: '/bin/bash' })
     await rt.start()
     rt.write('ls\n')
     expect(h.fakePty.writes).toEqual(['ls\n'])
@@ -169,7 +173,7 @@ describe('PtyTerminalRuntime.write / resize', () => {
 
   it('forwards resizes and swallows a resize on a dead pty', async () => {
     const h = harness()
-    const rt = new PtyTerminalRuntime(h.ctx, { spawn: h.spawn, shell: '/bin/bash' })
+    const rt = new PtyTerminalRuntime(h.ctx, { os, spawn: h.spawn, shell: '/bin/bash' })
     await rt.start()
     rt.resize(120, 30)
     expect(h.fakePty.resizes).toEqual([{ cols: 120, rows: 30 }])
@@ -180,7 +184,7 @@ describe('PtyTerminalRuntime.write / resize', () => {
       throw new Error('dead')
     }
     const spawn2: PtySpawn = () => throwing
-    const rt2 = new PtyTerminalRuntime(h.ctx, { spawn: spawn2, shell: '/bin/bash' })
+    const rt2 = new PtyTerminalRuntime(h.ctx, { os, spawn: spawn2, shell: '/bin/bash' })
     await rt2.start()
     expect(() => rt2.resize(10, 10)).not.toThrow()
   })
@@ -190,7 +194,7 @@ describe('PtyTerminalRuntime spontaneous exit vs user stop (§3.6/§6.1)', () =>
   it('a spontaneous exit fires ctx.onExit and flushes buffered output', async () => {
     const timers = manualTimers()
     const h = harness()
-    const rt = new PtyTerminalRuntime(h.ctx, { spawn: h.spawn, shell: '/bin/bash', timers })
+    const rt = new PtyTerminalRuntime(h.ctx, { os, spawn: h.spawn, shell: '/bin/bash', timers })
     await rt.start()
 
     h.fakePty.emitData('final ') // leads (idle) → emitted immediately
@@ -207,6 +211,7 @@ describe('PtyTerminalRuntime spontaneous exit vs user stop (§3.6/§6.1)', () =>
     const timers = manualTimers()
     const h = harness()
     const rt = new PtyTerminalRuntime(h.ctx, {
+      os,
       spawn: h.spawn,
       shell: '/bin/bash',
       graceMs: 2000,
@@ -228,6 +233,7 @@ describe('PtyTerminalRuntime spontaneous exit vs user stop (§3.6/§6.1)', () =>
     const timers = manualTimers()
     const h = harness()
     const rt = new PtyTerminalRuntime(h.ctx, {
+      os,
       spawn: h.spawn,
       shell: '/bin/bash',
       graceMs: 2000,
@@ -245,7 +251,7 @@ describe('PtyTerminalRuntime spontaneous exit vs user stop (§3.6/§6.1)', () =>
 
   it('stop() on an already-exited runtime resolves without signalling', async () => {
     const h = harness()
-    const rt = new PtyTerminalRuntime(h.ctx, { spawn: h.spawn, shell: '/bin/bash' })
+    const rt = new PtyTerminalRuntime(h.ctx, { os, spawn: h.spawn, shell: '/bin/bash' })
     await rt.start()
     h.fakePty.emitExit(0)
     await expect(rt.stop()).resolves.toBeUndefined()
@@ -254,7 +260,7 @@ describe('PtyTerminalRuntime spontaneous exit vs user stop (§3.6/§6.1)', () =>
 
   it('dispose() releases listeners and SIGKILLs a still-live child', async () => {
     const h = harness()
-    const rt = new PtyTerminalRuntime(h.ctx, { spawn: h.spawn, shell: '/bin/bash' })
+    const rt = new PtyTerminalRuntime(h.ctx, { os, spawn: h.spawn, shell: '/bin/bash' })
     await rt.start()
     rt.dispose()
     expect(h.fakePty.dataDisposed).toBe(true)
@@ -266,13 +272,13 @@ describe('PtyTerminalRuntime spontaneous exit vs user stop (§3.6/§6.1)', () =>
 describe('PtyTerminalRuntime.currentCwd (§6.1, "new terminal here")', () => {
   it('resolves undefined before start (no live pid)', async () => {
     const h = harness()
-    const rt = new PtyTerminalRuntime(h.ctx, { spawn: h.spawn, shell: '/bin/bash' })
+    const rt = new PtyTerminalRuntime(h.ctx, { os, spawn: h.spawn, shell: '/bin/bash' })
     await expect(rt.currentCwd()).resolves.toBeUndefined()
   })
 
   it('resolves undefined after the process exits', async () => {
     const h = harness()
-    const rt = new PtyTerminalRuntime(h.ctx, { spawn: h.spawn, shell: '/bin/bash' })
+    const rt = new PtyTerminalRuntime(h.ctx, { os, spawn: h.spawn, shell: '/bin/bash' })
     await rt.start()
     h.fakePty.emitExit(0)
     await expect(rt.currentCwd()).resolves.toBeUndefined()
@@ -283,7 +289,7 @@ describe('PtyTerminalRuntime.currentCwd (§6.1, "new terminal here")', () => {
     // lsof on macOS), which has no such process here, so the live path returns
     // undefined without throwing. (A real pid's cwd is covered in proc-cwd.test.ts.)
     const h = harness()
-    const rt = new PtyTerminalRuntime(h.ctx, { spawn: h.spawn, shell: '/bin/bash' })
+    const rt = new PtyTerminalRuntime(h.ctx, { os, spawn: h.spawn, shell: '/bin/bash' })
     await rt.start()
     await expect(rt.currentCwd()).resolves.toBeUndefined()
   })

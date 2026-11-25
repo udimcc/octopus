@@ -16,7 +16,8 @@
  * fixed `switch` cases in `useKeyboardShortcuts.ts` — keep the two in sync.
  */
 
-import { getPlatform } from '../platform'
+import { rendererOs } from '../platform'
+import type { OsProfile } from '../../../shared/os'
 
 /** True if the event carries at least one modifier — required for a bindable chord. */
 export function hasModifier(e: KeyboardEvent): boolean {
@@ -91,11 +92,11 @@ const MAC_MODIFIER_GLYPH: Readonly<Record<string, string>> = {
  * Human-readable label for a stored chord, e.g. `Ctrl+Shift+→` or `Alt+K`. On macOS
  * it uses the native glyphs with no separators (`⇧⌘→`, `⌥K`).
  */
-export function chordLabel(chord: string, platform: string = getPlatform()): string {
+export function chordLabel(chord: string, os: OsProfile = rendererOs()): string {
   if (!chord) return ''
   const parts = chord.split('+')
   const code = parts.pop() as string
-  if (platform === 'darwin') {
+  if (os.keyboard.modifierLabels === 'glyphs') {
     return parts.map((m) => MAC_MODIFIER_GLYPH[m] ?? m).join('') + codeLabel(code)
   }
   return [...parts, codeLabel(code)].join('+')
@@ -105,8 +106,8 @@ export function chordLabel(chord: string, platform: string = getPlatform()): str
  * Label for a partial chord while modifiers are held during capture (`modifierPrefix`
  * output): `Ctrl+Shift+…` on Linux, `⇧⌘…` on macOS.
  */
-export function modifierPreviewLabel(prefix: string, platform: string = getPlatform()): string {
-  if (platform === 'darwin') {
+export function modifierPreviewLabel(prefix: string, os: OsProfile = rendererOs()): string {
+  if (os.keyboard.modifierLabels === 'glyphs') {
     return (
       prefix
         .split('+')
@@ -118,8 +119,8 @@ export function modifierPreviewLabel(prefix: string, platform: string = getPlatf
 }
 
 /** The "a chord needs a modifier" hint for the capture field. */
-export function modifierRequiredHint(platform: string = getPlatform()): string {
-  return platform === 'darwin'
+export function modifierRequiredHint(os: OsProfile = rendererOs()): string {
+  return os.keyboard.modifierLabels === 'glyphs'
     ? 'Add at least one modifier (⌘ / ⌃ / ⌥ / ⇧)'
     : 'Add at least one modifier (Ctrl / Alt / Shift)'
 }

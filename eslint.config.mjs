@@ -100,5 +100,47 @@ export default tseslint.config(
       ]
     }
   },
+  {
+    // OS layer (`.claude/rules/os-layer.md`): every Linux/macOS/Windows difference lives
+    // in `src/shared/os/` as `OsProfile` data. Only the host readers below may look at
+    // the platform; everything else receives a profile and switches on its capability
+    // keys, never on an OS name.
+    files: ['**/*.{ts,tsx,mjs,cjs,js}'],
+    ignores: ['src/shared/os/**', 'src/shared/node/os/host.ts', 'scripts/lib/host.mjs'],
+    rules: {
+      'no-restricted-properties': [
+        'error',
+        {
+          object: 'process',
+          property: 'platform',
+          message:
+            'Read the OS via hostOs()/hostProfile() (src/shared/node/os/host.ts) or rendererOs(), then use OsProfile capabilities.'
+        }
+      ],
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: ['os', 'node:os'].map((name) => ({
+            name,
+            importNames: ['platform', 'type'],
+            message: 'Use hostOs()/hostProfile() from src/shared/node/os/host.ts.'
+          }))
+        }
+      ],
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'BinaryExpression > Literal[value=/^(darwin|linux|win32)$/]',
+          message:
+            'Do not compare against an OS name; add a capability to OsProfile (src/shared/os/) instead.'
+        },
+        {
+          selector: 'SwitchCase > Literal[value=/^(darwin|linux|win32)$/]',
+          message:
+            'Do not switch on an OS name; add a capability to OsProfile (src/shared/os/) instead.'
+        }
+      ]
+    }
+  },
   eslintConfigPrettier
 )

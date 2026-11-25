@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { osProfile } from '../../shared/os'
 import {
   DEFAULT_SETTINGS,
   JsonSettingsStore,
@@ -12,8 +13,8 @@ import {
 
 describe('defaultSettings(platform) (macOS support)', () => {
   it('returns the historical constant unchanged for every non-darwin platform', () => {
-    expect(defaultSettings('linux')).toBe(DEFAULT_SETTINGS)
-    expect(defaultSettings('win32')).toBe(DEFAULT_SETTINGS)
+    expect(defaultSettings(osProfile('linux'))).toBe(DEFAULT_SETTINGS)
+    expect(defaultSettings(osProfile('win32'))).toBe(DEFAULT_SETTINGS)
   })
 
   it('serializes the Linux defaults byte-identically to the pre-mac literal', () => {
@@ -40,12 +41,14 @@ describe('defaultSettings(platform) (macOS support)', () => {
       focusPaneUpKey: 'Ctrl+Shift+KeyK',
       focusPaneDownKey: 'Ctrl+Shift+KeyJ'
     }
-    expect(serializeSettings(defaultSettings('linux'))).toBe(JSON.stringify(legacy, null, 2) + '\n')
+    expect(serializeSettings(defaultSettings(osProfile('linux')))).toBe(
+      JSON.stringify(legacy, null, 2) + '\n'
+    )
     expect(Object.isFrozen(DEFAULT_SETTINGS)).toBe(true)
   })
 
   it('uses Cmd-based chords on darwin, in canonical modifier order', () => {
-    const mac = defaultSettings('darwin')
+    const mac = defaultSettings(osProfile('darwin'))
     expect(mac.sessionNextKey).toBe('Shift+Meta+ArrowRight')
     expect(mac.newTaskKey).toBe('Shift+Meta+KeyT')
     expect(mac.copyKey).toBe('Meta+KeyC')
@@ -57,7 +60,7 @@ describe('defaultSettings(platform) (macOS support)', () => {
   })
 
   it('parseSettings falls back to the supplied platform defaults', () => {
-    const mac = defaultSettings('darwin')
+    const mac = defaultSettings(osProfile('darwin'))
     expect(parseSettings('{}', mac).searchKey).toBe('Shift+Meta+KeyF')
     expect(parseSettings('not json', mac)).toBe(mac)
     expect(parseSettings('{}').searchKey).toBe('Ctrl+Shift+KeyF')
@@ -76,8 +79,8 @@ describe('JsonSettingsStore platform defaults', () => {
   })
 
   it('fills missing chords from the darwin defaults on darwin', () => {
-    const store = new JsonSettingsStore(path, 'darwin')
-    expect(store.load()).toEqual(defaultSettings('darwin'))
+    const store = new JsonSettingsStore(path, osProfile('darwin'))
+    expect(store.load()).toEqual(defaultSettings(osProfile('darwin')))
     writeFileSync(path, JSON.stringify({ newTaskKey: 'Alt+KeyT' }), 'utf8')
     const loaded = store.load()
     expect(loaded.newTaskKey).toBe('Alt+KeyT') // a persisted choice wins
@@ -86,7 +89,7 @@ describe('JsonSettingsStore platform defaults', () => {
 
   it('keeps an existing Linux-style file as-is on darwin (no rewrite of stored chords)', () => {
     writeFileSync(path, serializeSettings(DEFAULT_SETTINGS), 'utf8')
-    const store = new JsonSettingsStore(path, 'darwin')
+    const store = new JsonSettingsStore(path, osProfile('darwin'))
     expect(store.load()).toEqual(DEFAULT_SETTINGS)
     store.save({ groupTasksByRepo: false })
     const saved = JSON.parse(readFileSync(path, 'utf8'))
@@ -95,13 +98,9 @@ describe('JsonSettingsStore platform defaults', () => {
 
   it('backs a corrupt file with the platform defaults on save', () => {
     writeFileSync(path, '{not json', 'utf8')
-    const store = new JsonSettingsStore(path, 'darwin')
+    const store = new JsonSettingsStore(path, osProfile('darwin'))
     store.load()
     const saved = store.save({ groupTasksByRepo: false })
     expect(saved.copyKey).toBe('Meta+KeyC')
-  })
-
-  it('defaults the platform to process.platform', () => {
-    expect(new JsonSettingsStore(path).load()).toEqual(defaultSettings(process.platform))
   })
 })

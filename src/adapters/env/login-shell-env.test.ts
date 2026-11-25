@@ -78,22 +78,13 @@ describe('probeShell', () => {
 })
 
 describe('applyLoginShellEnv', () => {
-  it('is a no-op on linux and never runs a shell', () => {
-    const run = vi.fn(() => '')
-    const env = { PATH: '/usr/bin' }
-    const r = applyLoginShellEnv({ platform: 'linux', env, run })
-    expect(r.applied).toBe(false)
-    expect(run).not.toHaveBeenCalled()
-    expect(env).toEqual({ PATH: '/usr/bin' })
-  })
-
-  it('on darwin runs `$SHELL -ilc <probe>` and merges into env in place', () => {
+  it('runs `$SHELL -ilc <probe>` and merges into env in place', () => {
     const run = vi.fn(() => probeOutput(['PATH=/opt/homebrew/bin:/usr/bin', 'LANG=en_US.UTF-8']))
     const env: Record<string, string | undefined> = {
       SHELL: '/bin/zsh',
       PATH: '/usr/bin:/bin:/usr/sbin:/sbin'
     }
-    const r = applyLoginShellEnv({ platform: 'darwin', env, run, accountShell: () => undefined })
+    const r = applyLoginShellEnv({ env, run, accountShell: () => undefined })
     expect(run).toHaveBeenCalledWith('/bin/zsh', ['-ilc', loginShellProbeCommand()], 3000)
     expect(r).toMatchObject({ applied: true, keys: ['PATH', 'LANG'] })
     expect(env.PATH).toBe('/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin')
@@ -103,7 +94,6 @@ describe('applyLoginShellEnv', () => {
   it('falls back silently (env untouched) when the shell fails or prints nothing usable', () => {
     const env = { SHELL: '/bin/zsh', PATH: '/usr/bin' }
     const failing = applyLoginShellEnv({
-      platform: 'darwin',
       env,
       run: () => {
         throw new Error('ETIMEDOUT')
@@ -111,7 +101,7 @@ describe('applyLoginShellEnv', () => {
     })
     expect(failing.applied).toBe(false)
     expect(failing.message).toContain('ETIMEDOUT')
-    const silent = applyLoginShellEnv({ platform: 'darwin', env, run: () => 'garbage' })
+    const silent = applyLoginShellEnv({ env, run: () => 'garbage' })
     expect(silent.applied).toBe(false)
     expect(env).toEqual({ SHELL: '/bin/zsh', PATH: '/usr/bin' })
   })

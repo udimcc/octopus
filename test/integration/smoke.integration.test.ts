@@ -42,6 +42,7 @@ import {
   taskInput
 } from '../../src/application/use-cases/test-fakes'
 import type { DomainEvent } from '../../src/ports/event-bus'
+import { hostProfile } from '../../src/shared/node/os/host'
 
 const ptyOk = ((): boolean => {
   try {
@@ -106,7 +107,11 @@ d('V1 E2E smoke: create → run → switch (keep-alive) → delete (§11)', () =
         groupTasksByRepo: true
       }),
       worktrees,
-      sessions: new PtySessionManager({ getSettings: () => deps.settings.load(), graceMs: 500 }),
+      sessions: new PtySessionManager({
+        getSettings: () => deps.settings.load(),
+        graceMs: 500,
+        os: hostProfile()
+      }),
       registry,
       runtimes: new MapRuntimeRegistry(),
       bus,

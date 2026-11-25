@@ -3,11 +3,12 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, realpathSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { deleteSafetyCanonicalizer } from './fs-path-probe'
+import { osProfile } from '../../shared/os'
 
 describe('deleteSafetyCanonicalizer (§6.4)', () => {
-  it('is absent off macOS, so Linux keeps plain string compares', () => {
-    expect(deleteSafetyCanonicalizer('linux')).toBeUndefined()
-    expect(deleteSafetyCanonicalizer('win32')).toBeUndefined()
+  it("is absent for 'exact' (Linux, win32), so they keep plain string compares", () => {
+    expect(deleteSafetyCanonicalizer(osProfile('linux').fs.pathCanonical)).toBeUndefined()
+    expect(deleteSafetyCanonicalizer(osProfile('win32').fs.pathCanonical)).toBeUndefined()
   })
 
   describe('darwin mapping (real fs)', () => {
@@ -18,7 +19,7 @@ describe('deleteSafetyCanonicalizer (§6.4)', () => {
       symlinkSync(join(root, 'Repo'), join(root, 'link'))
     })
     afterAll(() => rmSync(root, { recursive: true, force: true }))
-    const canon = deleteSafetyCanonicalizer('darwin')!
+    const canon = deleteSafetyCanonicalizer(osProfile('darwin').fs.pathCanonical)!
 
     it('resolves symlinks and case-folds', () => {
       expect(canon(join(root, 'link'))).toBe(join(root, 'Repo').toLowerCase())

@@ -48,6 +48,7 @@ import {
 } from '../../src/application/use-cases/test-fakes'
 import type { WorkspaceSnapshot } from '../../src/domain/snapshots'
 import type { DomainEvent } from '../../src/ports/event-bus'
+import { hostProfile } from '../../src/shared/node/os/host'
 
 const ptyOk = ((): boolean => {
   try {
@@ -115,7 +116,11 @@ d('scrollback persist + replay across a simulated restart (integration, §6.6/§
         groupTasksByRepo: true
       }),
       worktrees: new FakeWorktreeProvider(),
-      sessions: new PtySessionManager({ getSettings: () => deps.settings.load(), graceMs: 500 }),
+      sessions: new PtySessionManager({
+        getSettings: () => deps.settings.load(),
+        graceMs: 500,
+        os: hostProfile()
+      }),
       registry,
       runtimes: new MapRuntimeRegistry(),
       bus,

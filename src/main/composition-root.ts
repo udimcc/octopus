@@ -5,11 +5,11 @@
  * edges stay swappable — no other layer imports an adapter (boundary rule).
  *
  * Bootstrap order (V0 order preserved, extended):
- *   0. darwin only: `applyLoginShellEnv()` merges the login shell's PATH/locale into
+ *   0. `os.proc.adoptLoginShellEnv` (macOS) only: `applyLoginShellEnv()` merges the login shell's PATH/locale into
  *      `process.env` (a Finder/Dock launch has a bare launchd PATH) before anything
  *      inherits it — octopusd, PTYs, worktree scripts, the Claude hook install.
- *   1. `raiseFileLimit()` FIRST — child PTYs inherit the higher soft fd limit (§6.1).
- *   2. `ensureAppDirs()` — data + logs dirs exist before any store opens.
+ *   1. `raiseFileLimit(os.proc.raiseFileLimit)` FIRST — child PTYs inherit the higher soft fd limit (§6.1).
+ *   2. `ensureAppDirs(currentAppPaths(os))` — data + logs dirs exist before any store opens.
  *   3. Build adapters behind their ports (clock, ids, bus, settings, persistence,
  *      script runner, worktree provider, PTY manager, session-type registry +
  *      Terminal provider, ajv config validator).
@@ -37,6 +37,7 @@ import { resolveProgramDir, resolveUpdateStagingDir } from '../adapters/env/path
 import { raiseFileLimit } from '../adapters/env/raise-file-limit'
 import { applyLoginShellEnv } from '../adapters/env/login-shell-env'
 import {
+  currentAppPaths,
   ensureAppDirs,
   ensureWorktreeBase,
   resolveWorktreeBase,
@@ -78,15 +79,11 @@ import {
   DEFAULT_LITELLM_BASE_URL,
   DEFAULT_JIRA_SERVER_ID
 } from '../adapters/jira/litellm-jira-source'
-import { createHttpsFetch } from '../adapters/jira/https-fetch'
+import { createHttpsFetch, systemCaBundleReader } from '../adapters/jira/https-fetch'
 import { SafeStorageCredentials } from '../adapters/credentials/safe-storage-credentials'
 import { JIRA_API_KEY_REF } from '../ports/credentials-provider'
 import { app, BrowserWindow, safeStorage } from 'electron'
-import {
-  FsUpdateSource,
-  LINUX_RELEASE_MARKERS,
-  MAC_RELEASE_MARKERS
-} from '../adapters/update/fs-update-source'
+import { FsUpdateSource } from '../adapters/update/fs-update-source'
 import { createUpdateChecker } from '../application/use-cases/check-for-updates'
 import { createUpdateInstaller } from '../application/use-cases/install-update'
 import { createUpdateScheduler, type UpdateScheduler } from './update-scheduler'
@@ -119,26 +116,10 @@ import { MAIN_WINDOW_ID, asSessionId, type SessionId, type WindowId } from '../d
 import { locateSession } from '../application/use-cases/locate-session'
 import { listProjects } from '../application/queries/list-projects'
 import { CURRENT_VERSION } from '../shared/version'
+import type { OsProfile } from '../shared/os'
 import { registerIpcHandlers } from './ipc-handlers'
 import { createWindowRegistry, type WindowRegistry } from './window-registry'
 
-/**
- * Where releases are published when `settings.updates.dir` is unset: the shared scratch
- * mount on Linux, the synced Egnyte Installation folder on macOS.
- */
-function defaultUpdatesDir(platform: NodeJS.Platform, home: string): string {
-  return platform === 'darwin'
-    ? join(
-        home,
-        'Library',
-        'CloudStorage',
-        'Egnyte-finalisrael',
-        'Shared',
-        'Installation',
-        'octopus'
-      )
-    : '/mnt/scratch/octopus'
-}
 /** Listing the (network) updates dir gives up after this long -> `unreachable`. */
 const UPDATE_CHECK_TIMEOUT_MS = 10_000
 /** Copying the (~300 MB) release to the local staging dir gives up after this long. */
@@ -271,29 +252,29 @@ export function raiseWindow(win: BrowserWindow): void {
   win.webContents.invalidate()
 }
 
-export function bootstrap(): AppContext {
+export function bootstrap(os: OsProfile): AppContext {
   // 0. darwin: adopt the login shell's PATH/locale (GUI launches get launchd's bare
   // PATH). Must precede everything that spawns or snapshots `process.env` — notably
   // the daemon (launched later by `warmupSessions`, inheriting this env) and the
   // Claude hook install below. Best-effort; a no-op off darwin.
-  if (process.platform === 'darwin') {
-    const loginEnv = applyLoginShellEnv({ platform: process.platform, env: process.env })
+  if (os.proc.adoptLoginShellEnv) {
+    const loginEnv = applyLoginShellEnv({ env: process.env })
     console.log(`[octopus] login shell env: ${loginEnv.message}`)
   }
 
   // 1. Raise the fd limit FIRST so child PTYs inherit the higher soft limit (§6.1).
-  const rlimit = raiseFileLimit()
+  const rlimit = raiseFileLimit(os.proc.raiseFileLimit)
   console.log(`[octopus] RLIMIT_NOFILE: ${rlimit.message}`)
 
   // 2. Ensure data + logs dirs exist before any store opens.
-  const paths = ensureAppDirs()
+  const paths = ensureAppDirs(currentAppPaths(os))
   console.log(`[octopus] data dir ensured at ${paths.dataDir}`)
 
   // 3. Build adapters behind their ports.
   const clock = systemClock
   const ids = new UuidIdGenerator()
   const bus = new InMemoryEventBus()
-  const settings = new JsonSettingsStore(paths.settingsPath)
+  const settings = new JsonSettingsStore(paths.settingsPath, os)
   // Load settings once up-front (the worktree provider reads them live via this).
   settings.load()
   const getSettings = (): Settings => settings.load()
@@ -314,6 +295,7 @@ export function bootstrap(): AppContext {
     script: new ScriptWorktreeProvider({
       runner: scriptRunner,
       getSettings,
+      pathCanonical: os.fs.pathCanonical,
       onWarning: onWorktreeWarning
     }),
     native: new NativeGitWorktreeProvider({
@@ -321,6 +303,7 @@ export function bootstrap(): AppContext {
       getSettings,
       resolveBase: () =>
         ensureWorktreeBase(resolveWorktreeBase(getSettings().worktree.location, homedir())),
+      pathCanonical: os.fs.pathCanonical,
       onWarning: onWorktreeWarning
     }),
     hasScript: existsFile
@@ -369,7 +352,8 @@ export function bootstrap(): AppContext {
   const inProcessSessions = new PtySessionManager({
     getSettings,
     shellIntegration,
-    controlSocketPath: paths.controlSocketPath
+    controlSocketPath: paths.controlSocketPath,
+    os
   })
   const sessions = new SwitchableSessionManager(inProcessSessions)
   const daemonClient = new DaemonClient({
@@ -382,7 +366,8 @@ export function bootstrap(): AppContext {
     getSettings,
     shellIntegration,
     // Rides in the spawn `envPatch` (no daemon protocol change).
-    controlSocketPath: paths.controlSocketPath
+    controlSocketPath: paths.controlSocketPath,
+    os
   })
   // Filled by `warmupSessions()` from the daemon's live roster; empty on the
   // in-process path (→ every restored session spawns fresh, V1 behavior).
@@ -644,7 +629,7 @@ export function bootstrap(): AppContext {
   const jiraSource = new LiteLLMJiraSource({
     // Not `globalThis.fetch`: that ignores the system CA store, which holds the
     // gateway's internal CA (https-fetch.ts).
-    fetch: createHttpsFetch(),
+    fetch: createHttpsFetch({ readCaBundle: systemCaBundleReader(os.tls.caSource) }),
     getApiKey: async () => {
       const hasKey = await credentials.has(JIRA_API_KEY_REF)
       return hasKey ? credentials.resolve(JIRA_API_KEY_REF) : undefined
@@ -653,22 +638,21 @@ export function bootstrap(): AppContext {
     serverId: DEFAULT_JIRA_SERVER_ID
   })
 
-  // Each platform only sees its own releases: a Linux release (install.sh +
-  // linux-unpacked/) is never a candidate on a Mac, nor a Mac one (install-mac.sh +
-  // Octopus.app) on Linux, even when both are published to the same dir.
-  const isMac = process.platform === 'darwin'
+  // Each OS only sees its own releases (`os.update.releaseMarkers`): a Linux release
+  // is never a candidate on a Mac, nor a Mac one on Linux, even when both are
+  // published to the same dir.
   const updateSource = new FsUpdateSource({
     stagingRoot: resolveUpdateStagingDir(process.env, homedir()),
     stageTimeoutMs: UPDATE_STAGE_TIMEOUT_MS,
     runner: scriptRunner,
-    markers: isMac ? MAC_RELEASE_MARKERS : LINUX_RELEASE_MARKERS
+    markers: os.update.releaseMarkers
   })
   const updateChecker = createUpdateChecker({
     source: updateSource,
     settings,
     clock,
     currentVersion: app.getVersion(),
-    defaultDir: defaultUpdatesDir(process.platform, homedir()),
+    defaultDir: os.update.defaultUpdatesDir(homedir()),
     timeoutMs: UPDATE_CHECK_TIMEOUT_MS
   })
   const programDir = resolveProgramDir(process.env, homedir())
@@ -676,20 +660,8 @@ export function bootstrap(): AppContext {
     source: updateSource,
     scriptRunner,
     programDir,
-    // install-mac.sh installs to ~/Applications/Octopus.app (its default; no OCTOPUS_APPS_DIR).
-    ...(isMac
-      ? {
-          installScript: 'install-mac.sh',
-          executablePath: join(
-            homedir(),
-            'Applications',
-            'Octopus.app',
-            'Contents',
-            'MacOS',
-            'Octopus'
-          )
-        }
-      : {}),
+    installScript: os.update.installScript,
+    executablePath: os.update.relaunchExecutable(homedir(), programDir),
     timeoutMs: UPDATE_INSTALL_TIMEOUT_MS,
     relauncher: {
       relaunch: (execPath) => {

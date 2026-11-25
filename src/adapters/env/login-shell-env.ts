@@ -109,7 +109,6 @@ export function probeShell(envShell: string | undefined, accountShell: string | 
 }
 
 export interface ApplyLoginShellEnvDeps {
-  readonly platform: string
   /** Mutated in place (normally `process.env`). */
   readonly env: Record<string, string | undefined>
   /** Runs `shell args` and returns stdout; throws on failure/timeout. Injected for tests. */
@@ -142,13 +141,11 @@ const defaultAccountShell = (): string | undefined => {
 }
 
 /**
- * Darwin only: probe the login shell and merge its PATH/locale into `deps.env`.
- * Never throws. A no-op on every other platform (Linux behavior unchanged).
+ * Probe the login shell and merge its PATH/locale into `deps.env`. Never throws.
+ * The caller gates it on the host profile's `proc.adoptLoginShellEnv` (macOS only;
+ * Linux behavior unchanged).
  */
 export function applyLoginShellEnv(deps: ApplyLoginShellEnvDeps): ApplyLoginShellEnvResult {
-  if (deps.platform !== 'darwin') {
-    return { applied: false, keys: [], message: `skipped: not darwin (${deps.platform})` }
-  }
   const shell = probeShell(deps.env.SHELL, (deps.accountShell ?? defaultAccountShell)())
   let stdout: string
   try {

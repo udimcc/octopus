@@ -1,9 +1,9 @@
 /**
  * Application menu template (pure, no Electron runtime import — only its types).
  *
- * Linux: no menu at all (`null`); Octopus is driven entirely through the renderer UI.
+ * `'none'` (Linux, Windows): no menu at all (`null`); Octopus is driven entirely through the renderer UI.
  *
- * macOS: the menu bar always exists there, and without an Edit menu the standard
+ * `'minimal'` (macOS): the menu bar always exists there, and without an Edit menu the standard
  * Cmd+C/V/X/A/Z shortcuts do nothing in text inputs (Electron wires them through
  * menu roles). So darwin gets a minimal menu: the app menu, Edit and Window. It
  * deliberately has NO View menu (no reload / devtools accelerators that would wipe
@@ -14,12 +14,14 @@
  */
 
 import type { MenuItemConstructorOptions } from 'electron'
+import type { AppMenuKind } from '../shared/os'
 
+/** `kind` is the OS profile's `app.appMenu`. */
 export function appMenuTemplate(
-  platform: string,
+  kind: AppMenuKind,
   appName: string
 ): MenuItemConstructorOptions[] | null {
-  if (platform !== 'darwin') {
+  if (kind === 'none') {
     return null
   }
   return [

@@ -22,6 +22,7 @@ import { readFileSync } from 'node:fs'
 import { Agent, request as httpsRequest } from 'node:https'
 import { rootCertificates } from 'node:tls'
 import type { JiraFetch } from './litellm-jira-source'
+import type { CaSource } from '../../shared/os'
 
 /** Debian/Ubuntu system CA bundle (Linux). */
 export const SYSTEM_CA_BUNDLE_PATH = '/etc/ssl/certs/ca-certificates.crt'
@@ -52,17 +53,15 @@ export interface HttpsFetchDeps {
   readonly request?: typeof httpsRequest
   /**
    * Returns the extra CA bundle PEM (or a promise of it), or `undefined` when
-   * unavailable. Read once, on first fetch. Defaults to {@link systemCaBundleReader}.
+   * unavailable. Read once, on first fetch. Production passes
+   * {@link systemCaBundleReader} for the host profile's `tls.caSource`.
    */
-  readonly readCaBundle?: CaBundleReader
-  /** Host platform; selects the default reader. Defaults to `process.platform`. */
-  readonly platform?: string
+  readonly readCaBundle: CaBundleReader
 }
 
 /** Best-effort read of the system CA bundle: an unreadable/missing file just means
  * Node's bundled roots alone. */
-export function readSystemCaBundle(platform: string = process.platform): string | undefined {
-  if (platform !== 'linux') return undefined
+export function readSystemCaBundle(): string | undefined {
   try {
     return readFileSync(SYSTEM_CA_BUNDLE_PATH, 'utf8')
   } catch {
@@ -99,9 +98,19 @@ export async function readDarwinKeychainCas(
   return pems.length > 0 ? `${pems.join('\n')}\n` : undefined
 }
 
-/** The default extra-CA reader for `platform`: the PEM file on Linux, the keychains on darwin. */
-export function systemCaBundleReader(platform: string): CaBundleReader {
-  return platform === 'darwin' ? () => readDarwinKeychainCas() : () => readSystemCaBundle(platform)
+/**
+ * The extra-CA reader for a host profile's `tls.caSource`: the PEM file (Linux), the
+ * keychains (macOS), or nothing (Node's bundled roots alone).
+ */
+export function systemCaBundleReader(source: CaSource): CaBundleReader {
+  switch (source) {
+    case 'keychain':
+      return () => readDarwinKeychainCas()
+    case 'pem-file':
+      return () => readSystemCaBundle()
+    case 'none':
+      return () => undefined
+  }
 }
 
 function makeAgent(bundle: string | undefined): Agent {
@@ -111,9 +120,9 @@ function makeAgent(bundle: string | undefined): Agent {
   })
 }
 
-export function createHttpsFetch(deps: HttpsFetchDeps = {}): JiraFetch {
+export function createHttpsFetch(deps: HttpsFetchDeps): JiraFetch {
   const request = deps.request ?? httpsRequest
-  const readCaBundle = deps.readCaBundle ?? systemCaBundleReader(deps.platform ?? process.platform)
+  const readCaBundle = deps.readCaBundle
   // Built lazily on first call, so app startup never reads the bundle. A sync reader
   // (Linux) yields the agent immediately; an async one (darwin) is shared by every
   // fetch that arrives while it is pending, so the keychains are exported once.

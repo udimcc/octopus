@@ -7,6 +7,7 @@
 import { statSync, existsSync, realpathSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import type { PathProbe } from './path-safety'
+import type { PathCanonical } from '../../shared/os'
 
 export const fsPathProbe: PathProbe = {
   isDirectory(path: string): boolean {
@@ -24,15 +25,16 @@ export const fsPathProbe: PathProbe = {
 }
 
 /**
- * The `canonical` mapping for `assertSafeToDelete` (§6.4) on this host. Linux:
- * `undefined` (plain normalized-string compares, unchanged). macOS: resolve
- * symlinks via the deepest existing ancestor (the candidate may already be
- * gone) and case-fold, since APFS is case-insensitive by default.
+ * The `canonical` mapping for `assertSafeToDelete` (§6.4) for a host profile's
+ * `fs.pathCanonical`. `'exact'` (Linux): `undefined` (plain normalized-string
+ * compares, unchanged). `'realpath-casefold'` (macOS): resolve symlinks via the
+ * deepest existing ancestor (the candidate may already be gone) and case-fold,
+ * since APFS is case-insensitive by default.
  */
 export function deleteSafetyCanonicalizer(
-  platform: string = process.platform
+  mode: PathCanonical
 ): ((path: string) => string) | undefined {
-  if (platform !== 'darwin') return undefined
+  if (mode === 'exact') return undefined
   return (path) => realpathDeepest(path).toLowerCase()
 }
 

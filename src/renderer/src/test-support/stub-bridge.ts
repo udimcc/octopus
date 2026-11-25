@@ -8,6 +8,7 @@
  * the many M6 component tests share one definition instead of copy-pasting it.
  */
 
+import type { OsId } from '../../../shared/os'
 import { vi } from 'vitest'
 import type { OctopusAPI } from '../../../shared/ipc'
 import type { EventDTO } from '../../../shared/events'
@@ -53,7 +54,7 @@ export function makeStubBridge(options?: {
   ack?: () => CommandAck | Promise<CommandAck>
   state?: WindowedWorkspaceStateDTO
   windowId?: string
-  platform?: string
+  platform?: OsId
 }): StubBridge {
   const listeners = new Set<(event: EventDTO) => void>()
   const ackImpl = options?.ack ?? (() => ({ ok: true }) as CommandAck)

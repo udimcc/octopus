@@ -22,6 +22,7 @@ import {
 } from '../../shared/node/output-batcher'
 import { buildPtyEnv } from '../../shared/pty-env'
 import { procCwdAsync } from '../../shared/node/proc-cwd'
+import type { OsProfile } from '../../shared/os'
 
 /** A disposable listener registration (node-pty's IDisposable shape). */
 export interface PtyDisposable {
@@ -51,6 +52,8 @@ export type PtySpawn = (file: string, args: string[], options: PtySpawnOptions) 
 
 export interface PtyTerminalRuntimeOptions {
   readonly spawn: PtySpawn
+  /** Host OS profile: PTY env defaults and how the shell's cwd is read. */
+  readonly os: OsProfile
   /** Fully-resolved shell to launch (§6.1); the manager resolves the fallbacks. */
   readonly shell: string
   /**
@@ -88,6 +91,7 @@ export class PtyTerminalRuntime implements SessionRuntime {
   private readonly envPatch: Readonly<Record<string, string>>
   private readonly controlSocketPath?: string
   private readonly graceMs: number
+  private readonly os: OsProfile
   private readonly timers: BatcherTimers
   private readonly batcher: OutputBatcher
 
@@ -105,6 +109,7 @@ export class PtyTerminalRuntime implements SessionRuntime {
     this.args = opts.args ?? ['-l']
     this.envPatch = opts.envPatch ?? {}
     this.controlSocketPath = opts.controlSocketPath
+    this.os = opts.os
     this.graceMs = opts.graceMs ?? 2000
     this.timers = opts.timers ?? DEFAULT_TIMERS
     this.batcher = new OutputBatcher((data) => this.ctx.onData(data), {
@@ -126,7 +131,7 @@ export class PtyTerminalRuntime implements SessionRuntime {
           sessionId: this.ctx.sessionId,
           worktreePath: this.ctx.worktreePath,
           controlSocketPath: this.controlSocketPath,
-          platform: process.platform
+          os: this.os
         }),
         ...this.envPatch
       }
@@ -221,7 +226,7 @@ export class PtyTerminalRuntime implements SessionRuntime {
     if (pid === undefined || this.exited) {
       return Promise.resolve(undefined)
     }
-    return procCwdAsync(pid)
+    return procCwdAsync(pid, this.os.proc.cwdProbe)
   }
 
   private handleExit(exitCode: number, signal?: number): void {

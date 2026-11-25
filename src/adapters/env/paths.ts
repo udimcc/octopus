@@ -2,6 +2,7 @@ import { homedir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import { mkdirSync, chmodSync } from 'node:fs'
 import { controlSocketPath, resolveDataDir } from '../../shared/data-paths'
+import type { OsProfile } from '../../shared/os'
 
 /**
  * Resolves Octopus's on-disk data locations (DESIGN §6.3).
@@ -11,7 +12,7 @@ import { controlSocketPath, resolveDataDir } from '../../shared/data-paths'
  * deliberately NOT Electron's `app.getPath('userData')`, which resolves to
  * `~/.config/octopus` — the XDG *config* dir, not the *data* dir.
  *
- * The resolver is a pure function of (env, platform, home) so it is unit-testable
+ * The resolver is a pure function of (env, os, home) so it is unit-testable
  * without Electron or the real filesystem; {@link ensureAppDirs} performs the
  * side-effecting directory creation.
  *
@@ -51,15 +52,15 @@ export interface AppPaths {
 
 export interface ResolveContext {
   env: NodeJS.ProcessEnv
-  platform: NodeJS.Platform
+  os: OsProfile
   home: string
 }
 
 /**
  * Compute app paths for a given environment. Pure — no filesystem access.
  */
-export function resolveAppPaths({ env, platform, home }: ResolveContext): AppPaths {
-  const dataDir = resolveDataDir({ env, platform, home })
+export function resolveAppPaths({ env, os, home }: ResolveContext): AppPaths {
+  const dataDir = resolveDataDir({ env, os, home })
   return {
     dataDir,
     dbPath: join(dataDir, 'octopus.db'),
@@ -69,22 +70,22 @@ export function resolveAppPaths({ env, platform, home }: ResolveContext): AppPat
     shellIntegrationDir: join(dataDir, 'shell-integration'),
     claudeStateDir: join(dataDir, 'claude-state'),
     credentialsDir: join(dataDir, 'credentials'),
-    controlSocketPath: controlSocketPath(dataDir, platform)
+    controlSocketPath: controlSocketPath(dataDir, os)
   }
 }
 
 /**
  * Resolve app paths for the current process (convenience wrapper).
  */
-export function currentAppPaths(): AppPaths {
-  return resolveAppPaths({ env: process.env, platform: process.platform, home: homedir() })
+export function currentAppPaths(os: OsProfile): AppPaths {
+  return resolveAppPaths({ env: process.env, os, home: homedir() })
 }
 
 /**
  * Create the data and logs directories if they do not exist. Idempotent.
  * Returns the resolved paths so callers can log where data lives.
  */
-export function ensureAppDirs(paths: AppPaths = currentAppPaths()): AppPaths {
+export function ensureAppDirs(paths: AppPaths): AppPaths {
   mkdirSync(paths.dataDir, { recursive: true })
   mkdirSync(paths.logsDir, { recursive: true })
   mkdirSync(paths.claudeStateDir, { recursive: true })
